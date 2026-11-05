@@ -34,5 +34,6 @@ enum AppPaths {
     }
     static var history: URL { support.appending(path: "history.json") }
     static func hashCache(_ computer: String) -> URL { support.appending(path: "hashcache-\(computer).json") }
+    static func refsCache(_ computer: String) -> URL { support.appending(path: "refs-\(computer)", directoryHint: .isDirectory) }
     static var computerName: String { Host.current().localizedName ?? "Mac" }
 }

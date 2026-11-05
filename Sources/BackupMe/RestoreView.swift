@@ -36,8 +36,6 @@ struct RestoreView: View {
             .onChange(of: model.source) { model.currentPath = ""; selection = nil }
         }
         .searchable(text: $model.search, prompt: "Cerca file in tutti i backup")
-        .onSubmit(of: .search) { model.runSearch() }
-        .onChange(of: model.search) { model.runSearch() }
         .onChange(of: model.selectedID) { selection = nil }
         .onAppear { model.reload() }
         .frame(minWidth: 760, minHeight: 460)
@@ -96,7 +94,7 @@ struct RestoreView: View {
     private var results: some View {
         VStack {
             if let busy = model.busy { ProgressView(busy).padding() }
-            List(model.searchResults(), id: \.self, selection: $hit) { h in
+            List(model.results, id: \.self, selection: $hit) { h in
                 HStack {
                     Image(systemName: "doc")
                     VStack(alignment: .leading) {

@@ -10,7 +10,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     var status: BackupStatus = .idle
     var history: [BackupReport] = []
 
-    var lastSuccess: Date? { history.last { $0.error == nil }?.date }
+    // stored apart from history: 50 failed retries would otherwise push it out and silence the 3-day alert
+    var lastSuccess = UserDefaults.standard.object(forKey: "lastSuccess") as? Date {
+        didSet { UserDefaults.standard.set(lastSuccess, forKey: "lastSuccess") }
+    }
     var isRunning: Bool { if case .running = status { true } else { false } }
 
     private var cancelFlag = OSAllocatedUnfairLock(initialState: false)
@@ -91,7 +94,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                                         progress: progress, isCancelled: isCancelled)
             var overCap = false
             do {
-                overCap = try prune(repository: repo, policy: s.retention, capBytes: s.capGB.map { Int64($0 * 1e9) }, now: Date()).overCap
+                // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
+                let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
+                overCap = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
+                                    refsCache: AppPaths.refsCache(computer)).overCap
             } catch {
                 report.warnings.append("Pulizia non riuscita: \(describe(error))")
             }
@@ -117,6 +123,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         } else {
             status = .idle
             lastAttempt = nil
+            lastSuccess = report.date
             log.info("backup \(report.snapshotID ?? "", privacy: .public): \(report.fileCount) files, \(report.newBytes) new bytes, \(report.warnings.count) warnings")
         }
         if overCap {
