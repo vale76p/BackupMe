@@ -4,10 +4,12 @@ import SwiftUI
 
 struct RestoreView: View {
     @State var model: RestoreModel
-    @State private var selection: Entry?
+    @State private var entryID: Entry.ID?
     @State private var hit: SearchHit?
     @State private var confirmWhole = false
     @State private var versionsOf: Entry?
+
+    private var selection: Entry? { entryID.flatMap(entry) }
 
     var body: some View {
         NavigationSplitView {
@@ -23,26 +25,60 @@ struct RestoreView: View {
             Group {
                 if model.search.isEmpty { browser } else { results }
             }
-            .safeAreaInset(edge: .bottom) {
-                actions.padding(.horizontal, 10).padding(.vertical, 8).glassPanel(in: Capsule()).padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        // native window chrome only: title = folder being viewed, its menu = the path, subtitle = date or progress
+        .navigationTitle(title)
+        .navigationSubtitle(subtitle)
+        .toolbarTitleMenu {
+            if model.search.isEmpty, model.source != nil {
+                let parts = model.currentPath.split(separator: "/").map(String.init)
+                ForEach(parts.indices.reversed(), id: \.self) { i in
+                    if i < parts.count - 1 { Button(parts[i], systemImage: "folder") { open(parts[...i].joined(separator: "/")) } }
+                }
+                if !parts.isEmpty { Button(rootName, systemImage: "folder") { open("") } }
+                Button("Tutte le cartelle", systemImage: "externaldrive") { model.source = nil; open("") }
             }
         }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button("Cartella superiore", systemImage: "chevron.up") {
+                    if model.currentPath.isEmpty { model.source = nil; open("") }
+                    else { open((model.currentPath as NSString).deletingLastPathComponent) }
+                }
+                .disabled(model.source == nil || !model.search.isEmpty)
+                .help("Cartella superiore")
+            }
             if model.computers.count > 1 {
-                Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
+                ToolbarItem {
+                    Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
+                        .help("Computer di origine")
+                }
             }
-            Picker("Cartella", selection: $model.source) {
-                // full path: two sources can share a folder name
-                ForEach(model.sources, id: \.self) { Text(($0 as NSString).abbreviatingWithTildeInPath).tag(Optional($0)) }
+            ToolbarItem(placement: .primaryAction) {
+                // one native pull-down: click restores beside the original, the arrow offers the rest
+                Menu {
+                    Button("Ripristina in…", systemImage: "folder.badge.plus") { if let t = target { restoreInto(path: t.path) } }
+                    Button("Mostra versioni del file", systemImage: "clock.arrow.circlepath") { versionsOf = target?.entry }
+                        .disabled(target?.entry?.kind != .file)
+                } label: {
+                    Label("Ripristina", systemImage: "arrow.uturn.backward")
+                } primaryAction: {
+                    guard let t = target else { return }
+                    if t.path.isEmpty { confirmWhole = true } else { restore(path: t.path, mode: .besideOriginal) }
+                }
+                .labelStyle(.titleAndIcon)
+                .controlSize(.large)
+                .disabled(target == nil || model.busy != nil)
+                .help("Ripristina accanto all'originale, senza sovrascrivere")
             }
-            .onChange(of: model.source) { model.currentPath = ""; selection = nil }
         }
-        .searchable(text: $model.search, prompt: "Cerca file e cartelle in tutti i backup")
-        .onChange(of: model.selectedID) { selection = nil }
+        .searchable(text: $model.search, prompt: "Cerca in tutti i backup")
+        .onChange(of: model.selectedID) { entryID = nil }
         .onChange(of: model.search) { hit = nil }
-        .onChange(of: model.computer) { hit = nil; selection = nil }
+        .onChange(of: model.computer) { hit = nil; entryID = nil }
         .onAppear { model.reload() }
-        .frame(minWidth: 760, minHeight: 460)
+        .frame(minWidth: 860, minHeight: 500)
         .confirmationDialog("Ripristinare l'intera cartella?", isPresented: $confirmWhole) {
             // replacing in place only for folders this Mac backs up now: a tampered or foreign manifest
             // must not be able to send an arbitrary folder to the Trash
@@ -62,95 +98,126 @@ struct RestoreView: View {
 
     // MARK: browser
 
-    private var browser: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            breadcrumb
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .glassPanel(in: Capsule())
-                .padding(8)
-            List(model.children(), id: \.self, selection: $selection) { e in row(e) }
-                .contextMenu(forSelectionType: Entry.self) { _ in } primaryAction: { items in
-                    if let e = items.first, e.kind == .directory { model.currentPath = e.path; selection = nil }
+    @ViewBuilder private var browser: some View {
+        if model.isLoading {
+            ProgressView()
+        } else if model.snapshots.isEmpty {
+            ContentUnavailableView("Nessun backup", systemImage: "externaldrive.badge.questionmark",
+                                   description: Text("I backup di questo Mac compariranno qui dopo il primo salvataggio."))
+        } else if model.selectedID == nil {
+            ContentUnavailableView("Scegli un backup", systemImage: "clock.arrow.circlepath",
+                                   description: Text("Seleziona una data nella barra laterale."))
+        } else if model.selected == nil {
+            ProgressView() // the chosen backup's index is still loading
+        } else {
+            Table(model.children(), selection: $entryID) {
+                TableColumn("Nome") { e in
+                    HStack(spacing: 6) {
+                        icon(e)
+                        Text(e.name).lineLimit(1).truncationMode(.middle)
+                        switch Restorer.status(of: e) {
+                        case .modified: Tag(text: "modificato")
+                        case .missing: Tag(text: "non più presente oggi")
+                        case .unchanged: EmptyView()
+                        }
+                    }
                 }
-        }
-    }
-
-    private var breadcrumb: some View {
-        HStack(spacing: 4) {
-            let parts = model.currentPath.split(separator: "/").map(String.init)
-            Button((model.source.map { ($0 as NSString).lastPathComponent }) ?? "—") { model.currentPath = ""; selection = nil }
-            ForEach(parts.indices, id: \.self) { i in
-                Image(systemName: "chevron.right").foregroundStyle(.secondary)
-                Button(parts[i]) { model.currentPath = parts[...i].joined(separator: "/"); selection = nil }
+                TableColumn("Dimensione") { e in
+                    Text(e.kind == .file ? ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file) : "—")
+                        .foregroundStyle(.secondary).monospacedDigit()
+                }
+                .width(min: 70, ideal: 90, max: 120)
+                TableColumn("Modificato") { e in
+                    Text(e.mtime.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary).monospacedDigit()
+                }
+                .width(min: 120, ideal: 150, max: 200)
             }
-            Spacer()
-            if let s = model.selected { Text(s.date.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary) }
-        }
-        .buttonStyle(.link)
-    }
-
-    private func row(_ e: Entry) -> some View {
-        HStack {
-            Image(systemName: e.kind == .directory ? "folder" : e.kind == .symlink ? "arrow.turn.up.right" : "doc")
-            Text(e.name)
-            switch Restorer.status(of: e) {
-            case .modified: Tag(text: "modificato")
-            case .missing: Tag(text: "non più presente oggi")
-            case .unchanged: EmptyView()
+            .contextMenu(forSelectionType: Entry.ID.self) { ids in
+                if let e = ids.first.flatMap(entry), let id = model.selectedID {
+                    rowMenu(snapshotID: id, entry: e)
+                }
+            } primaryAction: { ids in
+                if let e = ids.first.flatMap(entry), e.kind == .directory { enter(e) }
             }
-            Spacer()
-            if e.kind == .file { Text(ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file)).foregroundStyle(.secondary) }
-            Text(e.mtime.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary).frame(width: 150, alignment: .trailing)
         }
     }
 
     private var results: some View {
-        VStack {
-            if let busy = model.busy { ProgressView(busy).padding() }
-            List(model.results, id: \.self, selection: $hit) { h in
-                HStack {
-                    Image(systemName: h.entry.kind == .directory ? "folder" : "doc")
-                    VStack(alignment: .leading) {
-                        Text(h.entry.name)
-                        Text(h.entry.path).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text(Snapshot.date(fromID: h.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? "").foregroundStyle(.secondary)
-                }
+        Table(model.results, selection: $hit) {
+            TableColumn("Nome") { h in
+                HStack(spacing: 6) { icon(h.entry); Text(h.entry.name).lineLimit(1) }
             }
+            TableColumn("Percorso") { h in
+                Text(((h.entry.source as NSString).lastPathComponent as NSString).appendingPathComponent(h.entry.path))
+                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            TableColumn("Backup del") { h in
+                Text(Snapshot.date(fromID: h.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? "")
+                    .foregroundStyle(.secondary).monospacedDigit()
+            }
+            .width(min: 120, ideal: 150, max: 200)
         }
+        .contextMenu(forSelectionType: SearchHit.self) { hits in
+            if let h = hits.first { rowMenu(snapshotID: h.snapshotID, entry: h.entry) }
+        }
+        .overlay {
+            if model.results.isEmpty, model.busy == nil { ContentUnavailableView.search(text: model.search) }
+        }
+    }
+
+    @ViewBuilder private func rowMenu(snapshotID: String, entry e: Entry) -> some View {
+        if e.kind == .directory, model.search.isEmpty { Button("Apri") { enter(e) } }
+        Button("Ripristina") { model.restore(snapshotID: snapshotID, source: e.source, path: e.path, mode: .besideOriginal) }
+        Button("Ripristina in…") { restoreInto(snapshotID: snapshotID, source: e.source, path: e.path) }
+        if e.kind == .file {
+            Divider()
+            Button("Mostra versioni del file") { versionsOf = e }
+        }
+    }
+
+    private func icon(_ e: Entry) -> some View {
+        Image(systemName: e.kind == .directory ? "folder.fill" : e.kind == .symlink ? "arrow.turn.up.right" : "doc")
+            .foregroundStyle(e.kind == .directory ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .frame(width: 16)
+    }
+
+    private func entry(_ id: Entry.ID) -> Entry? { model.children().first { $0.id == id } }
+
+    private func open(_ path: String) {
+        model.currentPath = path
+        entryID = nil
+    }
+
+    /// Works at the top level too, where the rows are the saved folders.
+    private func enter(_ e: Entry) {
+        model.source = e.source
+        open(e.path)
+    }
+
+    private var rootName: String { model.source.map { ($0 as NSString).lastPathComponent } ?? "Tutte le cartelle" }
+
+    private var title: String {
+        guard model.search.isEmpty else { return "Ricerca" }
+        return model.currentPath.isEmpty ? rootName : (model.currentPath as NSString).lastPathComponent
+    }
+
+    private var subtitle: String {
+        if let busy = model.busy { return busy }
+        if !model.search.isEmpty { return model.results.count == 1 ? "1 risultato" : "\(model.results.count) risultati" }
+        return model.selected.map { "Backup del " + $0.date.formatted(date: .abbreviated, time: .shortened) } ?? ""
     }
 
     // MARK: actions
 
-    /// What the buttons act on: a search hit, the selected item, or the folder being viewed.
+    /// What the toolbar buttons act on: a search hit, the selected item, or the folder being viewed.
     private var target: (snapshotID: String, source: String, path: String, entry: Entry?)? {
         if !model.search.isEmpty {
             return hit.map { ($0.snapshotID, $0.entry.source, $0.entry.path, $0.entry) }
         }
-        guard let id = model.selectedID, let source = model.source else { return nil }
-        if let e = selection { return (id, source, e.path, e) }
+        guard let id = model.selectedID else { return nil }
+        if let e = selection { return (id, e.source, e.path, e) }
+        guard let source = model.source else { return nil } // top level, nothing selected
         return (id, source, model.currentPath, nil)
-    }
-
-    private var actions: some View {
-        HStack {
-            if let busy = model.busy, model.search.isEmpty { ProgressView().controlSize(.small); Text(busy) }
-            Spacer()
-            Button("Mostra versioni del file", systemImage: "clock") { versionsOf = target?.entry }
-                .disabled(target?.entry?.kind != .file)
-                .glassButton()
-            Button("Ripristina in…", systemImage: "folder") { if let t = target { restoreInto(path: t.path) } }
-                .disabled(target == nil || model.busy != nil)
-                .glassButton()
-            Button("Ripristina", systemImage: "arrow.uturn.backward") {
-                guard let t = target else { return }
-                if t.path.isEmpty { confirmWhole = true } else { restore(path: t.path, mode: .besideOriginal) }
-            }
-            .glassButton(prominent: true)
-            .keyboardShortcut(.defaultAction)
-            .disabled(target == nil || model.busy != nil)
-        }
     }
 
     private func restore(path: String, mode: RestoreMode) {
@@ -159,13 +226,18 @@ struct RestoreView: View {
     }
 
     private func restoreInto(path: String) {
+        guard let t = target else { return }
+        restoreInto(snapshotID: t.snapshotID, source: t.source, path: path)
+    }
+
+    private func restoreInto(snapshotID: String, source: String, path: String) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.prompt = "Ripristina qui"
         guard panel.runModal() == .OK, let dir = panel.url else { return }
-        restore(path: path, mode: .into(dir))
+        model.restore(snapshotID: snapshotID, source: source, path: path, mode: .into(dir))
     }
 
     // MARK: sidebar grouping
@@ -192,8 +264,9 @@ struct RestoreView: View {
 private struct Tag: View {
     let text: String
     var body: some View {
+        // a fill, not glass: glass is for controls, and dozens of glass views in a scrolling table glitch
         Text(text).font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
-            .glassPanel(in: Capsule())
+            .background(.quaternary, in: Capsule())
     }
 }
 

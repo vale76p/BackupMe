@@ -78,30 +78,24 @@ struct MenuContent: View {
                             Text("Sospeso").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
                                 .padding(.horizontal, 6).glassPanel(in: Capsule())
                         }
+                        Spacer(minLength: 0)
+                        if model.notificationsDenied {
+                            Image(systemName: "bell.slash").foregroundStyle(.secondary)
+                                .help("Notifiche disattivate: gli errori non verranno segnalati")
+                        }
+                        if let r = model.lastReport, !r.warnings.isEmpty { warningsMenu(r.warnings) }
                     }
-                    Text(model.statusText).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                    // one line, full text on hover: a two-line error would grow the panel
+                    Text(model.statusText).font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                        .lineLimit(1).truncationMode(.middle).help(model.statusText)
                 }
-            }
-            if model.notificationsDenied { notice("Notifiche disattivate: gli errori non verranno segnalati", "bell.slash") }
-            if let r = model.lastReport, !r.warnings.isEmpty {
-                Menu("Avvisi dell'ultimo backup (\(r.warnings.count))", systemImage: "exclamationmark.bubble") {
-                    ForEach(Array(r.warnings.prefix(15).enumerated()), id: \.offset) { Text($0.element) }
-                    if r.warnings.count > 15 { Text("… e altri \(r.warnings.count - 15)") }
-                    Divider()
-                    Button("Copia tutti gli avvisi") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(r.warnings.joined(separator: "\n"), forType: .string)
-                    }
-                }
-                .fixedSize()
             }
 
-            Group {
-                if model.isRunning {
-                    Button { model.cancelBackup() } label: { wide("Interrompi backup", "stop.fill") }
-                } else {
-                    Button { model.backupNow() } label: { wide("Esegui backup ora", "play.fill") }
-                }
+            // one button whose label changes: swapping two buttons makes the glass flicker
+            Button {
+                if model.isRunning { model.cancelBackup() } else { model.backupNow() }
+            } label: {
+                wide(model.isRunning ? "Interrompi backup" : "Esegui backup ora", model.isRunning ? "stop.fill" : "play.fill")
             }
             .glassButton(prominent: true)
             .controlSize(.large)
@@ -130,8 +124,23 @@ struct MenuContent: View {
         }
     }
 
-    private func notice(_ text: String, _ icon: String) -> some View {
-        Label(text, systemImage: icon).font(.caption).foregroundStyle(.secondary)
+    private func warningsMenu(_ warnings: [String]) -> some View {
+        Menu {
+            ForEach(Array(warnings.prefix(15).enumerated()), id: \.offset) { Text($0.element) }
+            if warnings.count > 15 { Text("… e altri \(warnings.count - 15)") }
+            Divider()
+            Button("Copia tutti gli avvisi") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(warnings.joined(separator: "\n"), forType: .string)
+            }
+        } label: {
+            Label("\(warnings.count)", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .controlSize(.small)
+        .fixedSize()
+        .help("Avvisi dell'ultimo backup")
     }
 
     private func wide(_ title: String, _ icon: String) -> some View {

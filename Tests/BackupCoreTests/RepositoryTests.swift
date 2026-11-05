@@ -13,6 +13,18 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: missing.path))
     }
 
+    @Test func pickingTheArchiveOrItsFolderMeansTheDestination() throws {
+        let r = try Repository(destination: dest, computerName: "Mac")
+        let d = dest.standardizedFileURL.path
+        #expect(Repository.destination(for: r.root).path == d)
+        #expect(Repository.destination(for: r.root.deletingLastPathComponent()).path == d)
+        #expect(Repository.destination(for: dest).path == d)
+        // a folder merely named BackupMe, with no archive in it, is taken as is
+        let other = tmp().appending(path: "BackupMe", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        #expect(Repository.destination(for: other).path == other.standardizedFileURL.path)
+    }
+
     @Test func createsLayout() throws {
         let r = try Repository(destination: dest, computerName: "Mac")
         #expect(r.root.path.hasSuffix("BackupMe/Mac"))

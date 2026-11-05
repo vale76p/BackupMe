@@ -2,7 +2,11 @@ import AppKit
 import BackupCore
 import Foundation
 
-struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
+struct SearchHit: Hashable, Identifiable {
+    var snapshotID: String
+    var entry: Entry
+    var id: Self { self }
+}
 
 @MainActor @Observable final class RestoreModel {
     let app: AppModel
@@ -16,6 +20,8 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
     var results: [SearchHit] = []
     var busy: String?
     var error: String?
+    /// True until the snapshot list arrives: "no backups" must not flash while it loads.
+    var isLoading = true
     /// Only the few snapshots opened recently stay in memory: one manifest can be tens of MB.
     private var loaded: [String: Snapshot] = [:]
     private var loadOrder: [String] = []
@@ -42,7 +48,7 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
     }
 
     func reload() {
-        guard let dest = destination else { error = "Nessuna destinazione configurata"; return }
+        guard let dest = destination else { error = "Nessuna destinazione configurata"; isLoading = false; return }
         computers = Repository.computers(in: dest)
         if !computers.contains(computer), let first = computers.first { computer = first; return }
         generation += 1
@@ -54,13 +60,17 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
         index = [:]
         snapshots = []
         selectedID = nil
+        isLoading = true
         Task {
             do {
                 let ids = try await withRepository { try $0.snapshotIDs() }
                 guard gen == generation else { return }
                 snapshots = ids.reversed().compactMap { id in Snapshot.date(fromID: id).map { (id, $0) } }
                 selectedID = snapshots.first?.id
+            } catch RepositoryError.destinationMissing where computers.isEmpty {
+                // no archive yet: the window shows its empty state, not an alert
             } catch { if gen == generation { self.error = AppModel.describe(error) } }
+            if gen == generation { isLoading = false }
         }
     }
 
@@ -84,18 +94,21 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
         }
     }
 
+    /// nil source = the top level, which lists the saved folders themselves.
     private func fixSource() {
-        if source == nil || !sources.contains(source!) { source = sources.first; currentPath = "" }
+        if let s = source, !sources.contains(s) { source = nil; currentPath = "" }
     }
 
     func children() -> [Entry] {
-        guard let id = selectedID, let source else { return [] }
-        return index[id]?[source]?[currentPath] ?? []
+        guard let id = selectedID else { return [] }
+        return index[id]?[source ?? ""]?[source == nil ? "" : currentPath] ?? []
     }
 
     nonisolated private static func buildIndex(_ s: Snapshot) -> [String: [String: [Entry]]] {
         var result: [String: [String: [Entry]]] = [:]
-        for e in s.entries where !e.path.isEmpty {
+        for e in s.entries {
+            // the saved folders themselves go under "" (never an absolute source path): the top level
+            if e.path.isEmpty { result["", default: [:]]["", default: []].append(e); continue }
             result[e.source, default: [:]][(e.path as NSString).deletingLastPathComponent, default: []].append(e)
         }
         for (source, dirs) in result {
@@ -117,6 +130,7 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
         guard !query.isEmpty else { results = []; busy = nil; return }
         let ids = snapshots.map(\.id)
         let gen = generation
+        busy = "Cerco…" // set now: during the debounce the window would show "no results"
         searchTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
             var hits: [SearchHit] = []

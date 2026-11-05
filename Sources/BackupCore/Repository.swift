@@ -42,6 +42,20 @@ public final class Repository {
         }
     }
 
+    /// Picking the BackupMe folder, or an archive inside it, means the folder holding them:
+    /// taken literally, a new archive would be nested inside the old one and its backups would vanish from view.
+    public static func destination(for picked: URL) -> URL {
+        var u = picked.standardizedFileURL
+        if FileManager.default.fileExists(atPath: u.appending(path: "repo.json").path),
+           u.deletingLastPathComponent().lastPathComponent == "BackupMe" {
+            u = u.deletingLastPathComponent()
+        }
+        if u.lastPathComponent == "BackupMe", !computers(in: u.deletingLastPathComponent()).isEmpty {
+            u = u.deletingLastPathComponent()
+        }
+        return u
+    }
+
     public static func computers(in destination: URL) -> [String] {
         let base = destination.appending(path: "BackupMe", directoryHint: .isDirectory)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []

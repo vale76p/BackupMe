@@ -209,7 +209,8 @@ struct SettingsView: View {
     }
 
     /// A destination may not contain a source or sit inside one (it would back itself up).
-    private func setDestination(_ url: URL) {
+    private func setDestination(_ picked: URL) {
+        let url = Repository.destination(for: picked)
         if let err = BackupEngine.validate(sources: model.settings.sources.map { URL(fileURLWithPath: $0) }, repositoryRoot: url) {
             sourceError = AppModel.describe(err)
             return
