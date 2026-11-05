@@ -137,6 +137,7 @@ public final class Repository {
         return String(cString: buf)
     }
 
+    @discardableResult
     public func withLock<T>(_ body: () throws -> T) throws -> T {
         try acquireLock(retry: true)
         defer { try? fm.removeItem(at: lockURL) }
