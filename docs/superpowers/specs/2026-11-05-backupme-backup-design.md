@@ -20,7 +20,10 @@ Sul Mac aziendale (gestito da MDM) Time Machine è disabilitato. I progetti e il
 
 ## Non-obiettivi (per ora)
 
-- **Client git stile GitHub Desktop** → secondo modulo, con un suo design dopo questo. Qui nessun codice git.
+- **Git, rinviato a una fase successiva** (deciso con l'utente il 2026-11-06). La richiesta originale ("un cloud o un'altra cartella o git") comprende due cose, entrambe volute ma non ora:
+  - git aziendale configurabile come **destinazione** dei backup;
+  - **modulo grafico** stile GitHub Desktop sul git aziendale.
+  Ognuna avrà un suo design. Qui nessun codice git (le cartelle `.git` dei progetti però vengono salvate).
 - Cifratura dell'archivio (deciso: in chiaro).
 - Login/API Microsoft: OneDrive è solo una cartella; carica il client OneDrive.
 - Più destinazioni contemporanee, pianificazioni diverse per cartella.
