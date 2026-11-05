@@ -14,7 +14,7 @@ struct BackupMeApp: App {
         .menuBarExtraStyle(.menu)
 
         Window("Impostazioni BackupMe", id: "settings") {
-            Text("Impostazioni").padding()
+            SettingsView(model: model)
         }
         .windowResizability(.contentSize)
 
