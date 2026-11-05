@@ -19,7 +19,7 @@ struct BackupMeApp: App {
         .windowResizability(.contentSize)
 
         Window("Sfoglia backup", id: "restore") {
-            Text("Ripristino").padding()
+            RestoreView(model: RestoreModel(app: model))
         }
     }
 }
