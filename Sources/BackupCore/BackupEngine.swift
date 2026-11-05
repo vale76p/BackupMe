@@ -29,9 +29,9 @@ struct FileStat {
     var mtime: Date
     var mode: UInt16
 
-    init?(path: String) {
+    init?(path: String, followSymlink: Bool = false) {
         var st = stat()
-        guard lstat(path, &st) == 0 else { return nil }
+        guard (followSymlink ? stat(path, &st) : lstat(path, &st)) == 0 else { return nil }
         switch st.st_mode & S_IFMT {
         case S_IFDIR: kind = .directory
         case S_IFLNK: kind = .symlink
@@ -95,7 +95,7 @@ public final class BackupEngine {
                 case .symlink:
                     linkTarget = try? FileManager.default.destinationOfSymbolicLink(atPath: full)
                 case .file:
-                    guard let r = storeFile(full, stat: st, warnings: &warnings) else { continue }
+                    guard let r = try storeFile(full, stat: st, warnings: &warnings) else { continue }
                     hash = r.hash; st = r.stat; newBytes += r.written; fileCount += 1
                 }
                 entries.append(Entry(source: item.source, path: item.path, kind: st.kind, hash: hash, size: st.size,
@@ -111,10 +111,11 @@ public final class BackupEngine {
         }
     }
 
-    private func scan(source: String, rel: String, into found: inout [(source: String, path: String, stat: FileStat)],
-                      warnings: inout [String]) {
+    private func scan(source: String, rel: String, insideGit: Bool = false,
+                      into found: inout [(source: String, path: String, stat: FileStat)], warnings: inout [String]) {
         let full = rel.isEmpty ? source : source + "/" + rel
-        guard let st = FileStat(path: full) else { return }
+        // the source folder itself may be a symlink to the real folder
+        guard let st = FileStat(path: full, followSymlink: rel.isEmpty) else { return }
         found.append((source, rel, st))
         guard st.kind == .directory else { return }
         let names: [String]
@@ -122,13 +123,16 @@ public final class BackupEngine {
             warnings.append("\(full): \(error.localizedDescription)")
             return
         }
-        for name in names.sorted() where !excludes.excludes(name: name) {
-            scan(source: source, rel: rel.isEmpty ? name : rel + "/" + name, into: &found, warnings: &warnings)
+        // excludes never apply inside .git: a branch named "build" is a file under .git/refs/heads
+        for name in names.sorted() where insideGit || !excludes.excludes(name: name) {
+            scan(source: source, rel: rel.isEmpty ? name : rel + "/" + name, insideGit: insideGit || name == ".git",
+                 into: &found, warnings: &warnings)
         }
     }
 
-    /// Hashes and stores one file. Returns nil (with a warning) if unreadable or changing while read.
-    private func storeFile(_ path: String, stat initial: FileStat, warnings: inout [String])
+    /// Hashes and stores one file. Returns nil (with a warning) if the source is unreadable or changing while read;
+    /// throws if the archive can't be written (disk full, destination gone), which fails the whole backup.
+    private func storeFile(_ path: String, stat initial: FileStat, warnings: inout [String]) throws
         -> (hash: String, stat: FileStat, written: Int64)? {
         if let h = cache.lookup(path: path, inode: initial.inode, size: initial.size, mtime: initial.mtime),
            repository.hasObject(h) {
@@ -136,22 +140,23 @@ public final class BackupEngine {
         }
         var st = initial
         for attempt in 0..<2 {
+            let data: Data
             do {
                 // shortcut: whole file mapped in memory; for multi-GB files switch to streamed chunks.
-                let data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
-                let hash = sha256Hex(data)
-                guard let after = FileStat(path: path), after.size == st.size, after.mtime == st.mtime else {
-                    if attempt == 0, let again = FileStat(path: path) { st = again; continue }
-                    warnings.append("\(path): modificato durante la lettura, saltato")
-                    return nil
-                }
-                let written = repository.hasObject(hash) ? 0 : try repository.putObject(data, hash: hash)
-                cache.store(path: path, inode: st.inode, size: st.size, mtime: st.mtime, hash: hash)
-                return (hash, st, written)
+                data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
             } catch {
                 warnings.append("\(path): \(error.localizedDescription)")
                 return nil
             }
+            let hash = sha256Hex(data)
+            guard let after = FileStat(path: path), after.size == st.size, after.mtime == st.mtime else {
+                if attempt == 0, let again = FileStat(path: path) { st = again; continue }
+                warnings.append("\(path): modificato durante la lettura, saltato")
+                return nil
+            }
+            let written = repository.hasObject(hash) ? 0 : try repository.putObject(data, hash: hash)
+            cache.store(path: path, inode: st.inode, size: st.size, mtime: st.mtime, hash: hash)
+            return (hash, st, written)
         }
         return nil
     }

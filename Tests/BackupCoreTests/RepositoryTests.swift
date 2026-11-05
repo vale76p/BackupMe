@@ -89,7 +89,7 @@ import Testing
     @Test func staleLockRemoved() throws {
         let r = try Repository(destination: dest, computerName: "Mac")
         let lock = r.root.appending(path: "lock")
-        let json = #"{"pid":999999,"host":"\#(Repository.hostName)"}"#
+        let json = #"{"pid":999999,"host":"Mac"}"#
         try Data(json.utf8).write(to: lock)
         var ran = false
         try r.withLock { ran = true }
