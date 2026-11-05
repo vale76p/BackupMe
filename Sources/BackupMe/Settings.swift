@@ -50,7 +50,11 @@ enum AppPaths {
     }
     static var history: URL { support.appending(path: "history.json") }
     static func hashCache(_ archive: String) -> URL { support.appending(path: "hashcache-\(archive).json") }
-    static func refsCache(_ archive: String) -> URL { support.appending(path: "refs-\(archive)", directoryHint: .isDirectory) }
+    /// One per destination: its manifests vanish from the listing whenever the user switches to another one.
+    static func refsCache(_ archive: String, destination: String) -> URL {
+        let key = sha256Hex(Data(destination.utf8)).prefix(12)
+        return support.appending(path: "refs-\(archive)-\(key)", directoryHint: .isDirectory)
+    }
 
     /// This Mac's archive folder name: computer name plus a piece of the hardware UUID, fixed at first use.
     /// Unique per Mac (two Macs with the same name never share an archive) and stable across renames.

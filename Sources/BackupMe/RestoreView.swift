@@ -20,10 +20,11 @@ struct RestoreView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } detail: {
-            VStack(spacing: 0) {
+            Group {
                 if model.search.isEmpty { browser } else { results }
-                Divider()
-                actions.padding(10)
+            }
+            .safeAreaInset(edge: .bottom) {
+                actions.padding(.horizontal, 10).padding(.vertical, 8).glassPanel(in: Capsule()).padding(12)
             }
         }
         .toolbar {
@@ -63,7 +64,10 @@ struct RestoreView: View {
 
     private var browser: some View {
         VStack(alignment: .leading, spacing: 0) {
-            breadcrumb.padding(8)
+            breadcrumb
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .glassPanel(in: Capsule())
+                .padding(8)
             List(model.children(), id: \.self, selection: $selection) { e in row(e) }
                 .contextMenu(forSelectionType: Entry.self) { _ in } primaryAction: { items in
                     if let e = items.first, e.kind == .directory { model.currentPath = e.path; selection = nil }
@@ -133,14 +137,17 @@ struct RestoreView: View {
         HStack {
             if let busy = model.busy, model.search.isEmpty { ProgressView().controlSize(.small); Text(busy) }
             Spacer()
-            Button("Mostra versioni del file") { versionsOf = target?.entry }
+            Button("Mostra versioni del file", systemImage: "clock") { versionsOf = target?.entry }
                 .disabled(target?.entry?.kind != .file)
-            Button("Ripristina in…") { if let t = target { restoreInto(path: t.path) } }
+                .glassButton()
+            Button("Ripristina in…", systemImage: "folder") { if let t = target { restoreInto(path: t.path) } }
                 .disabled(target == nil || model.busy != nil)
-            Button("Ripristina") {
+                .glassButton()
+            Button("Ripristina", systemImage: "arrow.uturn.backward") {
                 guard let t = target else { return }
                 if t.path.isEmpty { confirmWhole = true } else { restore(path: t.path, mode: .besideOriginal) }
             }
+            .glassButton(prominent: true)
             .keyboardShortcut(.defaultAction)
             .disabled(target == nil || model.busy != nil)
         }
@@ -186,7 +193,7 @@ private struct Tag: View {
     let text: String
     var body: some View {
         Text(text).font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
-            .background(.quaternary, in: Capsule())
+            .glassPanel(in: Capsule())
     }
 }
 
@@ -204,14 +211,15 @@ private struct VersionsSheet: View {
                     Text(Snapshot.date(fromID: v.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? v.snapshotID)
                     Text(ByteCountFormatter.string(fromByteCount: v.entry.size, countStyle: .file)).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Ripristina") {
+                    Button("Ripristina", systemImage: "arrow.uturn.backward") {
                         model.restore(snapshotID: v.snapshotID, source: v.entry.source, path: v.entry.path, mode: .besideOriginal)
                         dismiss()
                     }
+                    .glassButton()
                 }
             }
             .frame(minHeight: 200)
-            HStack { Spacer(); Button("Chiudi") { dismiss() }.keyboardShortcut(.cancelAction) }
+            HStack { Spacer(); Button("Chiudi") { dismiss() }.keyboardShortcut(.cancelAction).glassButton() }
         }
         .padding()
         .frame(width: 460)

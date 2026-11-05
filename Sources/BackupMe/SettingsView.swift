@@ -10,55 +10,119 @@ struct SettingsView: View {
     @State private var usage = "Calcolo…"
     @State private var excludesText = ""
 
+    @State private var page: Page? = .folders
+
+    enum Page: String, CaseIterable, Identifiable {
+        case folders, archive, schedule, retention, excludes
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .folders: "Cartelle"
+            case .archive: "Destinazione e spazio"
+            case .schedule: "Pianificazione"
+            case .retention: "Conservazione"
+            case .excludes: "Esclusioni"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .folders: "folder.fill"
+            case .archive: "externaldrive.fill"
+            case .schedule: "calendar.badge.clock"
+            case .retention: "clock.arrow.circlepath"
+            case .excludes: "nosign"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .folders: .blue
+            case .archive: .indigo
+            case .schedule: .orange
+            case .retention: .green
+            case .excludes: .red
+            }
+        }
+    }
+
     var body: some View {
-        Form {
-            Section("Cartelle da salvare") {
+        NavigationSplitView {
+            List(Page.allCases, selection: $page) { p in
+                Label {
+                    Text(p.title)
+                } icon: {
+                    Image(systemName: p.icon)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(p.color.gradient, in: RoundedRectangle(cornerRadius: 6))
+                }
+                .padding(.vertical, 2)
+            }
+            .navigationSplitViewColumnWidth(200)
+            .toolbar(removing: .sidebarToggle)
+        } detail: {
+            Form { content(for: page ?? .folders) }
+                .formStyle(.grouped)
+                .navigationTitle((page ?? .folders).title)
+        }
+        .frame(width: 720, height: 500)
+        .onAppear {
+            excludesText = model.settings.excludes.joined(separator: "\n")
+            refreshUsage()
+        }
+    }
+
+    @ViewBuilder private func content(for page: Page) -> some View {
+        switch page {
+        case .folders:
+            Section {
+                if model.settings.sources.isEmpty {
+                    Text("Nessuna cartella: aggiungi quelle dei progetti da salvare.").foregroundStyle(.secondary)
+                }
                 ForEach(model.settings.sources, id: \.self) { path in
                     HStack {
-                        Image(systemName: "folder")
-                        Text(path).lineLimit(1).truncationMode(.middle)
+                        Image(systemName: "folder.fill").foregroundStyle(.tint)
+                        VStack(alignment: .leading) {
+                            Text((path as NSString).lastPathComponent)
+                            Text((path as NSString).abbreviatingWithTildeInPath)
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
                         Spacer()
                         Button(role: .destructive) { model.settings.sources.removeAll { $0 == path } } label: {
                             Image(systemName: "minus.circle")
                         }.buttonStyle(.borderless)
                     }
                 }
-                Button("Aggiungi cartelle…", action: addSources)
+                // controls go in the section body: footers of a grouped form don't take clicks reliably
+                Button("Aggiungi cartelle…", systemImage: "plus", action: addSources).glassButton()
+            } header: {
+                Text("Cartelle da salvare")
+            } footer: {
                 if let sourceError { Text(sourceError).foregroundStyle(.red).font(.caption) }
             }
 
-            Section("Destinazione") {
+        case .archive:
+            Section {
                 HStack {
-                    Text(model.settings.destination ?? "Nessuna").lineLimit(1).truncationMode(.middle)
+                    Image(systemName: "externaldrive.fill").foregroundStyle(.tint)
+                    Text(model.settings.destination.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "Nessuna")
+                        .lineLimit(1).truncationMode(.middle)
                     Spacer()
-                    Button("Scegli…", action: chooseDestination)
+                    Button("Scegli…", action: chooseDestination).glassButton()
                 }
                 if model.settings.destination == nil {
                     // personal and company OneDrive can both be present: offer each one
                     ForEach(Self.oneDriveFolders, id: \.self) { od in
-                        Button("Usa \(od.lastPathComponent)") { setDestination(od) }
+                        Button("Usa \(od.lastPathComponent)", systemImage: "cloud") { setDestination(od) }.glassButton()
                     }
                 }
-            }
-
-            Section("Pianificazione") {
-                Picker("Backup ogni", selection: $model.settings.intervalHours) {
-                    ForEach(AppSettings.intervals, id: \.self) { Text($0 == 1 ? "1 ora" : "\($0) ore").tag($0) }
-                }
-                Toggle("Avvia al login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, on in
-                        do { try SystemServices.setLaunchAtLogin(on); loginError = nil } catch {
-                            loginError = error.localizedDescription
-                            launchAtLogin = SystemServices.launchAtLogin
-                        }
-                    }
-                if let loginError { Text(loginError).foregroundStyle(.red).font(.caption) }
-            }
-
-            Section("Conservazione: tutti i backup delle ultime 24 ore, più l'ultimo di ogni…") {
-                Stepper("giorno, per gli ultimi \(model.settings.retention.days) giorni", value: $model.settings.retention.days, in: 0...90)
-                Stepper("settimana, per le ultime \(model.settings.retention.weeks) settimane", value: $model.settings.retention.weeks, in: 0...52)
-                Stepper("mese, per gli ultimi \(model.settings.retention.months) mesi", value: $model.settings.retention.months, in: 0...120)
+            } header: {
+                Text("Destinazione")
+            } footer: {
+                if let sourceError { Text(sourceError).foregroundStyle(.red).font(.caption) }
             }
 
             Section("Spazio") {
@@ -70,24 +134,49 @@ struct SettingsView: View {
                                                           set: { model.settings.capGB = max($0, 0.1) }),
                               format: .number)
                 }
-                Text(usage).foregroundStyle(.secondary).font(.caption)
+                Text(usage).foregroundStyle(.secondary)
             }
 
-            Section("Esclusioni: un nome di cartella per riga (es. node_modules); i pattern con * o che iniziano con . valgono anche per i file (es. *.log). Mai applicate dentro .git") {
+        case .schedule:
+            Section {
+                Picker("Backup ogni", selection: $model.settings.intervalHours) {
+                    ForEach(AppSettings.intervals, id: \.self) { Text($0 == 1 ? "1 ora" : "\($0) ore").tag($0) }
+                }
+                Toggle("Avvia al login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, on in
+                        do { try SystemServices.setLaunchAtLogin(on); loginError = nil } catch {
+                            loginError = error.localizedDescription
+                            launchAtLogin = SystemServices.launchAtLogin
+                        }
+                    }
+            } footer: {
+                if let loginError { Text(loginError).foregroundStyle(.red).font(.caption) }
+            }
+
+        case .retention:
+            Section {
+                Stepper("giorno, per gli ultimi \(model.settings.retention.days) giorni", value: $model.settings.retention.days, in: 0...90)
+                Stepper("settimana, per le ultime \(model.settings.retention.weeks) settimane", value: $model.settings.retention.weeks, in: 0...52)
+                Stepper("mese, per gli ultimi \(model.settings.retention.months) mesi", value: $model.settings.retention.months, in: 0...120)
+            } header: {
+                Text("Tutti i backup delle ultime 24 ore, più l'ultimo di ogni…")
+            }
+
+        case .excludes:
+            Section {
                 TextEditor(text: $excludesText)
                     .font(.system(.body, design: .monospaced))
-                    .frame(minHeight: 120)
+                    .frame(minHeight: 220)
                     .onChange(of: excludesText) { _, text in
                         model.settings.excludes = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                     }
-                Button("Ripristina predefinite") { excludesText = ExcludeRules.defaults.joined(separator: "\n") }
+                Button("Ripristina predefinite") { excludesText = ExcludeRules.defaults.joined(separator: "\n") }.glassButton()
+            } header: {
+                Text("Un nome di cartella per riga")
+            } footer: {
+                Text("Es. node_modules. I pattern con * o che iniziano con . valgono anche per i file (es. *.log). Mai applicate dentro .git.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-        }
-        .formStyle(.grouped)
-        .frame(width: 520, height: 680)
-        .onAppear {
-            excludesText = model.settings.excludes.joined(separator: "\n")
-            refreshUsage()
         }
     }
 

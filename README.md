@@ -10,6 +10,8 @@ Backup locale per macOS in stile Time Machine, gestito dalla barra dei menu. Pen
 
 Design: [`docs/superpowers/specs/2026-11-05-backupme-backup-design.md`](docs/superpowers/specs/2026-11-05-backupme-backup-design.md)
 
+Novità per versione: [`CHANGELOG.md`](CHANGELOG.md)
+
 ## Requisiti
 
 macOS 14 o successivo, con Xcode o i Command Line Tools (`xcode-select --install`; su un Mac gestito può servire l'IT per installarli). BackupMe non chiede mai permessi di amministratore.

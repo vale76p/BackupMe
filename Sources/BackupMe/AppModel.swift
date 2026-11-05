@@ -10,8 +10,11 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         didSet {
             settings.save()
             if settings.isConfigured, configuredSince == nil { configuredSince = Date() }
+            // this error is about the settings, not a backup: it goes away as soon as they are complete
+            if settings.isConfigured, status == .failed(Self.notConfigured) { status = .idle }
         }
     }
+    static let notConfigured = "Scegli cartelle e destinazione nelle Impostazioni"
     var status: BackupStatus = .idle
     var history: [BackupReport] = []
     var notificationsDenied = false
@@ -93,7 +96,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     func backupNow() {
         guard !isRunning else { return }
         guard settings.isConfigured else {
-            status = .failed("Scegli cartelle e destinazione nelle Impostazioni")
+            status = .failed(Self.notConfigured)
             return
         }
         lastAttempt = Date()
@@ -148,8 +151,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
             // a failed run may have left orphan objects: collect them (this also frees space when the disk is full)
             let result = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
-                                   refsCache: AppPaths.refsCache(archive), forceGC: report.snapshotID == nil)
-            if result.gcSkipped { report.warnings.append("Pulizia rinviata: l'elenco dei backup su OneDrive è incompleto") }
+                                   refsCache: AppPaths.refsCache(archive, destination: repo.root.path), forceGC: report.snapshotID == nil)
+            if result.gcSkipped { report.warnings.append("Pulizia rinviata: alcuni backup sono spariti dalla destinazione, riprende da sola entro 3 giorni") }
             return (report, result.overCap)
         } catch {
             report.warnings.append("Pulizia non riuscita: \(describe(error))")

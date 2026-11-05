@@ -11,7 +11,7 @@ struct BackupMeApp: App {
         } label: {
             Image(systemName: model.iconName)
         }
-        .menuBarExtraStyle(.menu)
+        .menuBarExtraStyle(.window)
 
         Window("Impostazioni BackupMe", id: "settings") {
             SettingsView(model: model)
@@ -54,31 +54,100 @@ struct MenuContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Text(model.statusText)
-        if model.settings.paused { Text("Backup sospesi") }
-        if model.notificationsDenied { Text("Notifiche disattivate: gli errori non verranno segnalati") }
-        if let r = model.lastReport, !r.warnings.isEmpty {
-            Menu("Avvisi dell'ultimo backup (\(r.warnings.count))") {
-                ForEach(Array(r.warnings.prefix(15).enumerated()), id: \.offset) { Text($0.element) }
-                if r.warnings.count > 15 { Text("… e altri \(r.warnings.count - 15)") }
-                Divider()
-                Button("Copia tutti gli avvisi") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(r.warnings.joined(separator: "\n"), forType: .string)
+        VStack(alignment: .leading, spacing: 12) {
+            // state changes swap content in fixed-size slots: a row appearing would resize the panel
+            // and move the buttons under the pointer
+            HStack(spacing: 10) {
+                Group {
+                    if case .running(let p) = model.status {
+                        ProgressView(value: p).progressViewStyle(.circular).controlSize(.small)
+                    } else {
+                        Image(systemName: model.iconName).font(.title3).foregroundStyle(statusColor)
+                    }
+                }
+                .frame(width: 38, height: 38)
+                .glassPanel(in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("BackupMe").font(.headline)
+                        // nil under `swift run`, which has no Info.plist
+                        if let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+                            Text("v\(v)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        if model.settings.paused {
+                            Text("Sospeso").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                                .padding(.horizontal, 6).glassPanel(in: Capsule())
+                        }
+                    }
+                    Text(model.statusText).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
+            if model.notificationsDenied { notice("Notifiche disattivate: gli errori non verranno segnalati", "bell.slash") }
+            if let r = model.lastReport, !r.warnings.isEmpty {
+                Menu("Avvisi dell'ultimo backup (\(r.warnings.count))", systemImage: "exclamationmark.bubble") {
+                    ForEach(Array(r.warnings.prefix(15).enumerated()), id: \.offset) { Text($0.element) }
+                    if r.warnings.count > 15 { Text("… e altri \(r.warnings.count - 15)") }
+                    Divider()
+                    Button("Copia tutti gli avvisi") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(r.warnings.joined(separator: "\n"), forType: .string)
+                    }
+                }
+                .fixedSize()
+            }
+
+            Group {
+                if model.isRunning {
+                    Button { model.cancelBackup() } label: { wide("Interrompi backup", "stop.fill") }
+                } else {
+                    Button { model.backupNow() } label: { wide("Esegui backup ora", "play.fill") }
+                }
+            }
+            .glassButton(prominent: true)
+            .controlSize(.large)
+
+            HStack(spacing: 8) {
+                tile("Sfoglia", "clock.arrow.circlepath") { show("restore") }
+                tile(model.settings.paused ? "Riprendi" : "Sospendi",
+                     model.settings.paused ? "play.circle" : "pause.circle") { model.settings.paused.toggle() }
+                tile("Impostazioni", "gearshape") { show("settings") }
+            }
+
+            HStack {
+                Spacer()
+                Button("Esci") { NSApp.terminate(nil) }.keyboardShortcut("q").glassButton()
+            }
         }
-        Divider()
-        if model.isRunning {
-            Button("Interrompi backup") { model.cancelBackup() }
-        } else {
-            Button("Esegui backup ora") { model.backupNow() }
+        .padding(14)
+        .frame(width: 300)
+    }
+
+    private var statusColor: Color {
+        switch model.status {
+        case .idle: model.settings.paused ? .secondary : .green
+        case .running: .accentColor
+        case .failed: .red
         }
-        Button("Sfoglia backup…") { show("restore") }
-        Button(model.settings.paused ? "Riprendi backup" : "Sospendi backup") { model.settings.paused.toggle() }
-        Divider()
-        Button("Impostazioni…") { show("settings") }
-        Button("Esci") { NSApp.terminate(nil) }.keyboardShortcut("q")
+    }
+
+    private func notice(_ text: String, _ icon: String) -> some View {
+        Label(text, systemImage: icon).font(.caption).foregroundStyle(.secondary)
+    }
+
+    private func wide(_ title: String, _ icon: String) -> some View {
+        Label(title, systemImage: icon).frame(maxWidth: .infinity)
+    }
+
+    private func tile(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.title3)
+                Text(title).font(.caption)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+        }
+        .glassButton()
     }
 
     private func show(_ id: String) {
