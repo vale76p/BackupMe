@@ -17,7 +17,6 @@ public struct BackupReport: Codable, Sendable {
 }
 
 public enum BackupError: Error, Equatable {
-    case sourceMissing(String)
     case sourceOverlapsDestination(String)
     case cancelled
 }

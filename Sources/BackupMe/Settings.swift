@@ -12,10 +12,26 @@ struct AppSettings: Codable, Equatable {
 
     static let intervals = [1, 2, 4, 6, 12, 24]
 
+    init() {}
+
+    // missing keys keep their defaults, so an update that adds a setting never wipes the others
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sources = try c.decodeIfPresent([String].self, forKey: .sources) ?? sources
+        destination = try c.decodeIfPresent(String.self, forKey: .destination)
+        intervalHours = try c.decodeIfPresent(Int.self, forKey: .intervalHours) ?? intervalHours
+        retention = try c.decodeIfPresent(RetentionPolicy.self, forKey: .retention) ?? retention
+        capGB = try c.decodeIfPresent(Double.self, forKey: .capGB)
+        excludes = try c.decodeIfPresent([String].self, forKey: .excludes) ?? excludes
+        paused = try c.decodeIfPresent(Bool.self, forKey: .paused) ?? paused
+    }
+
     static func load() -> AppSettings {
-        guard let data = UserDefaults.standard.data(forKey: "settings"),
-              let s = try? JSONDecoder().decode(AppSettings.self, from: data) else { return AppSettings() }
-        return s
+        guard let data = UserDefaults.standard.data(forKey: "settings") else { return AppSettings() }
+        if let s = try? JSONDecoder().decode(AppSettings.self, from: data) { return s }
+        // keep what we could not read instead of overwriting it with empty settings on the next save
+        UserDefaults.standard.set(data, forKey: "settings.unreadable")
+        return AppSettings()
     }
 
     func save() {
@@ -33,7 +49,18 @@ enum AppPaths {
         return url
     }
     static var history: URL { support.appending(path: "history.json") }
-    static func hashCache(_ computer: String) -> URL { support.appending(path: "hashcache-\(computer).json") }
-    static func refsCache(_ computer: String) -> URL { support.appending(path: "refs-\(computer)", directoryHint: .isDirectory) }
-    static var computerName: String { Host.current().localizedName ?? "Mac" }
+    static func hashCache(_ archive: String) -> URL { support.appending(path: "hashcache-\(archive).json") }
+    static func refsCache(_ archive: String) -> URL { support.appending(path: "refs-\(archive)", directoryHint: .isDirectory) }
+
+    /// This Mac's archive folder name: computer name plus a piece of the hardware UUID, fixed at first use.
+    /// Unique per Mac (two Macs with the same name never share an archive) and stable across renames.
+    static let archiveName: String = {
+        if let saved = UserDefaults.standard.string(forKey: "archiveName") { return saved }
+        var uuid = uuid_t(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        var wait = timespec(tv_sec: 1, tv_nsec: 0)
+        let hostID = gethostuuid(&uuid, &wait) == 0 ? UUID(uuid: uuid).uuidString : UUID().uuidString
+        let name = "\(Host.current().localizedName ?? "Mac")-\(hostID.prefix(8))"
+        UserDefaults.standard.set(name, forKey: "archiveName")
+        return name
+    }()
 }

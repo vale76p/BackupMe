@@ -6,29 +6,52 @@ import os
 enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
 @MainActor @Observable final class AppModel {
-    var settings = AppSettings.load() { didSet { settings.save() } }
+    var settings = AppSettings.load() {
+        didSet {
+            settings.save()
+            if settings.isConfigured, configuredSince == nil { configuredSince = Date() }
+        }
+    }
     var status: BackupStatus = .idle
     var history: [BackupReport] = []
+    var notificationsDenied = false
 
     // stored apart from history: 50 failed retries would otherwise push it out and silence the 3-day alert
     var lastSuccess = UserDefaults.standard.object(forKey: "lastSuccess") as? Date {
         didSet { UserDefaults.standard.set(lastSuccess, forKey: "lastSuccess") }
     }
+    private var configuredSince = UserDefaults.standard.object(forKey: "configuredSince") as? Date {
+        didSet { UserDefaults.standard.set(configuredSince, forKey: "configuredSince") }
+    }
+    private var overCapNotified = UserDefaults.standard.bool(forKey: "overCapNotified") {
+        didSet { UserDefaults.standard.set(overCapNotified, forKey: "overCapNotified") }
+    }
     var isRunning: Bool { if case .running = status { true } else { false } }
+    var lastReport: BackupReport? { history.last }
 
     private var cancelFlag = OSAllocatedUnfairLock(initialState: false)
     private var lastAttempt: Date?
+    private var lastProgressAt = Date()
     private var lastStaleNotice: Date?
+    private var notifiedErrors = Set<String>()
     private var timer: Timer?
     private let log = Logger(subsystem: "com.vale76p.BackupMe", category: "backup")
 
     static let retryAfterFailure: TimeInterval = 15 * 60
     static let staleAfter: TimeInterval = 3 * 86400
+    static let stuckAfter: TimeInterval = 2 * 3600
 
     init() {
+        SystemServices.quitIfAlreadyRunning()
         if let data = try? Data(contentsOf: AppPaths.history) {
             let dec = JSONDecoder(); dec.dateDecodingStrategy = .secondsSince1970
             history = (try? dec.decode([BackupReport].self, from: data)) ?? []
+        }
+        if settings.isConfigured, configuredSince == nil { configuredSince = Date() }
+        if !UserDefaults.standard.bool(forKey: "loginAgentConfigured") {
+            // a backup service should run without being opened by hand: on by default
+            try? SystemServices.setLaunchAtLogin(true)
+            UserDefaults.standard.set(true, forKey: "loginAgentConfigured")
         }
         SystemServices.requestNotificationPermission()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
@@ -41,20 +64,29 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { MainActor.assumeIsolated { self.tick() } }
     }
 
+    /// Opens an existing archive for browsing; never creates one.
     func repository(computer: String? = nil) throws -> Repository {
         guard let dest = settings.destination else { throw RepositoryError.destinationMissing("") }
-        return try Repository(destination: URL(fileURLWithPath: dest), computerName: computer ?? AppPaths.computerName)
+        return try Repository(destination: URL(fileURLWithPath: dest), computerName: computer ?? AppPaths.archiveName, create: false)
     }
 
     func tick(now: Date = Date()) {
-        if let last = lastSuccess, now.timeIntervalSince(last) > Self.staleAfter,
+        Task { notificationsDenied = !(await SystemServices.notificationsAllowed()) }
+        if isRunning, now.timeIntervalSince(lastProgressAt) > Self.stuckAfter {
+            // a read blocked forever (offline OneDrive file, hung volume) must not stop every later backup
+            cancelBackup()
+            fail("Backup bloccato da più di 2 ore: verrà ritentato")
+        }
+        // stale since the last success, or since setup if none ever succeeded; a future date means a wrong clock
+        if settings.isConfigured, let since = lastSuccess ?? configuredSince,
+           now.timeIntervalSince(since) > Self.staleAfter || since > now.addingTimeInterval(86400),
            lastStaleNotice.map({ now.timeIntervalSince($0) > 86400 }) ?? true {
             lastStaleNotice = now
             SystemServices.notify("BackupMe", "Nessun backup riuscito da più di 3 giorni.")
         }
         guard !settings.paused, settings.isConfigured, !isRunning,
               isBackupDue(lastSuccess: lastSuccess, intervalHours: settings.intervalHours, now: now),
-              lastAttempt.map({ now.timeIntervalSince($0) >= Self.retryAfterFailure }) ?? true else { return }
+              lastAttempt.map({ now.timeIntervalSince($0) >= Self.retryAfterFailure || $0 > now }) ?? true else { return }
         backupNow()
     }
 
@@ -65,17 +97,21 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             return
         }
         lastAttempt = Date()
+        lastProgressAt = Date()
         status = .running(0)
         let flag = OSAllocatedUnfairLock(initialState: false)
         cancelFlag = flag
         let s = settings
-        let computer = AppPaths.computerName
+        let archive = AppPaths.archiveName
         Task.detached(priority: .utility) {
             var lastSent = 0.0
-            let (report, overCap) = Self.perform(settings: s, computer: computer, isCancelled: { flag.withLock { $0 } }) { p in
+            let (report, overCap) = Self.perform(settings: s, archive: archive, isCancelled: { flag.withLock { $0 } }) { p in
                 guard p - lastSent >= 0.01 || p == 1 else { return }
                 lastSent = p
-                Task { @MainActor in if self.isRunning { self.status = .running(p) } }
+                Task { @MainActor in
+                    self.lastProgressAt = Date()
+                    if self.isRunning { self.status = .running(p) }
+                }
             }
             await MainActor.run { self.finish(report, overCap: overCap) }
         }
@@ -83,52 +119,76 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
     func cancelBackup() { cancelFlag.withLock { $0 = true } }
 
-    nonisolated static func perform(settings s: AppSettings, computer: String, isCancelled: @escaping () -> Bool,
-                                    progress: @escaping (Double) -> Void) -> (BackupReport, Bool) {
+    nonisolated static func perform(settings s: AppSettings, archive: String, isCancelled: @escaping () -> Bool,
+                                    progress: @escaping (Double) -> Void) -> (BackupReport, Bool?) {
         let start = Date()
+        func failed(_ error: Error) -> BackupReport {
+            BackupReport(snapshotID: nil, date: start, duration: Date().timeIntervalSince(start), fileCount: 0,
+                         newBytes: 0, warnings: [], error: describe(error))
+        }
+        let repo: Repository
         do {
-            let repo = try Repository(destination: URL(fileURLWithPath: s.destination ?? ""), computerName: computer)
-            let engine = BackupEngine(repository: repo, cache: HashCache(url: AppPaths.hashCache(computer)),
-                                      excludes: ExcludeRules(patterns: s.excludes))
-            var report = try engine.run(sources: s.sources.map { URL(fileURLWithPath: $0) }, now: start,
-                                        progress: progress, isCancelled: isCancelled)
-            var overCap = false
-            do {
-                // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
-                let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
-                overCap = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
-                                    refsCache: AppPaths.refsCache(computer)).overCap
-            } catch {
-                report.warnings.append("Pulizia non riuscita: \(describe(error))")
-            }
-            return (report, overCap)
+            repo = try Repository(destination: URL(fileURLWithPath: s.destination ?? ""), computerName: archive)
         } catch {
-            return (BackupReport(snapshotID: nil, date: start, duration: Date().timeIntervalSince(start), fileCount: 0,
-                                 newBytes: 0, warnings: [], error: describe(error)), false)
+            return (failed(error), nil)
+        }
+        var report: BackupReport
+        do {
+            let engine = BackupEngine(repository: repo, cache: HashCache(url: AppPaths.hashCache(archive)),
+                                      excludes: ExcludeRules(patterns: s.excludes))
+            report = try engine.run(sources: s.sources.map { URL(fileURLWithPath: $0) }, now: start,
+                                    progress: progress, isCancelled: isCancelled)
+        } catch {
+            report = failed(error)
+        }
+        // a partial backup (a source unreadable) must not let retention replace complete snapshots with it
+        guard report.error == nil || report.snapshotID == nil else { return (report, nil) }
+        do {
+            // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
+            let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
+            // a failed run may have left orphan objects: collect them (this also frees space when the disk is full)
+            let result = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
+                                   refsCache: AppPaths.refsCache(archive), forceGC: report.snapshotID == nil)
+            if result.gcSkipped { report.warnings.append("Pulizia rinviata: l'elenco dei backup su OneDrive è incompleto") }
+            return (report, result.overCap)
+        } catch {
+            report.warnings.append("Pulizia non riuscita: \(describe(error))")
+            return (report, nil)
         }
     }
 
-    private func finish(_ report: BackupReport, overCap: Bool) {
-        let previousError = history.last?.error
+    private func finish(_ report: BackupReport, overCap: Bool?) {
         history.append(report)
         if history.count > 50 { history.removeFirst(history.count - 50) }
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .secondsSince1970
         try? enc.encode(history).write(to: AppPaths.history, options: .atomic)
 
         if let err = report.error {
-            status = .failed(err)
-            log.error("backup failed: \(err, privacy: .public)")
-            // one notification per distinct error, not one per retry
-            if err != previousError, err != Self.describe(BackupError.cancelled) { SystemServices.notify("Backup non riuscito", err) }
+            fail(err)
         } else {
             status = .idle
             lastAttempt = nil
             lastSuccess = report.date
+            notifiedErrors = []
             log.info("backup \(report.snapshotID ?? "", privacy: .public): \(report.fileCount) files, \(report.newBytes) new bytes, \(report.warnings.count) warnings")
         }
-        if overCap {
-            SystemServices.notify("BackupMe", "Il tetto è troppo basso per le cartelle selezionate.")
+        if let pruneWarning = report.warnings.last(where: { $0.hasPrefix("Pulizia non riuscita") }) { notifyOnce(pruneWarning) }
+        if let overCap, overCap != overCapNotified {
+            overCapNotified = overCap
+            if overCap { SystemServices.notify("BackupMe", "Il tetto è troppo basso per le cartelle selezionate.") }
         }
+    }
+
+    private func fail(_ message: String) {
+        status = .failed(message)
+        log.error("backup failed: \(message, privacy: .public)")
+        if message != Self.describe(BackupError.cancelled) { notifyOnce(message) }
+    }
+
+    /// One notification per distinct problem until the next successful backup.
+    private func notifyOnce(_ message: String) {
+        guard notifiedErrors.insert(message).inserted else { return }
+        SystemServices.notify("Backup non riuscito", message)
     }
 
     nonisolated static func describe(_ error: Error) -> String {
@@ -136,9 +196,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RepositoryError.destinationMissing(let p): return "Destinazione non trovata: \(p)"
         case RepositoryError.locked: return "Un altro backup è già in corso"
         case RepositoryError.corruptObject(let h): return "Archivio danneggiato (oggetto \(h.prefix(12)))"
-        case BackupError.sourceMissing(let p): return "Cartella non trovata: \(p)"
         case BackupError.sourceOverlapsDestination(let p): return "La cartella \(p) contiene la destinazione o è al suo interno"
         case BackupError.cancelled: return "Backup interrotto"
+        case RestoreError.notFound(let p): return "\(p.isEmpty ? "La cartella" : p) non è in questo backup"
+        case RestoreError.invalidEntry(let p): return "Backup non valido o manomesso (percorso \"\(p)\"): ripristino annullato"
         default: return error.localizedDescription
         }
     }

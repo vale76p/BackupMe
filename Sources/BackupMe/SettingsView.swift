@@ -33,8 +33,11 @@ struct SettingsView: View {
                     Spacer()
                     Button("Scegli…", action: chooseDestination)
                 }
-                if model.settings.destination == nil, let od = Self.oneDriveFolder {
-                    Button("Usa OneDrive (\(od.lastPathComponent))") { model.settings.destination = od.path }
+                if model.settings.destination == nil {
+                    // personal and company OneDrive can both be present: offer each one
+                    ForEach(Self.oneDriveFolders, id: \.self) { od in
+                        Button("Usa \(od.lastPathComponent)") { setDestination(od) }
+                    }
                 }
             }
 
@@ -52,10 +55,10 @@ struct SettingsView: View {
                 if let loginError { Text(loginError).foregroundStyle(.red).font(.caption) }
             }
 
-            Section("Conservazione (oltre a tutti i backup delle ultime 24 ore)") {
-                Stepper("Giornalieri: \(model.settings.retention.days)", value: $model.settings.retention.days, in: 0...90)
-                Stepper("Settimanali: \(model.settings.retention.weeks)", value: $model.settings.retention.weeks, in: 0...52)
-                Stepper("Mensili: \(model.settings.retention.months)", value: $model.settings.retention.months, in: 0...120)
+            Section("Conservazione: tutti i backup delle ultime 24 ore, più l'ultimo di ogni…") {
+                Stepper("giorno, per gli ultimi \(model.settings.retention.days) giorni", value: $model.settings.retention.days, in: 0...90)
+                Stepper("settimana, per le ultime \(model.settings.retention.weeks) settimane", value: $model.settings.retention.weeks, in: 0...52)
+                Stepper("mese, per gli ultimi \(model.settings.retention.months) mesi", value: $model.settings.retention.months, in: 0...120)
             }
 
             Section("Spazio") {
@@ -70,7 +73,7 @@ struct SettingsView: View {
                 Text(usage).foregroundStyle(.secondary).font(.caption)
             }
 
-            Section("Esclusioni (un nome o pattern per riga, es. node_modules o *.log)") {
+            Section("Esclusioni: un nome di cartella per riga (es. node_modules); i pattern con * o che iniziano con . valgono anche per i file (es. *.log). Mai applicate dentro .git") {
                 TextEditor(text: $excludesText)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 120)
@@ -98,7 +101,7 @@ struct SettingsView: View {
         sourceError = nil
         for url in panel.urls where !model.settings.sources.contains(url.path) {
             if let dest = model.settings.destination,
-               let err = BackupEngine.validate(sources: [url], repositoryRoot: URL(fileURLWithPath: dest).appending(path: "BackupMe")) {
+               let err = BackupEngine.validate(sources: [url], repositoryRoot: URL(fileURLWithPath: dest)) {
                 sourceError = AppModel.describe(err)
                 continue
             }
@@ -113,11 +116,16 @@ struct SettingsView: View {
         panel.canCreateDirectories = true
         panel.prompt = "Scegli"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let root = url.appending(path: "BackupMe")
-        if let err = BackupEngine.validate(sources: model.settings.sources.map { URL(fileURLWithPath: $0) }, repositoryRoot: root) {
+        setDestination(url)
+    }
+
+    /// A destination may not contain a source or sit inside one (it would back itself up).
+    private func setDestination(_ url: URL) {
+        if let err = BackupEngine.validate(sources: model.settings.sources.map { URL(fileURLWithPath: $0) }, repositoryRoot: url) {
             sourceError = AppModel.describe(err)
             return
         }
+        sourceError = nil
         model.settings.destination = url.path
         refreshUsage()
     }
@@ -127,10 +135,10 @@ struct SettingsView: View {
             usage = "Nessun archivio"
             return
         }
-        let computer = AppPaths.computerName
+        let archive = AppPaths.archiveName
         Task.detached(priority: .utility) {
-            guard let repo = try? Repository(destination: URL(fileURLWithPath: dest), computerName: computer) else {
-                await MainActor.run { usage = "Destinazione non trovata" }
+            guard let repo = try? Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false) else {
+                await MainActor.run { usage = "Nessun backup ancora in questa destinazione" }
                 return
             }
             let size = (try? repo.poolSize()) ?? 0
@@ -140,9 +148,9 @@ struct SettingsView: View {
         }
     }
 
-    static var oneDriveFolder: URL? {
+    static var oneDriveFolders: [URL] {
         let cloud = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/CloudStorage")
         let names = (try? FileManager.default.contentsOfDirectory(atPath: cloud.path)) ?? []
-        return names.sorted().first { $0.hasPrefix("OneDrive") }.map { cloud.appending(path: $0) }
+        return names.sorted().filter { $0.hasPrefix("OneDrive") }.map { cloud.appending(path: $0) }
     }
 }

@@ -31,19 +31,28 @@ struct RestoreView: View {
                 Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
             }
             Picker("Cartella", selection: $model.source) {
-                ForEach(model.sources, id: \.self) { Text(($0 as NSString).lastPathComponent).tag(Optional($0)) }
+                // full path: two sources can share a folder name
+                ForEach(model.sources, id: \.self) { Text(($0 as NSString).abbreviatingWithTildeInPath).tag(Optional($0)) }
             }
             .onChange(of: model.source) { model.currentPath = ""; selection = nil }
         }
-        .searchable(text: $model.search, prompt: "Cerca file in tutti i backup")
+        .searchable(text: $model.search, prompt: "Cerca file e cartelle in tutti i backup")
         .onChange(of: model.selectedID) { selection = nil }
+        .onChange(of: model.search) { hit = nil }
+        .onChange(of: model.computer) { hit = nil; selection = nil }
         .onAppear { model.reload() }
         .frame(minWidth: 760, minHeight: 460)
         .confirmationDialog("Ripristinare l'intera cartella?", isPresented: $confirmWhole) {
-            Button("Sostituisci", role: .destructive) { restore(path: "", mode: .replace) }
+            // replacing in place only for folders this Mac backs up now: a tampered or foreign manifest
+            // must not be able to send an arbitrary folder to the Trash
+            if let t = target, model.app.settings.sources.contains(t.source) {
+                Button("Sostituisci", role: .destructive) { restore(path: "", mode: .replace) }
+            }
             Button("Ripristina in…") { restoreInto(path: "") }
             Button("Annulla", role: .cancel) {}
-        } message: { Text("La versione attuale verrà spostata nel Cestino.") }
+        } message: {
+            Text("Sostituisci sposta nel Cestino la cartella attuale, comprese le cartelle escluse dal backup (es. node_modules) e i file più recenti del backup, e la rimpiazza con la versione salvata.")
+        }
         .sheet(item: $versionsOf) { VersionsSheet(model: model, entry: $0) }
         .alert("Errore", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") {}
@@ -96,7 +105,7 @@ struct RestoreView: View {
             if let busy = model.busy { ProgressView(busy).padding() }
             List(model.results, id: \.self, selection: $hit) { h in
                 HStack {
-                    Image(systemName: "doc")
+                    Image(systemName: h.entry.kind == .directory ? "folder" : "doc")
                     VStack(alignment: .leading) {
                         Text(h.entry.name)
                         Text(h.entry.path).font(.caption).foregroundStyle(.secondary)
@@ -127,13 +136,13 @@ struct RestoreView: View {
             Button("Mostra versioni del file") { versionsOf = target?.entry }
                 .disabled(target?.entry?.kind != .file)
             Button("Ripristina in…") { if let t = target { restoreInto(path: t.path) } }
-                .disabled(target == nil)
+                .disabled(target == nil || model.busy != nil)
             Button("Ripristina") {
                 guard let t = target else { return }
                 if t.path.isEmpty { confirmWhole = true } else { restore(path: t.path, mode: .besideOriginal) }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(target == nil)
+            .disabled(target == nil || model.busy != nil)
         }
     }
 
@@ -157,11 +166,11 @@ struct RestoreView: View {
     private var groups: [(title: String, items: [(id: String, date: Date)])] {
         let cal = Calendar.current
         let weekAgo = Date().addingTimeInterval(-7 * 86400)
-        let order = ["Oggi", "Ieri", "Settimana scorsa", "Mesi precedenti"]
+        let order = ["Oggi", "Ieri", "Ultimi 7 giorni", "Più vecchi"]
         let grouped = Dictionary(grouping: model.snapshots) { s -> String in
             if cal.isDateInToday(s.date) { return "Oggi" }
             if cal.isDateInYesterday(s.date) { return "Ieri" }
-            return s.date > weekAgo ? "Settimana scorsa" : "Mesi precedenti"
+            return s.date > weekAgo ? "Ultimi 7 giorni" : "Più vecchi"
         }
         return order.compactMap { t in grouped[t].map { (t, $0) } }
     }

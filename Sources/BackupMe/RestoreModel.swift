@@ -7,7 +7,7 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
 @MainActor @Observable final class RestoreModel {
     let app: AppModel
     var computers: [String] = []
-    var computer = AppPaths.computerName { didSet { reload() } }
+    var computer = AppPaths.archiveName { didSet { if computer != oldValue { reload() } } }
     var snapshots: [(id: String, date: Date)] = []
     var selectedID: String? { didSet { load(selectedID) } }
     var source: String?
@@ -16,11 +16,14 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
     var results: [SearchHit] = []
     var busy: String?
     var error: String?
+    /// Only the few snapshots opened recently stay in memory: one manifest can be tens of MB.
     private var loaded: [String: Snapshot] = [:]
+    private var loadOrder: [String] = []
     /// snapshot id → source → parent path → children, built once off the main thread
     private var index: [String: [String: [String: [Entry]]]] = [:]
-    private var loadAll: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    /// Bumped on reload: results of tasks started for another computer or destination are dropped.
+    private var generation = 0
 
     init(app: AppModel) { self.app = app }
 
@@ -29,12 +32,12 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
 
     private var destination: URL? { app.settings.destination.map { URL(fileURLWithPath: $0) } }
 
-    /// Runs `body` off the main thread with a fresh Repository for the chosen computer.
+    /// Runs `body` off the main thread with the chosen computer's archive (opened, never created).
     private func withRepository<T: Sendable>(_ body: @escaping @Sendable (Repository) throws -> T) async throws -> T {
         guard let dest = destination else { throw RepositoryError.destinationMissing("") }
         let computer = computer
         return try await Task.detached(priority: .userInitiated) {
-            try body(try Repository(destination: dest, computerName: computer))
+            try body(try Repository(destination: dest, computerName: computer, create: false))
         }.value
     }
 
@@ -42,27 +45,42 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
         guard let dest = destination else { error = "Nessuna destinazione configurata"; return }
         computers = Repository.computers(in: dest)
         if !computers.contains(computer), let first = computers.first { computer = first; return }
+        generation += 1
+        let gen = generation
+        searchTask?.cancel()
+        results = []
         loaded = [:]
+        loadOrder = []
         index = [:]
-        loadAll = nil
+        snapshots = []
+        selectedID = nil
         Task {
             do {
                 let ids = try await withRepository { try $0.snapshotIDs() }
+                guard gen == generation else { return }
                 snapshots = ids.reversed().compactMap { id in Snapshot.date(fromID: id).map { (id, $0) } }
                 selectedID = snapshots.first?.id
-            } catch { self.error = AppModel.describe(error) }
+            } catch { if gen == generation { self.error = AppModel.describe(error) } }
         }
     }
 
     private func load(_ id: String?) {
         guard let id, loaded[id] == nil else { fixSource(); return }
+        let gen = generation
         Task {
             do {
                 let snapshot = try await withRepository { try $0.readSnapshot(id) }
+                let built = await Task.detached(priority: .userInitiated) { Self.buildIndex(snapshot) }.value
+                guard gen == generation else { return }
                 loaded[id] = snapshot
-                index[id] = await Task.detached(priority: .userInitiated) { Self.buildIndex(snapshot) }.value
+                index[id] = built
+                loadOrder.append(id)
+                while loadOrder.count > 3 {
+                    let old = loadOrder.removeFirst()
+                    if old != selectedID { loaded[old] = nil; index[old] = nil } else { loadOrder.append(old) }
+                }
                 fixSource()
-            } catch { self.error = AppModel.describe(error) }
+            } catch { if gen == generation { self.error = AppModel.describe(error) } }
         }
     }
 
@@ -90,43 +108,32 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
         return result
     }
 
-    /// Debounced search over every snapshot. Manifests not opened yet are loaded once, by a single shared task.
+    /// Debounced search of file and folder names across every snapshot, newest first. Manifests are read one at a
+    /// time and released, so memory stays at one manifest; each distinct version of an item appears once.
+    /// shortcut: every query re-reads the manifests; add a persistent name index if searches feel slow.
     private func searchChanged() {
         searchTask?.cancel()
         let query = search.lowercased()
-        guard !query.isEmpty else { results = []; return }
+        guard !query.isEmpty else { results = []; busy = nil; return }
+        let ids = snapshots.map(\.id)
+        let gen = generation
         searchTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            await loadAllSnapshots()
-            let snaps = snapshots.compactMap { s in loaded[s.id].map { (s.id, $0) } }
-            let found = await Task.detached(priority: .userInitiated) { Self.search(query, in: snaps) }.value
-            if !Task.isCancelled { results = found }
-        }
-    }
-
-    private func loadAllSnapshots() async {
-        if loadAll == nil {
-            let missing = snapshots.map(\.id).filter { loaded[$0] == nil }
-            guard !missing.isEmpty else { return }
-            loadAll = Task {
-                busy = "Carico \(missing.count) backup per la ricerca…"
-                for id in missing { loaded[id] = try? await withRepository { try $0.readSnapshot(id) } }
-                busy = nil
+            var hits: [SearchHit] = []
+            var seen = Set<String>()
+            for (n, id) in ids.enumerated() {
+                guard !Task.isCancelled, gen == generation, hits.count < 500 else { break }
+                busy = "Cerco in \(n + 1) di \(ids.count) backup…"
+                let found = (try? await withRepository { repo in
+                    try autoreleasepool { try repo.readSnapshot(id).entries.filter { !$0.path.isEmpty && $0.name.lowercased().contains(query) } }
+                }) ?? []
+                for e in found where seen.insert("\(e.source)\u{0}\(e.path)\u{0}\(e.hash ?? "dir")").inserted {
+                    hits.append(SearchHit(snapshotID: id, entry: e))
+                }
+                results = hits
             }
+            if !Task.isCancelled { busy = nil }
         }
-        await loadAll?.value
-    }
-
-    nonisolated private static func search(_ query: String, in snaps: [(String, Snapshot)]) -> [SearchHit] {
-        var hits: [SearchHit] = []
-        for (id, s) in snaps {
-            for e in s.entries where e.kind != .directory && e.name.lowercased().contains(query) {
-                hits.append(SearchHit(snapshotID: id, entry: e))
-                if hits.count >= 500 { return hits }  // enough to pick from; refine the query for more
-            }
-        }
-        return hits
     }
 
     func versions(of entry: Entry) async -> [(snapshotID: String, entry: Entry)] {
@@ -134,6 +141,7 @@ struct SearchHit: Hashable { var snapshotID: String; var entry: Entry }
     }
 
     func restore(snapshotID: String, source: String, path: String, mode: RestoreMode) {
+        guard busy == nil else { return }
         busy = "Ripristino in corso…"
         Task {
             do {

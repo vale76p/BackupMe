@@ -56,6 +56,18 @@ struct MenuContent: View {
     var body: some View {
         Text(model.statusText)
         if model.settings.paused { Text("Backup sospesi") }
+        if model.notificationsDenied { Text("Notifiche disattivate: gli errori non verranno segnalati") }
+        if let r = model.lastReport, !r.warnings.isEmpty {
+            Menu("Avvisi dell'ultimo backup (\(r.warnings.count))") {
+                ForEach(Array(r.warnings.prefix(15).enumerated()), id: \.offset) { Text($0.element) }
+                if r.warnings.count > 15 { Text("… e altri \(r.warnings.count - 15)") }
+                Divider()
+                Button("Copia tutti gli avvisi") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(r.warnings.joined(separator: "\n"), forType: .string)
+                }
+            }
+        }
         Divider()
         if model.isRunning {
             Button("Interrompi backup") { model.cancelBackup() }
