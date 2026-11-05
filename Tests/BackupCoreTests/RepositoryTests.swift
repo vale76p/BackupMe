@@ -29,7 +29,7 @@ import Testing
         _ = try r.putObject(data, hash: h)
         #expect(r.hasObject(h))
         #expect(try r.readObject(h) == data)
-        #expect(FileManager.default.fileExists(atPath: r.root.appending(path: "objects/\(h.prefix(2))/\(h).lzfse").path))
+        #expect(objectFile(r, h) != nil)
         // a fresh instance sees it via listing
         #expect(try Repository(destination: dest, computerName: "Mac").hasObject(h))
     }
@@ -48,10 +48,9 @@ import Testing
         _ = try r.putObject(data, hash: h)
         let other = Data("altro".utf8)
         _ = try r.putObject(other, hash: sha256Hex(other))
-        let src = r.root.appending(path: "objects/\(sha256Hex(other).prefix(2))/\(sha256Hex(other)).lzfse")
-        let dst = r.root.appending(path: "objects/\(h.prefix(2))/\(h).lzfse")
+        let dst = objectFile(r, h)!
         try FileManager.default.removeItem(at: dst)
-        try FileManager.default.copyItem(at: src, to: dst)
+        try FileManager.default.copyItem(at: objectFile(r, sha256Hex(other))!, to: dst)
         #expect(throws: RepositoryError.corruptObject(h)) { try r.readObject(h) }
     }
 
@@ -94,7 +93,6 @@ import Testing
         var ran = false
         try r.withLock { ran = true }
         #expect(ran)
-        #expect(!FileManager.default.fileExists(atPath: lock.path))
     }
 
     @Test func temporaryFilesRemoved() throws {

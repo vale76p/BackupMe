@@ -98,8 +98,7 @@ import Testing
         write("a", to: src.appending(path: "a.txt"))
         let (repo, snap) = try backup()
         let h = sha256Hex(Data("a".utf8))
-        let obj = repo.root.appending(path: "objects/\(h.prefix(2))/\(h).lzfse")
-        try (Data("b".utf8) as NSData).compressed(using: .lzfse).write(to: obj)
+        try Data("b".utf8).write(to: objectFile(repo, h)!)
         #expect(throws: RepositoryError.corruptObject(h)) {
             try restorer(repo).restore(snap, source: src.path, path: "a.txt", mode: .into(tmp()))
         }
@@ -115,7 +114,7 @@ import Testing
         let v = try restorer(repo).versions(source: src.path, path: "a.txt")
         #expect(v.count == 2)
         #expect(v[0].entry.hash == sha256Hex(Data("v2".utf8)))
-        #expect(v[1].snapshotID == Snapshot.id(for: t.addingTimeInterval(3600)))
+        #expect(v[1].snapshotID == Snapshot.id(for: t))
     }
 
     @Test func statusDetection() throws {

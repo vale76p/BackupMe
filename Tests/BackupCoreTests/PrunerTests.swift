@@ -40,7 +40,7 @@ import Testing
         _ = try repo.putObject(orphan, hash: sha256Hex(orphan))
         let tmpFile = repo.root.appending(path: "objects/zz/x.lzfse.tmp")
         write("t", to: tmpFile)
-        _ = try prune(repository: repo, policy: keepAll, capBytes: nil, now: t0)
+        _ = try prune(repository: repo, policy: keepAll, capBytes: nil, now: t0, forceGC: true)
         #expect(!repo.hasObject(sha256Hex(orphan)))
         #expect(try repo.allObjectHashes() == [sha256Hex(Data("a".utf8))])
         #expect(!FileManager.default.fileExists(atPath: tmpFile.path))

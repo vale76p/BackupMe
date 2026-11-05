@@ -24,9 +24,9 @@ import Testing
 
     @Test func excludesByName() {
         let r = ExcludeRules(patterns: ExcludeRules.defaults + ["*.log"])
-        #expect(r.excludes(name: "node_modules"))
-        #expect(r.excludes(name: "x.log"))
-        #expect(!r.excludes(name: ".git"))
+        #expect(r.excludes(name: "node_modules", isDirectory: true))
+        #expect(r.excludes(name: "x.log", isDirectory: false))
+        #expect(!r.excludes(name: ".git", isDirectory: true))
     }
 
     @Test func backupCreatesSnapshotWithEntries() throws {
@@ -54,7 +54,7 @@ import Testing
         let r2 = try e.run(sources: [src], now: Date(timeIntervalSince1970: 1_003_600))
         #expect(r2.newBytes == 0)
         #expect(try repo.allObjectHashes() == objects)
-        #expect(try repo.snapshotIDs().count == 2)
+        #expect(try repo.snapshotIDs().count == 1)
     }
 
     @Test func identicalFilesStoredOnce() throws {
@@ -65,17 +65,15 @@ import Testing
         #expect(try repo.allObjectHashes().count == 1)
     }
 
-    @Test func unchangedFileNotReread() throws {
-        write("a", to: src.appending(path: "a.txt"))
-        let (e, repo) = try engine()
-        _ = try e.run(sources: [src], now: Date(timeIntervalSince1970: 1_000_000))
-        let file = src.appending(path: "a.txt")
-        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
-        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
-        let r2 = try e.run(sources: [src], now: Date(timeIntervalSince1970: 1_003_600))
-        #expect(r2.warnings.isEmpty)
-        let s = try repo.readSnapshot(r2.snapshotID!)
-        #expect(s.entries.first { $0.path == "a.txt" }!.hash == sha256Hex(Data("a".utf8)))
+    @Test func hashCacheHitsOnlyOnIdenticalStamp() throws {
+        let url = tmp().appending(path: "c.json")
+        let m = Date(timeIntervalSince1970: 1000), c = Date(timeIntervalSince1970: 2000)
+        let cache = HashCache(url: url)
+        cache.store(path: "/a", inode: 1, size: 3, mtime: m, ctime: c, hash: "h")
+        try cache.save()
+        let reloaded = HashCache(url: url)
+        #expect(reloaded.lookup(path: "/a", inode: 1, size: 3, mtime: m, ctime: c) == "h")
+        #expect(reloaded.lookup(path: "/a", inode: 1, size: 3, mtime: m, ctime: c.addingTimeInterval(1)) == nil)
     }
 
     @Test func unreadableFileIsWarning() throws {
@@ -98,11 +96,6 @@ import Testing
         #expect(BackupEngine.validate(sources: [dest], repositoryRoot: repo.root) == .sourceOverlapsDestination(dest.path))
         #expect(BackupEngine.validate(sources: [repo.root.appending(path: "objects")], repositoryRoot: repo.root) != nil)
         #expect(BackupEngine.validate(sources: [src], repositoryRoot: repo.root) == nil)
-    }
-
-    @Test func missingSourceThrows() throws {
-        let (e, _) = try engine()
-        #expect(throws: BackupError.sourceMissing(src.path)) { try e.run(sources: [src]) }
     }
 
     @Test func cancelledLeavesNoSnapshot() throws {

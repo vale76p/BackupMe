@@ -27,6 +27,7 @@ struct FileStat {
     var inode: UInt64
     var size: Int64
     var mtime: Date
+    var ctime: Date
     var mode: UInt16
 
     init?(path: String, followSymlink: Bool = false) {
@@ -41,8 +42,11 @@ struct FileStat {
         inode = UInt64(st.st_ino)
         size = Int64(st.st_size)
         mtime = Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1e9)
+        ctime = Date(timeIntervalSince1970: TimeInterval(st.st_ctimespec.tv_sec) + TimeInterval(st.st_ctimespec.tv_nsec) / 1e9)
         mode = UInt16(st.st_mode & 0o7777)
     }
+
+    func unchanged(since o: FileStat) -> Bool { size == o.size && mtime == o.mtime && ctime == o.ctime }
 }
 
 public final class BackupEngine {
@@ -66,20 +70,19 @@ public final class BackupEngine {
         return nil
     }
 
+    /// Backs up every source. A source that is missing or can't be listed (e.g. folder permission revoked)
+    /// does not stop the others, but sets `error`: the backup is partial and must not count as a success.
     public func run(sources: [URL], now: Date = Date(), progress: (Double) -> Void = { _ in },
                     isCancelled: () -> Bool = { false }) throws -> BackupReport {
         if let err = Self.validate(sources: sources, repositoryRoot: repository.root) { throw err }
-        for s in sources {
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: s.path, isDirectory: &isDir), isDir.boolValue else {
-                throw BackupError.sourceMissing(s.path)
-            }
-        }
         let start = Date()
         return try repository.withLock {
             var warnings: [String] = []
+            var sourceErrors: [String] = []
             var found: [(source: String, path: String, stat: FileStat)] = []
-            for s in sources { scan(source: s.path, rel: "", into: &found, warnings: &warnings) }
+            for s in sources {
+                if let err = scanSource(s.path, into: &found, warnings: &warnings) { sourceErrors.append(err) }
+            }
 
             var entries: [Entry] = []
             var newBytes: Int64 = 0
@@ -103,19 +106,55 @@ public final class BackupEngine {
                 progress(Double(i + 1) / Double(found.count))
             }
             if isCancelled() { throw BackupError.cancelled }
-            let snapshot = Snapshot(date: now, sources: sources.map(\.path), entries: entries, warnings: warnings)
+            let error = sourceErrors.isEmpty ? nil : sourceErrors.joined(separator: "\n")
+            func report(_ id: String?) -> BackupReport {
+                BackupReport(snapshotID: id, date: now, duration: Date().timeIntervalSince(start), fileCount: fileCount,
+                             newBytes: newBytes, warnings: warnings, error: id == nil ? (error ?? "Nessun file da salvare") : error)
+            }
+            guard !entries.isEmpty else { return report(nil) }
+
+            // identical to the last manifest: don't upload another copy of it
+            let digest = Self.digest(sources: sources.map(\.path), entries: entries)
+            if let last = cache.lastManifest, last.digest == digest, repository.snapshotExists(last.id) {
+                try? cache.save()
+                return report(last.id)
+            }
+            var date = now
+            while repository.snapshotExists(Snapshot.id(for: date)) { date += 1 } // one manifest per second, never overwritten
+            let snapshot = Snapshot(date: date, sources: sources.map(\.path), entries: entries, warnings: warnings)
             try repository.writeSnapshot(snapshot) // written last: a backup without manifest does not exist
+            cache.lastManifest = (digest, snapshot.id)
             try? cache.save()
-            return BackupReport(snapshotID: snapshot.id, date: now, duration: Date().timeIntervalSince(start),
-                                fileCount: fileCount, newBytes: newBytes, warnings: warnings, error: nil)
+            return report(snapshot.id)
         }
     }
 
-    private func scan(source: String, rel: String, insideGit: Bool = false,
+    private static func digest(sources: [String], entries: [Entry]) -> String {
+        let enc = JSONEncoder()
+        enc.dateEncodingStrategy = .secondsSince1970
+        enc.outputFormatting = .sortedKeys
+        return sha256Hex((try? enc.encode([AnyEncodable(sources), AnyEncodable(entries)])) ?? Data())
+    }
+
+    /// Returns an error message if the source itself is missing or unreadable.
+    private func scanSource(_ source: String, into found: inout [(source: String, path: String, stat: FileStat)],
+                            warnings: inout [String]) -> String? {
+        // the source folder itself may be a symlink to the real folder
+        guard let st = FileStat(path: source, followSymlink: true), st.kind == .directory else {
+            return "Cartella non trovata: \(source)"
+        }
+        do {
+            _ = try FileManager.default.contentsOfDirectory(atPath: source)
+        } catch {
+            return "Cartella non leggibile: \(source) (\(error.localizedDescription))"
+        }
+        scan(source: source, rel: "", stat: st, into: &found, warnings: &warnings)
+        return nil
+    }
+
+    private func scan(source: String, rel: String, stat st: FileStat, insideGit: Bool = false,
                       into found: inout [(source: String, path: String, stat: FileStat)], warnings: inout [String]) {
         let full = rel.isEmpty ? source : source + "/" + rel
-        // the source folder itself may be a symlink to the real folder
-        guard let st = FileStat(path: full, followSymlink: rel.isEmpty) else { return }
         found.append((source, rel, st))
         guard st.kind == .directory else { return }
         let names: [String]
@@ -123,41 +162,63 @@ public final class BackupEngine {
             warnings.append("\(full): \(error.localizedDescription)")
             return
         }
-        // excludes never apply inside .git: a branch named "build" is a file under .git/refs/heads
-        for name in names.sorted() where insideGit || !excludes.excludes(name: name) {
-            scan(source: source, rel: rel.isEmpty ? name : rel + "/" + name, insideGit: insideGit || name == ".git",
-                 into: &found, warnings: &warnings)
+        for name in names.sorted() {
+            guard let child = FileStat(path: full + "/" + name) else { continue }
+            // excludes never apply inside .git: a branch named "build" is a file under .git/refs/heads
+            if !insideGit, excludes.excludes(name: name, isDirectory: child.kind == .directory) { continue }
+            scan(source: source, rel: rel.isEmpty ? name : rel + "/" + name, stat: child,
+                 insideGit: insideGit || name == ".git", into: &found, warnings: &warnings)
         }
     }
 
     /// Hashes and stores one file. Returns nil (with a warning) if the source is unreadable or changing while read;
     /// throws if the archive can't be written (disk full, destination gone), which fails the whole backup.
+    /// Files above `Repository.streamThreshold` are hashed and copied as streams, never held in memory.
     private func storeFile(_ path: String, stat initial: FileStat, warnings: inout [String]) throws
         -> (hash: String, stat: FileStat, written: Int64)? {
-        if let h = cache.lookup(path: path, inode: initial.inode, size: initial.size, mtime: initial.mtime),
+        if let h = cache.lookup(path: path, inode: initial.inode, size: initial.size, mtime: initial.mtime, ctime: initial.ctime),
            repository.hasObject(h) {
             return (h, initial, 0)
         }
+        let url = URL(fileURLWithPath: path)
         var st = initial
         for attempt in 0..<2 {
-            let data: Data
+            let big = st.size >= Repository.streamThreshold
+            var data = Data()
+            let hash: String
             do {
-                // shortcut: whole file mapped in memory; for multi-GB files switch to streamed chunks.
-                data = try Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe)
+                if big { hash = try streamHash(url) } else {
+                    data = try Data(contentsOf: url, options: .mappedIfSafe)
+                    hash = sha256Hex(data)
+                }
             } catch {
                 warnings.append("\(path): \(error.localizedDescription)")
                 return nil
             }
-            let hash = sha256Hex(data)
-            guard let after = FileStat(path: path), after.size == st.size, after.mtime == st.mtime else {
+            var stable = FileStat(path: path).map { $0.unchanged(since: st) } ?? false
+            var written: Int64 = 0
+            if stable, !repository.hasObject(hash) {
+                written = big ? try repository.putObjectFile(from: url, hash: hash) : try repository.putObject(data, hash: hash)
+                // a streamed copy happens after hashing: if the file moved meanwhile the stored copy may not match
+                if big, !(FileStat(path: path).map { $0.unchanged(since: st) } ?? false) {
+                    try? repository.deleteObject(hash)
+                    stable = false
+                }
+            }
+            guard stable else {
                 if attempt == 0, let again = FileStat(path: path) { st = again; continue }
                 warnings.append("\(path): modificato durante la lettura, saltato")
                 return nil
             }
-            let written = repository.hasObject(hash) ? 0 : try repository.putObject(data, hash: hash)
-            cache.store(path: path, inode: st.inode, size: st.size, mtime: st.mtime, hash: hash)
+            cache.store(path: path, inode: st.inode, size: st.size, mtime: st.mtime, ctime: st.ctime, hash: hash)
             return (hash, st, written)
         }
         return nil
     }
+}
+
+private struct AnyEncodable: Encodable {
+    let value: Encodable
+    init(_ value: Encodable) { self.value = value }
+    func encode(to encoder: Encoder) throws { try value.encode(to: encoder) }
 }
