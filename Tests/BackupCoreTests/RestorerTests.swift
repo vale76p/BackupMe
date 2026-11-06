@@ -109,6 +109,34 @@ import Testing
         #expect(try fm.contentsOfDirectory(atPath: trashDir.path).count == 1)
     }
 
+    @Test func extractWritesOnlyATemporaryCopy() throws {
+        write("contenuto", to: src.appending(path: "a.txt"))
+        let (repo, snap) = try backup()
+        let e = try #require(snap.entries.first { $0.path == "a.txt" })
+        let base = tmp()
+        let url = try restorer(repo).extract(e, into: base)
+        #expect(url.path.hasPrefix(base.path) && url.lastPathComponent == "a.txt")
+        #expect(try String(contentsOf: url, encoding: .utf8) == "contenuto")
+        #expect(try restorer(repo).extract(e, into: base) == url) // same version: extracted once
+        #expect(try fm.contentsOfDirectory(atPath: src.path) == ["a.txt"])
+    }
+
+    @Test func replaceCheckCountsChangesAndNewerCommits() throws {
+        write("uno", to: src.appending(path: "a.txt"))
+        write("due", to: src.appending(path: "b.txt"))
+        write("ref: refs/heads/main\n", to: src.appending(path: ".git/HEAD"))
+        write("aaaa\n", to: src.appending(path: ".git/refs/heads/main"))
+        write("x", to: src.appending(path: ".git/objects/aa/bb"))
+        let (_, snap) = try backup()
+        #expect(Restorer.replaceCheck(snap, source: src.path) == .init(changedFiles: 0, repositoryChanged: false))
+        write("uno modificato", to: src.appending(path: "a.txt"))
+        try fm.removeItem(at: src.appending(path: "b.txt")) // deleted today: the backup brings it back, nothing lost
+        write("y", to: src.appending(path: ".git/objects/aa/bb"))
+        #expect(Restorer.replaceCheck(snap, source: src.path) == .init(changedFiles: 1, repositoryChanged: false))
+        write("bbbbbb\n", to: src.appending(path: ".git/refs/heads/main"))
+        #expect(Restorer.replaceCheck(snap, source: src.path).repositoryChanged)
+    }
+
     @Test func corruptObjectFailsRestore() throws {
         write("a", to: src.appending(path: "a.txt"))
         let (repo, snap) = try backup()

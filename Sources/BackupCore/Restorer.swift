@@ -149,6 +149,39 @@ public final class Restorer {
         return result
     }
 
+    /// A read-only copy of a backed-up file for previewing or comparing, in a temporary folder per content:
+    /// nothing outside it is written, and each version is extracted once.
+    public func extract(_ entry: Entry,
+                        into base: URL = FileManager.default.temporaryDirectory.appending(path: "BackupMe-anteprime")) throws -> URL {
+        guard entry.kind == .file, let hash = entry.hash else { throw RestoreError.notFound(entry.path) }
+        let dir = base.appending(path: hash, directoryHint: .isDirectory)
+        let url = dir.appending(path: entry.name)
+        if fm.fileExists(atPath: url.path) { return url }
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try repository.restoreObject(hash, to: url)
+        try? fm.setAttributes([.posixPermissions: 0o444, .modificationDate: entry.mtime], ofItemAtPath: url.path)
+        return url
+    }
+
+    public struct ReplaceCheck: Equatable, Sendable {
+        /// Files whose current version differs from the backup: replacing sends today's version to the Trash.
+        public var changedFiles: Int
+        /// HEAD or refs differ from the backup: commits or branches newer than it would go to the Trash too.
+        public var repositoryChanged: Bool
+    }
+
+    /// What replacing `source` with `snapshot` would set aside beyond the backup. Reads file metadata only.
+    public static func replaceCheck(_ snapshot: Snapshot, source: String) -> ReplaceCheck {
+        var check = ReplaceCheck(changedFiles: 0, repositoryChanged: false)
+        for e in snapshot.entries where e.source == source && e.kind == .file {
+            let isRef = e.path == ".git/HEAD" || e.path == ".git/packed-refs" || e.path.hasPrefix(".git/refs/")
+            guard isRef || !e.path.hasPrefix(".git/") else { continue } // other git internals: covered by the refs
+            let s = status(of: e)
+            if isRef { if s != .unchanged { check.repositoryChanged = true } } else if s == .modified { check.changedFiles += 1 }
+        }
+        return check
+    }
+
     public static func restoredName(_ name: String, date: Date) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "it_IT")

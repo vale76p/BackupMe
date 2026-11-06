@@ -2,6 +2,19 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.5.0] - 2026-11-06
+
+### Aggiunto
+- Sfoglia backup › Anteprima: barra spaziatrice, doppio clic su un file o voce "Anteprima" aprono Quick Look sulla versione salvata. Il file viene estratto in una cartella temporanea (mai accanto all'originale); sopra i 200 MB chiede conferma.
+- Ripristino di più elementi insieme: selezione multipla nella tabella, poi Ripristina o Ripristina in… (un solo pannello per tutti). Un elemento che non riesce non ferma gli altri.
+- Confronto con oggi: filtro nella barra degli strumenti "Modificati da allora" / "Eliminati da allora"; le cartelle segnalano se contengono file modificati o non più presenti.
+- Ricerca: colonna Stato e ambito "Solo eliminati" per ritrovare i file che esistono solo nei backup; doppio clic o "Mostra nel backup" apre la cartella in quel backup con il file selezionato. Se i risultati superano 500 lo dice.
+- "Confronta con la versione attuale" per i file modificati: apre FileMerge (con Xcode) con la versione salvata e quella di oggi; l'unione va in un file temporaneo. Senza FileMerge mostra i due file nel Finder.
+- "Ripristina tutto il backup in…" al primo livello, per portare tutte le cartelle su un Mac nuovo.
+
+### Cambiato
+- Sostituire una cartella intera ora avvisa prima quanti file sono cambiati dopo il backup e se il repository git ha commit o branch più recenti, che finirebbero nel Cestino. Il dialogo offre anche "Ripristina accanto".
+
 ## [0.4.0] - 2026-11-06
 
 ### Aggiunto

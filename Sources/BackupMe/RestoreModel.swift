@@ -8,6 +8,15 @@ struct SearchHit: Hashable, Identifiable {
     var id: Self { self }
 }
 
+/// A row against this Mac's disk; folders also say whether something inside them changed or disappeared.
+struct RowStatus: Equatable, Sendable {
+    var own: EntryStatus
+    var modifiedInside = false
+    var missingInside = false
+}
+
+enum ChangeFilter: String, CaseIterable { case all, modified, missing }
+
 @MainActor @Observable final class RestoreModel {
     let app: AppModel
     var computers: [String] = []
@@ -18,6 +27,11 @@ struct SearchHit: Hashable, Identifiable {
     var currentPath = ""
     var search = "" { didSet { searchChanged() } }
     var results: [SearchHit] = []
+    /// Search hits against this Mac's disk, filled in as the search goes: "deleted" means missing today.
+    var resultStatus: [SearchHit: EntryStatus] = [:]
+    var resultsTruncated = false
+    /// Selected once "Mostra nel backup" has opened its folder.
+    var pendingSelection: Entry.ID?
     /// Search progress only; a restore has its own flag so neither can cancel or block the other.
     var busy: String?
     var restoring = false
@@ -30,7 +44,7 @@ struct SearchHit: Hashable, Identifiable {
     /// snapshot id → source → parent path → children, built once off the main thread
     private var index: [String: [String: [String: [Entry]]]] = [:]
     /// snapshot id + source + folder → entry id → status against this Mac's disk, computed once per folder
-    private var statuses: [String: [String: EntryStatus]] = [:]
+    private var statuses: [String: [String: RowStatus]] = [:]
     private var searchTask: Task<Void, Never>?
     /// Bumped on reload: results of tasks started for another computer or destination are dropped.
     private var generation = 0
@@ -122,7 +136,10 @@ struct SearchHit: Hashable, Identifiable {
         return index[id]?[source ?? ""]?[source == nil ? "" : currentPath] ?? []
     }
 
-    func status(of e: Entry) -> EntryStatus? { statuses[folderKey]?[e.id] }
+    func status(of e: Entry) -> RowStatus? { statuses[folderKey]?[e.id] }
+
+    /// nil while the folder's status is still being computed.
+    var statusReady: Bool { !showsStatus || statuses[folderKey] != nil }
 
     private var folderKey: String { "\(selectedID ?? "")\u{0}\(source ?? "")\u{0}\(currentPath)" }
 
@@ -132,10 +149,27 @@ struct SearchHit: Hashable, Identifiable {
         let key = folderKey, gen = generation
         guard statuses[key] == nil else { return }
         let rows = children()
+        guard let tree = selectedID.flatMap({ index[$0] }) else { return }
         let found = await Task.detached(priority: .utility) {
-            Dictionary(rows.map { ($0.id, Restorer.status(of: $0)) }, uniquingKeysWith: { a, _ in a })
+            Dictionary(rows.map { ($0.id, Self.rowStatus($0, tree: tree)) }, uniquingKeysWith: { a, _ in a })
         }.value
         if gen == generation, !Task.isCancelled { statuses[key] = found }
+    }
+
+    /// A folder walks what the backup holds inside it (excluded folders aren't there), stopping once both flags are set.
+    nonisolated private static func rowStatus(_ e: Entry, tree: [String: [String: [Entry]]]) -> RowStatus {
+        var r = RowStatus(own: Restorer.status(of: e))
+        guard e.kind == .directory, r.own != .missing else { return r } // a missing folder: all of it is missing
+        var stack = tree[e.source]?[e.path] ?? []
+        while !(r.modifiedInside && r.missingInside), let c = stack.popLast() {
+            switch Restorer.status(of: c) {
+            case .missing: r.missingInside = true; continue
+            case .modified where c.kind != .directory: r.modifiedInside = true
+            default: break
+            }
+            if c.kind == .directory { stack += tree[c.source]?[c.path] ?? [] }
+        }
+        return r
     }
 
     nonisolated private static func buildIndex(_ s: Snapshot) -> [String: [String: [Entry]]] {
@@ -161,9 +195,11 @@ struct SearchHit: Hashable, Identifiable {
     private func searchChanged() {
         searchTask?.cancel()
         let query = search.lowercased()
-        guard !query.isEmpty else { results = []; busy = nil; return }
+        resultsTruncated = false
+        guard !query.isEmpty else { results = []; resultStatus = [:]; busy = nil; return }
         let ids = snapshots.map(\.id)
         let gen = generation
+        let compare = showsStatus
         busy = "Cerco…" // set now: during the debounce the window would show "no results"
         searchTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
@@ -175,12 +211,23 @@ struct SearchHit: Hashable, Identifiable {
                 let found = (try? await withRepository { repo in
                     try autoreleasepool { try repo.readSnapshot(id).entries.filter { !$0.path.isEmpty && $0.name.lowercased().contains(query) } }
                 }) ?? []
-                for e in found where seen.insert("\(e.source)\u{0}\(e.path)\u{0}\(e.hash ?? "dir")").inserted {
-                    hits.append(SearchHit(snapshotID: id, entry: e))
+                var new: [SearchHit] = []
+                // symlinks keyed by target too: two links with different targets are different versions
+                for e in found where seen.insert("\(e.source)\u{0}\(e.path)\u{0}\(e.hash ?? e.linkTarget ?? "dir")").inserted {
+                    new.append(SearchHit(snapshotID: id, entry: e))
                 }
+                hits += new
                 results = hits
+                if compare, !new.isEmpty {
+                    let found = await Task.detached(priority: .utility) { new.map { ($0, Restorer.status(of: $0.entry)) } }.value
+                    guard gen == generation, !Task.isCancelled else { break }
+                    for (h, s) in found { resultStatus[h] = s }
+                }
             }
-            if !Task.isCancelled { busy = nil }
+            if !Task.isCancelled {
+                busy = nil
+                resultsTruncated = hits.count >= 500
+            }
         }
     }
 
@@ -189,16 +236,72 @@ struct SearchHit: Hashable, Identifiable {
     }
 
     func restore(snapshotID: String, source: String, path: String, mode: RestoreMode) {
+        restore(snapshotID: snapshotID, items: [(source, path)], mode: mode)
+    }
+
+    /// Restores several items from one backup in a row; one failing doesn't stop the others.
+    func restore(snapshotID: String, items: [(source: String, path: String)], mode: RestoreMode) {
         guard !restoring else { error = ("Ripristino non riuscito", "Un ripristino è già in corso: attendi che finisca"); return }
+        guard !items.isEmpty else { return }
         restoring = true
         Task {
-            do {
-                let url = try await withRepository { repo in
-                    try Restorer(repository: repo).restore(try repo.readSnapshot(snapshotID), source: source, path: path, mode: mode)
+            let outcome = await (try? withRepository { repo -> ([URL], [String]) in
+                let snapshot = try repo.readSnapshot(snapshotID)
+                let restorer = Restorer(repository: repo)
+                var done: [URL] = [], failed: [String] = []
+                for item in items {
+                    do { done.append(try restorer.restore(snapshot, source: item.source, path: item.path, mode: mode)) }
+                    catch { failed.append(AppModel.describe(error)) }
                 }
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            } catch { self.error = ("Ripristino non riuscito", AppModel.describe(error)) }
+                return (done, failed)
+            }) ?? ([], ["Impossibile aprire il backup"])
+            if !outcome.0.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(outcome.0) }
+            if let first = outcome.1.first {
+                let more = outcome.1.count > 1 ? " (e altri \(outcome.1.count - 1) errori)" : ""
+                error = ("Ripristino non riuscito", first + more)
+            }
             restoring = false
         }
+    }
+
+    /// A read-only temporary copy for Quick Look or comparing; nil (with an error shown) if it can't be read.
+    func extracted(_ e: Entry) async -> URL? {
+        do { return try await withRepository { try Restorer(repository: $0).extract(e) } } catch {
+            self.error = ("Anteprima non disponibile", AppModel.describe(error))
+            return nil
+        }
+    }
+
+    /// Opens the backed-up and current versions side by side in FileMerge (it comes with Xcode); the merge result
+    /// goes to a temporary file, so saving in FileMerge never touches the real one. Without it, shows both in the Finder.
+    func compare(_ e: Entry) {
+        Task {
+            guard let copy = await extracted(e) else { return }
+            guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.FileMerge") else {
+                NSWorkspace.shared.activateFileViewerSelecting([copy, e.url])
+                return
+            }
+            let config = NSWorkspace.OpenConfiguration()
+            // a new instance: a running FileMerge would ignore the arguments
+            config.createsNewApplicationInstance = true
+            config.arguments = ["-left", copy.path, "-right", e.url.path,
+                                "-merge", copy.deletingLastPathComponent().appending(path: "unione-" + e.name).path]
+            _ = try? await NSWorkspace.shared.openApplication(at: app, configuration: config)
+        }
+    }
+
+    /// Leaves the search and opens the folder holding `hit` in its backup, with it selected.
+    func reveal(_ hit: SearchHit) {
+        search = ""
+        // source and folder first: changing the backup checks them against it
+        source = hit.entry.source
+        currentPath = (hit.entry.path as NSString).deletingLastPathComponent
+        pendingSelection = hit.entry.id
+        selectedID = hit.snapshotID
+    }
+
+    func replaceCheck(source: String) async -> Restorer.ReplaceCheck? {
+        guard showsStatus, let snapshot = selected else { return nil }
+        return await Task.detached(priority: .userInitiated) { Restorer.replaceCheck(snapshot, source: source) }.value
     }
 }
