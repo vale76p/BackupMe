@@ -88,36 +88,19 @@ struct RestoreView: View {
     }
 
     private var window: some View {
-        NavigationSplitView {
-            List(selection: $model.selectedID) {
-                if model.computers.count > 1 {
-                    Section("Computer") {
-                        Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
-                            .labelsHidden()
-                            .help("Computer di origine")
-                    }
+        // a standard window, no sidebar: the backup is chosen from a pop-up in the toolbar
+        Group {
+            if !model.hasDestination {
+                ContentUnavailableView {
+                    Label("Nessuna destinazione", systemImage: "externaldrive.badge.xmark")
+                } description: {
+                    Text("Scegli dove salvare i backup per poterli sfogliare e ripristinare.")
+                } actions: {
+                    SettingsLink { Text("Apri Impostazioni…") }
                 }
-                ForEach(groups, id: \.title) { group in
-                    Section(group.title) {
-                        ForEach(group.items, id: \.id) { s in Text(label(s.date, in: group.title)).tag(s.id) }
-                    }
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
-        } detail: {
-            Group {
-                if !model.hasDestination {
-                    ContentUnavailableView {
-                        Label("Nessuna destinazione", systemImage: "externaldrive.badge.xmark")
-                    } description: {
-                        Text("Scegli dove salvare i backup per poterli sfogliare e ripristinare.")
-                    } actions: {
-                        SettingsLink { Text("Apri Impostazioni…") }
-                    }
-                } else if model.search.isEmpty { browser } else { results }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.search.isEmpty { browser } else { results }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // native window chrome only: title = folder being viewed, its menu = the path, subtitle = date or progress
         .navigationTitle(title)
         .navigationSubtitle(subtitle)
@@ -143,6 +126,25 @@ struct RestoreView: View {
                 .keyboardShortcut(.upArrow, modifiers: .command)
                 .disabled(model.source == nil || !model.search.isEmpty)
                 .help("Cartella superiore")
+            }
+            ToolbarItem(placement: .navigation) {
+                Picker("Backup", selection: $model.selectedID) {
+                    ForEach(groups, id: \.title) { group in
+                        Section(group.title) {
+                            ForEach(group.items, id: \.id) { s in Text(label(s.date, in: group.title)).tag(Optional(s.id)) }
+                        }
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(model.snapshots.isEmpty || !model.search.isEmpty)
+                .help("Backup da sfogliare")
+            }
+            if model.computers.count > 1 {
+                ToolbarItem(placement: .navigation) {
+                    Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
+                        .pickerStyle(.menu)
+                        .help("Computer di origine")
+                }
             }
             if model.showsStatus, model.search.isEmpty {
                 ToolbarItem {
@@ -196,7 +198,7 @@ struct RestoreView: View {
                                    description: Text("I backup di questo Mac compariranno qui dopo il primo salvataggio."))
         } else if model.selectedID == nil {
             ContentUnavailableView("Scegli un backup", systemImage: "clock.arrow.circlepath",
-                                   description: Text("Seleziona una data nella barra laterale."))
+                                   description: Text("Scegline uno dal menu Backup nella barra degli strumenti."))
         } else if model.selected == nil {
             ProgressView() // the chosen backup's index is still loading
         } else {
@@ -405,7 +407,10 @@ struct RestoreView: View {
             return (n == 1 ? "1 risultato" : "\(n) risultati") + (model.resultsTruncated ? " (i primi 500)" : "")
         }
         if selectedIDs.count > 1 { return "\(selectedIDs.count) elementi selezionati" }
-        return model.selected.map { "Backup del " + $0.date.formatted(date: .abbreviated, time: .shortened) } ?? ""
+        // the date is in the backup pop-up: here the full path of the folder being viewed
+        guard let source = model.source else { return "" }
+        let folder = (source as NSString).lastPathComponent
+        return model.currentPath.isEmpty ? folder : folder + "/" + model.currentPath
     }
 
     // MARK: actions
@@ -505,7 +510,7 @@ struct RestoreView: View {
         Task { previewURL = await model.extracted(e) }
     }
 
-    // MARK: sidebar grouping
+    // MARK: backup pop-up grouping
 
     private var groups: [(title: String, items: [(id: String, date: Date)])] {
         let cal = Calendar.current
@@ -519,10 +524,13 @@ struct RestoreView: View {
         return order.compactMap { t in grouped[t].map { (t, $0) } }
     }
 
+    /// The pop-up shows only the chosen item, without its section: today and yesterday say so.
     private func label(_ date: Date, in group: String) -> String {
-        group == "Oggi" || group == "Ieri"
-            ? date.formatted(date: .omitted, time: .shortened)
-            : date.formatted(date: .abbreviated, time: .shortened)
+        switch group {
+        case "Oggi": "Oggi, " + date.formatted(date: .omitted, time: .shortened)
+        case "Ieri": "Ieri, " + date.formatted(date: .omitted, time: .shortened)
+        default: date.formatted(date: .abbreviated, time: .shortened)
+        }
     }
 }
 

@@ -55,7 +55,6 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     private var lastStaleNotice: Date?
     private var notifiedErrors = Set<String>()
     private var timer: Timer?
-    private let log = Logger(subsystem: "com.vale76p.BackupMe", category: "backup")
 
     static let retryAfterFailure: TimeInterval = 15 * 60
     static let staleAfter: TimeInterval = 3 * 86400
@@ -117,7 +116,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         }
         // waits for power or a cooler Mac, but never past a day without a backup; "Esegui ora" always runs
         let overdue = lastSuccess.map { now.timeIntervalSince($0) > 86400 } ?? true
-        deferral = overdue ? nil : SystemServices.backupDeferral()
+        let reason = overdue ? nil : SystemServices.backupDeferral()
+        if reason != deferral, let reason { Log.backup.info("Backup pianificato rinviato: \(reason)") }
+        deferral = reason
         guard deferral == nil else { return }
         backupNow()
     }
@@ -137,6 +138,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         let archive = AppPaths.archiveName
         let complete = lastComplete
         let verify = lastVerify.map { Date().timeIntervalSince($0) > 86400 || $0 > Date() } ?? true
+        Log.backup.info("Avvio backup di \(s.sources.count) cartelle in \(s.destination ?? "")")
+        Log.backup.debug("Cartelle: \(s.sources.joined(separator: ", ")); esclusioni: \(s.excludes.joined(separator: " ")); verifica a campione: \(verify ? "sì" : "no")")
         workerActive = true
         Task.detached(priority: .utility) {
             // a long first backup must not stop at every idle sleep; also keeps App Nap away
@@ -168,6 +171,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         let archive = AppPaths.archiveName
         Task.detached(priority: .utility) {
             let problem = Self.uploadProblem(destination: dest, archive: archive, now: Date())
+            Log.backup.debug("Controllo caricamento nel cloud: \(problem ?? "nessun problema")")
             await MainActor.run {
                 self.uploadProblem = problem
                 if let problem, self.lastUploadNotice.map({ Date().timeIntervalSince($0) > 86400 }) ?? true {
@@ -223,11 +227,13 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         } catch {
             report = failed(error)
         }
+        Log.backup.debug("Scansione: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(report.excluded?.count ?? 0) cartelle escluse, manifest \(report.snapshotID ?? "nessuno")\(report.warnings.isEmpty ? "" : "; avvisi: " + report.warnings.joined(separator: " | "))")
         // once a day a sample of the archive is read back: a copy damaged by a sync conflict shows up now, not
         // at restore time. Small budget: on OneDrive Files On-Demand every read may be a download.
         if verify, !isCancelled() {
             do {
                 let v = try verifySample(repository: repo, cache: cache, budgetBytes: 100_000_000)
+                Log.backup.debug("Verifica a campione: \(v.checked) oggetti, \(v.bytes) byte, \(v.repaired.count) riparati, \(v.corrupt.count) danneggiati")
                 if !v.repaired.isEmpty {
                     report.warnings.append("Riparati \(v.repaired.count) file danneggiati nell'archivio usando le copie attuali")
                 }
@@ -250,6 +256,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             let result = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
                                    refsCache: AppPaths.refsCache(archive, destination: repo.root.path), forceGC: report.snapshotID == nil,
                                    pinned: pin.map { [$0] } ?? [])
+            Log.backup.debug("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) oggetti eliminati, archivio \(result.poolSize) byte, oltre il tetto: \(result.overCap), rinviata: \(result.gcSkipped), oggetti mancanti: \(result.missingObjects)")
             if result.gcSkipped { report.warnings.append("Pulizia rinviata: alcuni backup sono spariti dalla destinazione, riprende da sola entro 3 giorni") }
             if result.missingObjects > 0 {
                 report.warnings.append("\(Self.incomplete) mancano \(result.missingObjects) file usati dai backup, che non si ripristinano per intero")
@@ -275,7 +282,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             lastAttempt = nil
             lastSuccess = report.date
             notifiedErrors = []
-            log.info("backup \(report.snapshotID ?? "", privacy: .public): \(report.fileCount) files, \(report.newBytes) new bytes, \(report.warnings.count) warnings")
+            Log.backup.info("Backup \(report.snapshotID ?? "") riuscito: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(report.warnings.count) avvisi, \(Int(report.duration)) s")
         }
         // warnings that mean a backup can't be fully restored are notified, not just listed
         for w in report.warnings where [Self.damaged, Self.incomplete, "Pulizia non riuscita"].contains(where: w.hasPrefix) { notifyOnce(w) }
@@ -287,7 +294,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
     private func fail(_ message: String) {
         status = .failed(message)
-        log.error("backup failed: \(message, privacy: .public)")
+        Log.backup.error("Backup non riuscito: \(message)")
         if message != Self.describe(BackupError.cancelled) { notifyOnce(message) }
     }
 

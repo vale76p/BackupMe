@@ -274,6 +274,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         guard !restoring else { error = ("Ripristino non riuscito", "Un ripristino è già in corso: attendi che finisca"); return }
         guard !items.isEmpty else { return }
         restoring = true
+        Log.restore.info("Ripristino dal backup \(snapshotID) (\(mode)): \(items.map { $0.path.isEmpty ? $0.source : $0.source + "/" + $0.path }.joined(separator: ", "))")
         Task {
             let outcome = await (try? withRepository { repo -> ([URL], [String]) in
                 let snapshot = try repo.readSnapshot(snapshotID)
@@ -285,6 +286,8 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
                 }
                 return (done, failed)
             }) ?? ([], ["Impossibile aprire il backup"])
+            Log.restore.debug("Ripristinati: \(outcome.0.map(\.path).joined(separator: ", "))")
+            for e in outcome.1 { Log.restore.error("Ripristino non riuscito: \(e)") }
             if !outcome.0.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(outcome.0) }
             if let first = outcome.1.first {
                 let more = outcome.1.count > 1 ? " (e altri \(outcome.1.count - 1) errori)" : ""

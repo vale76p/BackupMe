@@ -24,7 +24,6 @@ struct BackupMeApp: App {
             RestoreView(model: RestoreModel(app: model)).onAppear { SystemServices.windowOpened() }
         }
         .defaultSize(width: 1000, height: 640)
-        .commands { SidebarCommands() }
 
         Window("Benvenuto in BackupMe", id: "welcome") {
             WelcomeView(model: model).onAppear { SystemServices.windowOpened() }
@@ -40,10 +39,11 @@ private struct MenuBarLabel: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        Image(systemName: model.iconName)
+        Image(nsImage: Self.icon(model.iconName))
             .accessibilityLabel("BackupMe")
             .accessibilityValue(model.statusText)
             .task {
+                Log.app.info("BackupMe \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") avviato, log \(Log.level.rawValue)")
                 // the label lives as long as the app: the one place with the window actions at hand
                 SystemServices.onAction = { action in
                     switch action {
@@ -54,6 +54,15 @@ private struct MenuBarLabel: View {
                 // first run: nothing to back up yet, so the setup window opens by itself
                 if !model.settings.isConfigured { openWindow(id: "welcome") }
             }
+    }
+
+    /// A symbol at the menu bar's default 13 pt looks small next to Apple's items, and its badge shrinks the
+    /// drive further: 15 pt matches them. Template, so it follows the menu bar's light/dark and tint.
+    private static func icon(_ name: String) -> NSImage {
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "BackupMe")?
+            .withSymbolConfiguration(.init(pointSize: 15, weight: .regular)) ?? NSImage()
+        image.isTemplate = true
+        return image
     }
 }
 

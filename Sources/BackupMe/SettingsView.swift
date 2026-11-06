@@ -8,7 +8,7 @@ struct SettingsView: View {
     @AppStorage("settingsPane") private var pane = Pane.folders
 
     enum Pane: String, CaseIterable {
-        case folders, archive, schedule, retention, excludes
+        case folders, archive, schedule, retention, excludes, advanced
 
         var title: String {
             switch self {
@@ -17,6 +17,7 @@ struct SettingsView: View {
             case .schedule: "Pianificazione"
             case .retention: "Conservazione"
             case .excludes: "Esclusioni"
+            case .advanced: "Avanzate"
             }
         }
 
@@ -27,6 +28,7 @@ struct SettingsView: View {
             case .schedule: "calendar.badge.clock"
             case .retention: "clock.arrow.circlepath"
             case .excludes: "nosign"
+            case .advanced: "gearshape.2"
             }
         }
     }
@@ -53,6 +55,7 @@ struct SettingsView: View {
         case .schedule: ScheduleSection(model: model)
         case .retention: RetentionSection(model: model)
         case .excludes: ExcludesSection(model: model)
+        case .advanced: LoggingSection()
         }
     }
 }
@@ -358,6 +361,42 @@ private struct ExcludesSection: View {
             } footer: {
                 Text("Controlla che non ci siano cartelle con codice da salvare. Sono escluse anche le cartelle con un file CACHEDIR.TAG, usato dagli strumenti di build per segnare le cache.")
             }
+        }
+    }
+}
+
+private struct LoggingSection: View {
+    @AppStorage(Log.levelKey) private var level = Log.Level.info
+    private static let command = "log stream --predicate 'subsystem == \"\(Log.subsystem)\"' --level debug"
+
+    var body: some View {
+        Section {
+            Picker("Livello", selection: $level) {
+                Text("Info").tag(Log.Level.info)
+                Text("Debug").tag(Log.Level.debug)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: level) { _, l in Log.app.info("Livello di log: \(l.rawValue)") }
+            LabeledContent("Dove leggerlo") {
+                HStack {
+                    Button("Apri Console") {
+                        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    Button("Copia comando") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(Self.command, forType: .string)
+                    }
+                    .help(Self.command)
+                }
+            }
+        } header: {
+            Text("Registro di sistema")
+        } footer: {
+            Text(level == .debug
+                 ? "Debug aggiunge i dettagli di ogni passaggio: cartelle e esclusioni, scansione, pulizia, verifica, caricamento nel cloud. In Console filtra per \(Log.subsystem) e attiva Azione › Includi messaggi di debug; oppure incolla il comando nel Terminale."
+                 : "Info registra avvii, esiti ed errori di backup e ripristini. In Console filtra per \(Log.subsystem) e attiva Azione › Includi messaggi informativi; oppure incolla il comando nel Terminale.")
         }
     }
 }
