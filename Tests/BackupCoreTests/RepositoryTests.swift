@@ -147,4 +147,32 @@ import Testing
         _ = try r.putObject(data, hash: sha256Hex(data))
         #expect(try r.poolSize() > before)
     }
+
+    /// exFAT and FAT32 reject RENAME_EXCL and link(2): the manifest is published anyway, and still never replaced.
+    @Test(arguments: ["ExFAT", "MS-DOS"]) func snapshotOnFATFilesystems(fs: String) throws {
+        let dir = tmp(), mount = dir.appending(path: "vol"), image = dir.appending(path: "vol.dmg")
+        func hdiutil(_ args: String...) throws -> Int32 {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+            p.arguments = args
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            try p.run()
+            p.waitUntilExit()
+            return p.terminationStatus
+        }
+        try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
+        try #require(try hdiutil("create", "-quiet", "-size", "20m", "-fs", fs, "-volname", "T", image.path) == 0)
+        try #require(try hdiutil("attach", "-quiet", "-nobrowse", "-mountpoint", mount.path, image.path) == 0)
+        defer { _ = try? hdiutil("detach", "-quiet", "-force", mount.path) }
+
+        let r = try Repository(destination: mount, computerName: "Mac")
+        let d = Snapshot.date(fromID: "2026-11-05T10-00-00Z")!
+        try r.writeSnapshot(Snapshot(date: d, sources: ["/src"], entries: [], warnings: ["primo"]))
+        #expect(throws: POSIXError(.EEXIST)) {
+            try r.writeSnapshot(Snapshot(date: d, sources: ["/src"], entries: [], warnings: ["secondo"]))
+        }
+        #expect(try r.readSnapshot("2026-11-05T10-00-00Z").warnings == ["primo"])
+        #expect(try r.snapshotIDs() == ["2026-11-05T10-00-00Z"]) // no leftover .tmp
+    }
 }

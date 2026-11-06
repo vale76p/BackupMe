@@ -397,12 +397,27 @@ public final class Repository {
         if failure == 0, !(sync == .device && fcntl(fd, F_FULLFSYNC) == 0), fsync(fd) != 0 { failure = errno }
         close(fd)
         let moved = failure == 0
-            && (exclusive ? renamex_np(tmp.path, url.path, UInt32(RENAME_EXCL)) : rename(tmp.path, url.path)) == 0
+            && (exclusive ? Self.renameExclusive(tmp.path, url.path) : rename(tmp.path, url.path)) == 0
         guard moved else {
             let code = failure != 0 ? failure : errno
             try? fm.removeItem(at: tmp)
             throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
         }
+    }
+
+    /// rename(2) that fails with EEXIST instead of replacing `to`. exFAT and FAT32 reject RENAME_EXCL and link(2) with ENOTSUP.
+    private static func renameExclusive(_ from: String, _ to: String) -> Int32 {
+        if renamex_np(from, to, UInt32(RENAME_EXCL)) == 0 { return 0 }
+        guard errno == ENOTSUP || errno == EOPNOTSUPP else { return -1 }
+        // a hard link is just as exclusive: it fails with EEXIST
+        if link(from, to) == 0 { unlink(from); return 0 }
+        guard errno == ENOTSUP || errno == EOPNOTSUPP else { return -1 }
+        // shortcut: between the check and the rename a manifest created by another writer would be replaced; ids are
+        // per-second timestamps and these filesystems have no flock anyway, upgrade if two writers can share an archive
+        var st = stat()
+        if lstat(to, &st) == 0 { errno = EEXIST; return -1 }
+        guard errno == ENOENT else { return -1 }
+        return rename(from, to)
     }
 }
 
