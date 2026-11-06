@@ -13,6 +13,16 @@ struct AppSettings: Codable, Equatable {
     var paused = false
     /// Files macOS won't let the user read are skipped silently and listed in Esclusioni.
     var skipUnreadable = true
+    /// Files bigger than this are left out (an image disk or a VM would be stored whole at every change)
+    var maxFileGB: Double? = nil
+    /// The scheduled backup waits on a metered network (iPhone hotspot, Wi-Fi marked "a consumo")
+    var deferOnMetered = true
+    /// The scheduled backup waits while the Mac runs on battery, not only under 20%
+    var onlyOnPower = false
+    var notify = NotifyLevel.errors
+
+    /// Problems (failed backups, a damaged archive, no backup for days) are always notified.
+    enum NotifyLevel: String, Codable, CaseIterable { case errors, warnings, all }
 
     static let intervals = [1, 2, 4, 6, 12, 24]
 
@@ -30,6 +40,10 @@ struct AppSettings: Codable, Equatable {
         excludedPaths = try c.decodeIfPresent([String].self, forKey: .excludedPaths) ?? excludedPaths
         paused = try c.decodeIfPresent(Bool.self, forKey: .paused) ?? paused
         skipUnreadable = try c.decodeIfPresent(Bool.self, forKey: .skipUnreadable) ?? skipUnreadable
+        maxFileGB = try c.decodeIfPresent(Double.self, forKey: .maxFileGB)
+        deferOnMetered = try c.decodeIfPresent(Bool.self, forKey: .deferOnMetered) ?? deferOnMetered
+        onlyOnPower = try c.decodeIfPresent(Bool.self, forKey: .onlyOnPower) ?? onlyOnPower
+        notify = (try? c.decodeIfPresent(NotifyLevel.self, forKey: .notify)) ?? notify
     }
 
     static func load() -> AppSettings {
@@ -48,7 +62,9 @@ struct AppSettings: Codable, Equatable {
 
     /// The rules a backup runs with: the patterns, the chosen paths and the automatic ones.
     var excludeRules: ExcludeRules {
-        ExcludeRules(patterns: excludes, paths: excludedPaths + ExcludeRules.automatic(destination: destination).map(\.path))
+        // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
+        ExcludeRules(patterns: excludes, paths: excludedPaths + ExcludeRules.automatic(destination: destination).map(\.path),
+                     maxFileSize: maxFileGB.map { Int64(min($0, 1_000_000) * 1e9) })
     }
 
     /// The source that already holds `path` and backs it up, unless a rule leaves it out there.

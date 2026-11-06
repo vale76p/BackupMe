@@ -50,6 +50,11 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     private var lastVerify = UserDefaults.standard.object(forKey: "lastVerify") as? Date {
         didSet { UserDefaults.standard.set(lastVerify, forKey: "lastVerify") }
     }
+    /// Progress of the full archive check, nil when none is running; backups wait until it ends.
+    var checkProgress: Double?
+    /// The last full check's outcome, in words, and whether the archive was healthy.
+    var checkResult: (text: String, healthy: Bool)?
+    private var checkCancel = OSAllocatedUnfairLock(initialState: false)
     var isRunning: Bool { if case .running = status { true } else { false } }
     var lastReport: BackupReport? { history.last }
 
@@ -84,6 +89,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         // asked in context: the first-run window asks when the first backup starts
         if settings.isConfigured { SystemServices.requestNotificationPermission() }
         SystemServices.repairLaunchAgent()
+        _ = SystemServices.network
         // common modes: in the default mode it doesn't fire while an open panel or a menu is up
         let timer = Timer(timeInterval: 60, repeats: true) { _ in MainActor.assumeIsolated { self.tick() } }
         RunLoop.main.add(timer, forMode: .common)
@@ -127,7 +133,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         }
         // waits for power or a cooler Mac, but never past a day without a backup; "Esegui ora" always runs
         let overdue = lastSuccess.map { now.timeIntervalSince($0) > 86400 } ?? true
-        let reason = overdue ? nil : SystemServices.backupDeferral()
+        let reason = overdue ? nil : SystemServices.backupDeferral(onlyOnPower: settings.onlyOnPower, avoidMetered: settings.deferOnMetered)
         if reason != deferral, let reason { Log.backup.info("Backup pianificato rinviato: \(reason.reason)") }
         deferral = reason
         guard deferral == nil else { return }
@@ -135,7 +141,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     func backupNow() {
-        guard !isRunning, !workerActive else { return }
+        guard !isRunning, !workerActive, checkProgress == nil else { return }
         guard settings.isConfigured else {
             status = .failed(Self.notConfigured)
             return
@@ -176,6 +182,63 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     func cancelBackup() { cancelFlag.withLock { $0 = true } }
+
+    /// Reads back every backup and every file of this Mac's archive, from Impostazioni › Avanzate.
+    func checkArchiveNow() {
+        guard !isRunning, !workerActive, checkProgress == nil, let dest = settings.destination else { return }
+        checkProgress = 0
+        checkResult = nil
+        let flag = OSAllocatedUnfairLock(initialState: false)
+        checkCancel = flag
+        let archive = AppPaths.archiveName
+        Log.backup.info("Controllo completo dell'archivio avviato")
+        Task.detached(priority: .utility) {
+            var lastSent = 0.0
+            let result = Result {
+                let repo = try Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false)
+                return try checkArchive(repository: repo, cache: HashCache(url: AppPaths.hashCache(archive)),
+                                        isCancelled: { flag.withLock { $0 } }) { p in
+                    guard p - lastSent >= 0.01 || p == 1 else { return }
+                    lastSent = p
+                    Task { @MainActor in if self.checkProgress != nil { self.checkProgress = p } }
+                }
+            }
+            await MainActor.run {
+                self.checkProgress = nil
+                self.finishCheck(result)
+            }
+        }
+    }
+
+    func cancelCheck() { checkCancel.withLock { $0 = true } }
+
+    private func finishCheck(_ result: Result<ArchiveCheck, Error>) {
+        switch result {
+        case .failure(BackupError.cancelled):
+            checkResult = ("Controllo interrotto", false)
+            Log.backup.info("Controllo completo dell'archivio interrotto")
+        case .failure(let error):
+            let text = "Controllo non riuscito: \(Self.describe(error))"
+            checkResult = (text, false)
+            Log.backup.error(text)
+        case .success(let c):
+            lastVerify = Date()
+            let size = c.objects.bytes.formatted(.byteCount(style: .file))
+            var problems: [String] = []
+            if !c.unreadableSnapshots.isEmpty { problems.append("\(c.unreadableSnapshots.count) backup illeggibili, che non si possono ripristinare") }
+            if c.missingObjects > 0 { problems.append("\(c.missingObjects) file mancanti nell'archivio") }
+            if !c.objects.corrupt.isEmpty { problems.append("\(c.objects.corrupt.count) file danneggiati senza una copia attuale per ripararli") }
+            let repaired = c.objects.repaired.isEmpty ? "" : "; \(c.objects.repaired.count) file danneggiati riparati"
+            if problems.isEmpty {
+                checkResult = ("Archivio integro: \(c.snapshots) backup, \(c.objects.checked) file controllati (\(size))\(repaired)", true)
+                Log.backup.info(checkResult!.text)
+            } else {
+                checkResult = ("Problemi trovati: " + problems.joined(separator: ", ") + repaired, false)
+                Log.backup.error(checkResult!.text)
+                if !c.unreadableSnapshots.isEmpty { Log.backup.error("Backup illeggibili: \(c.unreadableSnapshots.joined(separator: ", "))") }
+            }
+        }
+    }
 
     private func checkUpload() {
         guard let dest = settings.destination else { uploadProblem = nil; return }
@@ -302,7 +365,19 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             Log.backup.info("Backup \(report.snapshotID ?? "") riuscito: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(report.warnings.count) avvisi, \(Int(report.duration)) s")
         }
         // warnings that mean a backup can't be fully restored are notified, not just listed
-        for w in report.warnings where [Self.damaged, Self.incomplete, "Pulizia non riuscita"].contains(where: w.hasPrefix) { notifyOnce(w) }
+        let critical = report.warnings.filter { w in [Self.damaged, Self.incomplete, "Pulizia non riuscita"].contains(where: w.hasPrefix) }
+        for w in critical { notifyOnce(w) }
+        if report.error == nil, settings.notify != .errors {
+            let others = report.warnings.count - critical.count
+            if others > 0 {
+                SystemServices.notify("Backup completato con avvisi",
+                                      others == 1 ? "1 avviso: lo trovi nel pannello di BackupMe" : "\(others) avvisi: li trovi nel pannello di BackupMe",
+                                      problem: false)
+            } else if settings.notify == .all, critical.isEmpty {
+                SystemServices.notify("Backup completato", "\(report.fileCount) file, \(report.newBytes.formatted(.byteCount(style: .file))) nuovi",
+                                      problem: false)
+            }
+        }
         if let overCap, overCap != overCapNotified {
             overCapNotified = overCap
             if overCap { SystemServices.notify("BackupMe", "Il tetto è troppo basso per le cartelle selezionate.") }

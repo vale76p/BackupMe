@@ -11,19 +11,57 @@ public struct VerifyReport: Equatable, Sendable {
 /// rewritten from the source file the hash cache knows, if that file still has the same content; it is never deleted.
 public func verifySample(repository: Repository, cache: HashCache, budgetBytes: Int64) throws -> VerifyReport {
     try repository.withLock {
-        var r = VerifyReport(checked: 0, bytes: 0, corrupt: [], repaired: [])
-        for (hash, size) in try repository.objectSizes().shuffled() where r.bytes < budgetBytes {
-            // an object bigger than what's left would overshoot the budget (on Files On-Demand, a download of GBs)
-            guard size <= budgetBytes - r.bytes else { continue }
-            r.checked += 1
-            r.bytes += size
-            if try repository.verifyObject(hash) { continue }
-            if let p = cache.path(for: hash), (try? repository.repairObject(hash, from: URL(fileURLWithPath: p))) == true {
-                r.repaired.append(hash)
-            } else {
-                r.corrupt.append(hash)
-            }
+        try verify(try repository.objectSizes().shuffled(), in: repository, cache: cache, budgetBytes: budgetBytes)
+    }
+}
+
+private func verify(_ objects: [(key: String, value: Int64)], in repository: Repository, cache: HashCache, budgetBytes: Int64,
+                    isCancelled: () -> Bool = { false }, progress: (Double) -> Void = { _ in }) throws -> VerifyReport {
+    var r = VerifyReport(checked: 0, bytes: 0, corrupt: [], repaired: [])
+    for (i, (hash, size)) in objects.enumerated() where r.bytes < budgetBytes {
+        if isCancelled() { throw BackupError.cancelled }
+        // an object bigger than what's left would overshoot the budget (on Files On-Demand, a download of GBs)
+        guard size <= budgetBytes - r.bytes else { continue }
+        r.checked += 1
+        r.bytes += size
+        progress(Double(i + 1) / Double(objects.count))
+        if try repository.verifyObject(hash) { continue }
+        if let p = cache.path(for: hash), (try? repository.repairObject(hash, from: URL(fileURLWithPath: p))) == true {
+            r.repaired.append(hash)
+        } else {
+            r.corrupt.append(hash)
         }
-        return r
+    }
+    return r
+}
+
+public struct ArchiveCheck: Sendable {
+    public var snapshots: Int
+    /// Manifests that can't be read or decoded: those backups can't be restored at all.
+    public var unreadableSnapshots: [String]
+    /// Objects some backup needs that aren't in the archive.
+    public var missingObjects: Int
+    public var objects: VerifyReport
+
+    public var isHealthy: Bool { unreadableSnapshots.isEmpty && missingObjects == 0 && objects.corrupt.isEmpty }
+}
+
+/// Reads every manifest and every object back: what the daily sample does, for the whole archive. Corrupt objects
+/// are repaired from the source files when possible, as in `verifySample`.
+public func checkArchive(repository: Repository, cache: HashCache, isCancelled: () -> Bool = { false },
+                         progress: (Double) -> Void = { _ in }) throws -> ArchiveCheck {
+    try repository.withLock {
+        let ids = try repository.snapshotIDs()
+        var unreadable: [String] = []
+        var needed = Set<String>()
+        for id in ids {
+            if isCancelled() { throw BackupError.cancelled }
+            do { needed.formUnion(try repository.readSnapshot(id).entries.compactMap(\.hash)) } catch { unreadable.append(id) }
+        }
+        let sizes = try repository.objectSizes()
+        let missing = needed.subtracting(sizes.keys).count
+        let objects = try verify(Array(sizes), in: repository, cache: cache, budgetBytes: .max,
+                                 isCancelled: isCancelled, progress: progress)
+        return ArchiveCheck(snapshots: ids.count, unreadableSnapshots: unreadable, missingObjects: missing, objects: objects)
     }
 }

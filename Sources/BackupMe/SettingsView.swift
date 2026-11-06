@@ -8,7 +8,7 @@ struct SettingsView: View {
     @AppStorage("settingsPane") private var pane = Pane.folders
 
     enum Pane: String, CaseIterable {
-        case folders, archive, schedule, retention, excludes, advanced
+        case folders, archive, schedule, retention, excludes, log, advanced
 
         var title: String {
             switch self {
@@ -17,6 +17,7 @@ struct SettingsView: View {
             case .schedule: "Pianificazione"
             case .retention: "Conservazione"
             case .excludes: "Esclusioni"
+            case .log: "Registro"
             case .advanced: "Avanzate"
             }
         }
@@ -28,6 +29,7 @@ struct SettingsView: View {
             case .schedule: "calendar.badge.clock"
             case .retention: "clock.arrow.circlepath"
             case .excludes: "nosign"
+            case .log: "doc.text.magnifyingglass"
             case .advanced: "gearshape.2"
             }
         }
@@ -55,7 +57,10 @@ struct SettingsView: View {
         case .schedule: ScheduleSection(model: model)
         case .retention: RetentionSection(model: model)
         case .excludes: ExcludesSection(model: model)
-        case .advanced: LoggingSection()
+        case .log:
+            LogViewSection()
+            LoggingSection()
+        case .advanced: ArchiveCheckSection(model: model)
         }
     }
 }
@@ -365,8 +370,23 @@ private struct ScheduleSection: View {
                 }
             if let loginError { ErrorRow(text: loginError) }
         }
-        if model.notificationsDenied {
-            Section {
+        Section {
+            Toggle("Solo con l'alimentatore collegato", isOn: $model.settings.onlyOnPower)
+            Toggle("Rimanda sulle reti a consumo", isOn: $model.settings.deferOnMetered)
+                .help("Hotspot dell'iPhone o reti Wi-Fi segnate come «a consumo» in Impostazioni di Sistema")
+        } header: {
+            Text("Quando rimandare")
+        } footer: {
+            Text("Il backup pianificato aspetta anche con il Risparmio energetico, la batteria sotto il 20% o il Mac troppo caldo, ma mai oltre un giorno senza backup. «Esegui backup ora» parte sempre.")
+        }
+        .disabled(model.settings.paused)
+        Section {
+            Picker("Notifiche", selection: $model.settings.notify) {
+                Text("Solo problemi").tag(AppSettings.NotifyLevel.errors)
+                Text("Anche gli avvisi").tag(AppSettings.NotifyLevel.warnings)
+                Text("Ogni backup").tag(AppSettings.NotifyLevel.all)
+            }
+            if model.notificationsDenied {
                 LabeledContent {
                     Button("Apri Impostazioni di Sistema") { SystemServices.openNotificationSettings() }
                 } label: {
@@ -374,6 +394,8 @@ private struct ScheduleSection: View {
                     Text("Senza notifiche gli errori dei backup non vengono segnalati.")
                 }
             }
+        } footer: {
+            Text("Backup non riusciti, archivio danneggiato e nessun backup da 3 giorni vengono sempre notificati.")
         }
     }
 }
@@ -439,6 +461,7 @@ private struct ExcludesSection: View {
     var body: some View {
         patternsSection
         pathsSection
+        sizeSection
         automaticSection
         lastBackupSection
         unreadableSection
@@ -571,6 +594,31 @@ private struct ExcludesSection: View {
         }
     }
 
+    // MARK: size
+
+    private var sizeSection: some View {
+        Section {
+            Toggle("Escludi i file più grandi di un limite", isOn: Binding(
+                get: { model.settings.maxFileGB != nil },
+                set: { model.settings.maxFileGB = $0 ? (model.settings.maxFileGB ?? 1) : nil }))
+            if model.settings.maxFileGB != nil {
+                LabeledContent("Limite") {
+                    HStack(spacing: 4) {
+                        TextField("Limite", value: Binding(get: { model.settings.maxFileGB ?? 1 },
+                                                           set: { model.settings.maxFileGB = max($0, 0.01) }),
+                                  format: .number)
+                            .labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
+                        Text("GB").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } header: {
+            Text("File grandi")
+        } footer: {
+            Text("Un file viene salvato di nuovo per intero a ogni modifica: immagini disco, macchine virtuali e database grandi riempiono presto l'archivio. Mai applicato dentro .git; un file aggiunto in Cartelle viene sempre salvato.")
+        }
+    }
+
     // MARK: automatic
 
     /// Automatic exclusions inside a saved folder; one inside another listed one (Library holds CloudStorage) is left out.
@@ -613,9 +661,9 @@ private struct ExcludesSection: View {
     @ViewBuilder private var lastBackupSection: some View {
         if let excluded = model.lastReport?.excluded, !excluded.isEmpty {
             Section {
-                DisclosureGroup(excluded.count >= 200 ? "200 o più cartelle escluse nell'ultimo backup"
-                                : excluded.count == 1 ? "1 cartella esclusa nell'ultimo backup"
-                                : "\(excluded.count) cartelle escluse nell'ultimo backup") {
+                DisclosureGroup(excluded.count >= 200 ? "200 o più elementi esclusi nell'ultimo backup"
+                                : excluded.count == 1 ? "1 elemento escluso nell'ultimo backup"
+                                : "\(excluded.count) elementi esclusi nell'ultimo backup") {
                     let rules = model.settings.excludeRules
                     ForEach(excluded, id: \.self) { item in
                         HStack {
@@ -639,7 +687,10 @@ private struct ExcludesSection: View {
         if let p = rules.matchingPattern(name: (path as NSString).lastPathComponent, isDirectory: true, path: path) { return p }
         let name = String(item[..<slash])
         let full = model.settings.sources.first { ($0 as NSString).lastPathComponent == name }.map { $0 + "/" + path }
-        return full.map { rules.paths.contains(ExcludeRules.resolved($0)) } == true ? "esclusa per percorso" : "CACHEDIR.TAG"
+        if full.map({ rules.paths.contains(ExcludeRules.resolved($0)) }) == true { return "esclusa per percorso" }
+        var isDir: ObjCBool = false
+        if let full, FileManager.default.fileExists(atPath: full, isDirectory: &isDir), !isDir.boolValue { return "troppo grande" }
+        return "CACHEDIR.TAG"
     }
 
     // MARK: unreadable files
@@ -679,6 +730,73 @@ private struct ExcludesSection: View {
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .help("Rimuovi \(name)")
+    }
+}
+
+private struct LogViewSection: View {
+    @State private var lines: [String] = []
+    @State private var onlyErrors = false
+
+    var body: some View {
+        Section {
+            let shown = onlyErrors ? lines.filter { $0.contains(" ERROR ") } : lines
+            ScrollView {
+                Text(shown.isEmpty ? "Nessuna riga" : shown.joined(separator: "\n"))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(shown.isEmpty ? .secondary : .primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .defaultScrollAnchor(.bottom)
+            .frame(height: 220)
+            HStack {
+                Toggle("Solo errori", isOn: $onlyErrors)
+                Spacer()
+                Button("Aggiorna", systemImage: "arrow.clockwise", action: reload)
+                Button("Copia") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(shown.joined(separator: "\n"), forType: .string)
+                }
+                Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting([Log.file]) }
+                    .disabled(lines.isEmpty)
+                Button("Svuota", role: .destructive) { Log.clear(); reload() }
+            }
+        } header: {
+            Text("Registro di BackupMe")
+        } footer: {
+            Text("Avvii, esiti, rinvii ed errori di backup, ripristini e controlli, anche dopo un riavvio. Con il livello Debug anche i dettagli di ogni passaggio.")
+        }
+        .task { reload() }
+    }
+
+    private func reload() { lines = Log.lines() }
+}
+
+private struct ArchiveCheckSection: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        Section {
+            if let p = model.checkProgress {
+                HStack {
+                    ProgressView(value: p)
+                    Button("Interrompi", action: model.cancelCheck)
+                }
+            } else {
+                LabeledContent("Controllo completo") {
+                    Button("Controlla ora", action: model.checkArchiveNow)
+                        .disabled(model.isRunning || model.settings.destination == nil)
+                }
+            }
+            if let r = model.checkResult {
+                Label(r.text, systemImage: r.healthy ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(r.healthy ? Color.green : Color.red)
+            }
+        } header: {
+            Text("Integrità dell'archivio")
+        } footer: {
+            Text("Rilegge ogni backup e ogni file dell'archivio di questo Mac e ripara i file danneggiati quando la copia attuale è ancora uguale. Ogni giorno ne viene già controllato un campione. Su OneDrive con «File su richiesta» scarica l'intero archivio; i backup aspettano la fine del controllo.")
+        }
     }
 }
 

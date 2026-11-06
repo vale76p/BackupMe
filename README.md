@@ -44,11 +44,14 @@ BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchA
 
 - **Backup parziale.** Se una cartella sorgente manca o non è leggibile, le altre vengono salvate lo stesso, ma il backup è segnato come non riuscito: notifica, icona di errore e nessuna pulizia dei backup vecchi finché il problema resta.
 - **Nessuna modifica, nessun upload.** Se dall'ultimo backup non è cambiato niente non viene scritto un nuovo indice su OneDrive.
-- **Esclusioni.** Un nome (es. `node_modules`) esclude le cartelle con quel nome; un pattern con `/` vale per il percorso dentro la cartella salvata (es. `apps/*/dist`); i pattern con `*` o che iniziano con `.` (es. `*.log`, `.DS_Store`) valgono anche per i file. Sono escluse anche le cartelle con un file `CACHEDIR.TAG`. Dentro `.git` non si esclude mai niente. **Impostazioni › Esclusioni** mostra le cartelle escluse nell'ultimo backup.
+- **Esclusioni.** Un nome (es. `node_modules`) esclude le cartelle con quel nome; un pattern con `/` vale per il percorso dentro la cartella salvata (es. `apps/*/dist`); i pattern con `*` o che iniziano con `.` (es. `*.log`, `.DS_Store`) valgono anche per i file. Sono escluse anche le cartelle con un file `CACHEDIR.TAG`. Dentro `.git` non si esclude mai niente. **Impostazioni › Esclusioni** mostra le cartelle escluse nell'ultimo backup. Si possono escludere anche i file sopra una dimensione scelta (mai dentro `.git`).
+- **File senza permessi.** I file che macOS non lascia leggere ("non hai i privilegi necessari") vengono saltati ed elencati in **Impostazioni › Esclusioni** invece di comparire tra gli avvisi; si può disattivare. **Cancella avvisi** svuota gli avvisi dell'ultimo backup.
 - **Repository git coerenti.** Se durante il backup si fa un commit, la cartella viene riletta; se cambia ancora, un avviso chiede di ripetere il backup.
-- **Batteria e calore.** I backup pianificati aspettano con Risparmio energetico, batteria sotto il 20% o Mac troppo caldo, ma mai oltre 24 ore dall'ultimo riuscito. **Esegui backup ora** parte sempre.
+- **Batteria, calore e rete.** I backup pianificati aspettano con Risparmio energetico, batteria sotto il 20%, Mac troppo caldo o su una rete a consumo (hotspot, Wi-Fi segnata «a consumo»), e a scelta per tutto il tempo a batteria, ma mai oltre 24 ore dall'ultimo riuscito. **Esegui backup ora** parte sempre.
+- **Notifiche.** Problemi sempre; a scelta anche i backup con avvisi o ogni backup completato (**Impostazioni › Pianificazione**).
+- **Registro.** **Impostazioni › Registro** mostra avvii, esiti, rinvii ed errori, anche dopo un riavvio (`~/Library/Application Support/BackupMe/BackupMe.log`, ruotato a 1 MB). Gli stessi messaggi vanno nel registro di sistema.
 - **Cloud.** Se il client (OneDrive, Dropbox…) non carica i backup da più di 3 giorni, o segnala un errore, il pannello e una notifica lo dicono.
-- **Verifica.** Una volta al giorno BackupMe rilegge a caso fino a 100 MB dell'archivio; un file danneggiato viene riparato dalla copia attuale se esiste, altrimenti arriva un avviso. Non cancella mai niente.
+- **Verifica.** Una volta al giorno BackupMe rilegge a caso fino a 100 MB dell'archivio; un file danneggiato viene riparato dalla copia attuale se esiste, altrimenti arriva un avviso. Non cancella mai niente. **Impostazioni › Avanzate › Controlla ora** rilegge l'intero archivio: indici illeggibili, file mancanti o danneggiati.
 - **File grandi** (oltre 32 MB) o non comprimibili vengono copiati così come sono, senza caricarli in memoria.
 
 ## Dove sono i backup

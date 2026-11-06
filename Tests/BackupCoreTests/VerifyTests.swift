@@ -19,6 +19,28 @@ import Testing
         try h.close()
     }
 
+    @Test func fullCheckFindsMissingAndUnreadable() throws {
+        write("uno", to: src.appending(path: "a.txt"))
+        write("due", to: src.appending(path: "b.txt"))
+        let repo = try backup()
+        let cache = HashCache(url: cacheURL)
+        let ok = try checkArchive(repository: repo, cache: cache)
+        #expect(ok.isHealthy && ok.snapshots == 1 && ok.objects.checked == 2)
+        try repo.deleteObject(sha256Hex(Data("uno".utf8)))
+        let id = try repo.snapshotIDs()[0]
+        try Data("rotto".utf8).write(to: repo.root.appending(path: "snapshots/\(id).json.lzfse"))
+        let bad = try checkArchive(repository: repo, cache: cache)
+        #expect(!bad.isHealthy && bad.unreadableSnapshots == [id] && bad.objects.checked == 1)
+    }
+
+    @Test func fullCheckCountsMissingObjects() throws {
+        write("uno", to: src.appending(path: "a.txt"))
+        let repo = try backup()
+        try repo.deleteObject(sha256Hex(Data("uno".utf8)))
+        let r = try checkArchive(repository: repo, cache: HashCache(url: cacheURL))
+        #expect(r.missingObjects == 1 && r.unreadableSnapshots.isEmpty && !r.isHealthy)
+    }
+
     @Test func corruptObjectRepairedFromSource() throws {
         let text = Data(String(repeating: "contenuto ", count: 100).utf8)
         write(String(decoding: text, as: UTF8.self), to: src.appending(path: "a.txt"))

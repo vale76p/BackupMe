@@ -7,10 +7,13 @@ public struct ExcludeRules: Sendable {
     /// Absolute paths left out wherever they are inside a saved item, symlinks resolved.
     /// A saved item is never left out by its own path: picking it as a source wins.
     public let paths: Set<String>
+    /// Files bigger than this (bytes) are left out, never inside .git; nil means no limit.
+    public let maxFileSize: Int64?
 
-    public init(patterns: [String], paths: [String] = []) {
+    public init(patterns: [String], paths: [String] = [], maxFileSize: Int64? = nil) {
         self.patterns = patterns.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         self.paths = Set(paths.map(Self.resolved))
+        self.maxFileSize = maxFileSize
     }
 
     public static func resolved(_ path: String) -> String { URL(fileURLWithPath: path).resolvingSymlinksInPath().path }

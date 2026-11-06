@@ -143,6 +143,18 @@ import Testing
         #expect(try e.run(sources: [src]).excluded?.count == 200)
     }
 
+    @Test func filesOverSizeLimitAreExcluded() throws {
+        write("piccolo", to: src.appending(path: "a.txt"))
+        write(String(repeating: "x", count: 100), to: src.appending(path: "video/grande.mov"))
+        write(String(repeating: "x", count: 100), to: src.appending(path: ".git/objects/pack/p.pack"))
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let report = try BackupEngine(repository: repo, cache: HashCache(url: cacheURL),
+                                      excludes: ExcludeRules(patterns: [], maxFileSize: 50)).run(sources: [src])
+        #expect(report.excluded == ["progetto/video/grande.mov"])
+        let paths = Set(try repo.readSnapshot(report.snapshotID!).entries.map(\.path))
+        #expect(paths.contains("a.txt") && paths.contains(".git/objects/pack/p.pack") && !paths.contains("video/grande.mov"))
+    }
+
     @Test func unreadableFileIsSkippedNotWarned() throws {
         write("a", to: src.appending(path: "a.txt"))
         let locked = src.appending(path: ".taniu")

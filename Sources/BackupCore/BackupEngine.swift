@@ -8,7 +8,8 @@ public struct BackupReport: Codable, Sendable {
     public var newBytes: Int64
     public var warnings: [String]
     public var error: String?
-    /// Folders skipped by the excludes or a CACHEDIR.TAG, as "<source folder name>/<path>"; at most 200.
+    /// Folders skipped by the excludes or a CACHEDIR.TAG, and files over the size limit, as
+    /// "<source folder name>/<path>"; at most 200.
     public var excluded: [String]?
     /// Files left out because macOS denied reading them (`skipUnreadable`), as absolute paths; at most 200.
     public var skipped: [String]?
@@ -250,11 +251,12 @@ public final class BackupEngine {
             guard let child = FileStat(path: full + "/" + name) else { continue }
             let path = rel.isEmpty ? name : rel + "/" + name
             let isDir = child.kind == .directory
+            let tooBig = child.kind == .file && excludes.maxFileSize.map { child.size > $0 } == true
             // excludes never apply inside .git: a branch named "build" is a file under .git/refs/heads
             // `resolved`: the skipped paths are compared without symlinks, as the source may be reached through one
             if !insideGit, excludes.excludes(name: name, isDirectory: isDir, path: path) || skipped.contains(resolved + "/" + path)
-                || (isDir && isCacheDirectory(full + "/" + name)) {
-                if isDir, scan.excluded.count < Self.excludedLimit {
+                || (isDir && isCacheDirectory(full + "/" + name)) || tooBig {
+                if isDir || tooBig, scan.excluded.count < Self.excludedLimit {
                     scan.excluded.append((scan.source as NSString).lastPathComponent + "/" + path)
                 }
                 continue

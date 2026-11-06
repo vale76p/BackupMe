@@ -2,6 +2,16 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.8.0] - 2026-11-06
+
+### Aggiunto
+- I file senza permessi di lettura ("non hai i privilegi necessari") vengono saltati in automatico ed elencati in Esclusioni invece di comparire tra gli avvisi (attivo di default). Pulsante "Cancella avvisi" per svuotare gli avvisi dell'ultimo backup.
+- Esclusione dei file più grandi di un limite in GB, mai dentro `.git`; compaiono tra gli elementi esclusi come "troppo grande".
+- Il backup pianificato aspetta su una rete a consumo (attivo di default) e, a scelta, per tutto il tempo in cui il Mac è a batteria.
+- Notifiche a scelta: solo problemi, anche i backup con avvisi, o ogni backup completato.
+- Pannello Registro: il registro di BackupMe salvato su file (sopravvive a riavvii e crash), con filtro "Solo errori", copia e svuota.
+- Controllo completo dell'archivio da Avanzate: rilegge ogni indice e ogni file, segnala backup illeggibili, file mancanti e danneggiati, ripara quelli che hanno ancora la copia attuale. I backup aspettano la fine del controllo.
+
 ## [0.7.0] - 2026-11-06
 
 ### Aggiunto

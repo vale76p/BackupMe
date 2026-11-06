@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import IOKit.ps
+import Network
 import ServiceManagement
 import UserNotifications
 
@@ -56,16 +57,30 @@ enum SystemServices {
     /// Why a scheduled backup waits, and until when, in words.
     struct Deferral: Equatable, Sendable { var reason: String; var until: String }
 
+    /// Started at launch: its path is only known after the first update.
+    static let network: NWPathMonitor = {
+        let m = NWPathMonitor()
+        m.start(queue: DispatchQueue(label: "com.vale76p.BackupMe.network"))
+        return m
+    }()
+
     /// Low Power Mode, battery under 20% unplugged, a hot Mac: the scheduled backup waits. nil when it can run.
-    static func backupDeferral() -> Deferral? {
+    /// `onlyOnPower` waits on any battery level, `avoidMetered` on a hotspot or a Wi-Fi marked as metered.
+    static func backupDeferral(onlyOnPower: Bool = false, avoidMetered: Bool = false) -> Deferral? {
         if ProcessInfo.processInfo.isLowPowerModeEnabled {
             return Deferral(reason: "Risparmio energetico attivo", until: "Quando il Risparmio energetico è disattivato")
         }
         if ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
             return Deferral(reason: "Mac troppo caldo", until: "Quando il Mac si sarà raffreddato")
         }
+        if avoidMetered, network.currentPath.status == .satisfied, network.currentPath.isExpensive || network.currentPath.isConstrained {
+            return Deferral(reason: "Rete a consumo", until: "Su una rete senza limiti di traffico")
+        }
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let list = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return nil }
+        if onlyOnPower, IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String? == kIOPSBatteryPowerValue {
+            return Deferral(reason: "Mac a batteria", until: "Dopo il collegamento all'alimentazione")
+        }
         for ps in list {
             guard let d = IOPSGetPowerSourceDescription(info, ps)?.takeUnretainedValue() as? [String: Any],
                   d[kIOPSPowerSourceStateKey] as? String == kIOPSBatteryPowerValue,
