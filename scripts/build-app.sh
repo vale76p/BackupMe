@@ -3,6 +3,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# codesign rejects Finder info and resource forks ("detritus"), which synced folders and actool add: only those
+# are removed. `xattr -c` would also try system attributes such as com.apple.provenance, which on a managed Mac
+# can't be removed without admin rights ("Operation not permitted") and don't bother codesign anyway.
+strip_detritus() {
+    find "$1" -print0 2>/dev/null | while IFS= read -r -d '' f; do
+        for a in com.apple.FinderInfo com.apple.ResourceFork 'com.apple.fileprovider.fpfs#P'; do
+            xattr -d "$a" "$f" 2>/dev/null || true
+        done
+    done || true # never a reason to stop: codesign right after says if something that matters is left
+}
+
 swift build -c release --product BackupMe
 swift build -c release --product KitUpdater
 BIN="$(swift build -c release --show-bin-path)/BackupMe"
@@ -26,13 +37,12 @@ else
     rm -f "$APP/Contents/Resources/Assets.car"
 fi
 rm -f "$PARTIAL"
-xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true # actool sets the bundle bit there, codesign rejects it
 # after actool, replacing its .icns: the hand-made one has every size and bolder strokes at 16/32px
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" # regenerate with scripts/make-icon.swift
 # ad-hoc by default; set BACKUPME_SIGN_IDENTITY to a certificate name (even self-signed) so macOS keeps
 # folder and notification permissions across rebuilds: an ad-hoc identity changes with every build
-# the repo may live in a synced folder (Documents in iCloud) that keeps tagging the bundle: codesign rejects that
-xattr -cr "$APP"
+# actool sets the bundle bit in Finder info, and a synced folder (Documents in iCloud) keeps tagging the bundle
+strip_detritus "$APP"
 codesign --force --sign "${BACKUPME_SIGN_IDENTITY:--}" "$APP"
 echo "Built $APP"
 
@@ -48,7 +58,7 @@ if [[ "${1:-}" == "--install" ]]; then
     NEXT="$HOME/Applications/.BackupMe-nuova.app"
     rm -rf "$NEXT"
     cp -R "$APP" "$NEXT"
-    xattr -cr "$NEXT" # ~/Applications isn't synced: once clean, it stays clean
+    strip_detritus "$NEXT" # ~/Applications isn't synced: once clean, it stays clean
     rm -rf "$HOME/Applications/BackupMe.app"
     mv "$NEXT" "$HOME/Applications/BackupMe.app"
     echo "Installed $HOME/Applications/BackupMe.app"

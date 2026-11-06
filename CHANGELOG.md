@@ -2,6 +2,11 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.6.4] - 2026-11-06
+
+### Corretto
+- `scripts/build-app.sh` si fermava su un Mac gestito senza permessi di amministratore con "xattr: [Errno 1] Operation not permitted" (su `AppIcon.icns` e `Info.plist`): cercava di togliere tutti gli attributi estesi, compresi quelli di sistema come `com.apple.provenance` che lì non si possono togliere. Ora toglie solo quelli che `codesign` rifiuta (informazioni del Finder, resource fork, etichette della cartella sincronizzata) e non si ferma mai per un attributo.
+
 ## [0.6.3] - 2026-11-06
 
 Correzioni dalla seconda revisione avversativa (integrità, ripristino, ciclo di vita, scala, interfaccia).
