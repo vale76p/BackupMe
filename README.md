@@ -22,7 +22,7 @@ macOS 14 o successivo, con Xcode o i Command Line Tools (`xcode-select --install
 scripts/build-app.sh --install
 ```
 
-Lo script compila, firma l'app, la copia in `~/Applications` e la riavvia. Per aggiornare, rilancia lo stesso comando.
+Lo script compila, firma l'app, la copia in `~/Applications` e la riavvia. Per compilare bastano `Package.swift`, `Sources/`, `Resources/` e `scripts/build-app.sh`: `Tests/` e `docs/` servono solo allo sviluppo e si possono non copiare. Per aggiornare, rilancia lo stesso comando.
 
 **Permessi che non si perdono a ogni aggiornamento.** Con la firma ad-hoc predefinita ogni build è per macOS un'app nuova: l'accesso a Documenti/Scrivania può essere richiesto di nuovo, e finché non lo concedi i backup di quelle cartelle falliscono (il menu lo segnala). Per evitarlo crea una volta un certificato di firma del codice in *Accesso Portachiavi › Assistente certificato › Crea un certificato* (tipo "Firma codice") e compila con:
 
