@@ -480,7 +480,7 @@ public final class Repository {
         // Some filesystems reject F_FULLFSYNC: fall back to fsync.
         if !(sync == .device && fcntl(fd, F_FULLFSYNC) == 0), fsync(fd) != 0 { throw Self.posixError() }
         let moved = exclusive
-            ? renameatx_np(parent, tmp, parent, name, UInt32(RENAME_EXCL))
+            ? Self.renameExclusive(tmp, name, in: parent)
             : renameat(parent, tmp, parent, name)
         guard moved == 0 else { throw Self.posixError() }
         published = true
@@ -508,6 +508,22 @@ public final class Repository {
             }
             return true
         }
+    }
+
+    /// rename(2) that fails with EEXIST instead of replacing `to`. exFAT and FAT32 reject RENAME_EXCL and link(2) with ENOTSUP.
+    /// Both names are in `dir`, a folder opened without following links.
+    private static func renameExclusive(_ from: String, _ to: String, in dir: Int32) -> Int32 {
+        if renameatx_np(dir, from, dir, to, UInt32(RENAME_EXCL)) == 0 { return 0 }
+        guard errno == ENOTSUP || errno == EOPNOTSUPP else { return -1 }
+        // a hard link is just as exclusive: it fails with EEXIST
+        if linkat(dir, from, dir, to, 0) == 0 { unlinkat(dir, from, 0); return 0 }
+        guard errno == ENOTSUP || errno == EOPNOTSUPP else { return -1 }
+        // shortcut: between the check and the rename a manifest created by another writer would be replaced; ids are
+        // per-second timestamps and these filesystems have no flock anyway, upgrade if two writers can share an archive
+        var st = stat()
+        if fstatat(dir, to, &st, AT_SYMLINK_NOFOLLOW) == 0 { errno = EEXIST; return -1 }
+        guard errno == ENOENT else { return -1 }
+        return renameat(dir, from, dir, to)
     }
 }
 
