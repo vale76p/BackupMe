@@ -21,7 +21,7 @@ struct SearchHit: Hashable, Identifiable {
     /// Search progress only; a restore has its own flag so neither can cancel or block the other.
     var busy: String?
     var restoring = false
-    var error: String?
+    var error: (title: String, message: String)?
     /// True until the snapshot list arrives: "no backups" must not flash while it loads.
     var isLoading = true
     /// Only the few snapshots opened recently stay in memory: one manifest can be tens of MB.
@@ -29,6 +29,8 @@ struct SearchHit: Hashable, Identifiable {
     private var loadOrder: [String] = []
     /// snapshot id → source → parent path → children, built once off the main thread
     private var index: [String: [String: [String: [Entry]]]] = [:]
+    /// snapshot id + source + folder → entry id → status against this Mac's disk, computed once per folder
+    private var statuses: [String: [String: EntryStatus]] = [:]
     private var searchTask: Task<Void, Never>?
     /// Bumped on reload: results of tasks started for another computer or destination are dropped.
     private var generation = 0
@@ -37,6 +39,9 @@ struct SearchHit: Hashable, Identifiable {
 
     var selected: Snapshot? { selectedID.flatMap { loaded[$0] } }
     var sources: [String] { selected?.sources ?? [] }
+    var hasDestination: Bool { destination != nil }
+    /// Comparing with this Mac's disk is meaningless for another computer's archive.
+    var showsStatus: Bool { computer == AppPaths.archiveName }
 
     private var destination: URL? { app.settings.destination.map { URL(fileURLWithPath: $0) } }
 
@@ -50,7 +55,9 @@ struct SearchHit: Hashable, Identifiable {
     }
 
     func reload() {
-        guard let dest = destination else { error = "Nessuna destinazione configurata"; isLoading = false; return }
+        guard let dest = destination else {
+            generation += 1; computers = []; snapshots = []; selectedID = nil; isLoading = false; return
+        }
         computers = Repository.computers(in: dest)
         if !computers.contains(computer), let first = computers.first { computer = first; return }
         generation += 1
@@ -60,6 +67,7 @@ struct SearchHit: Hashable, Identifiable {
         loaded = [:]
         loadOrder = []
         index = [:]
+        statuses = [:]
         snapshots = []
         selectedID = nil
         isLoading = true
@@ -71,7 +79,7 @@ struct SearchHit: Hashable, Identifiable {
                 selectedID = snapshots.first?.id
             } catch RepositoryError.destinationMissing where computers.isEmpty {
                 // no archive yet: the window shows its empty state, not an alert
-            } catch { if gen == generation { self.error = AppModel.describe(error) } }
+            } catch { if gen == generation { self.error = ("Impossibile aprire il backup", AppModel.describe(error)) } }
             if gen == generation { isLoading = false }
         }
     }
@@ -92,18 +100,42 @@ struct SearchHit: Hashable, Identifiable {
                     if old != selectedID { loaded[old] = nil; index[old] = nil } else { loadOrder.append(old) }
                 }
                 fixSource()
-            } catch { if gen == generation { self.error = AppModel.describe(error) } }
+            } catch { if gen == generation { self.error = ("Impossibile aprire il backup", AppModel.describe(error)) } }
         }
     }
 
     /// nil source = the top level, which lists the saved folders themselves.
     private func fixSource() {
         if let s = source, !sources.contains(s) { source = nil; currentPath = "" }
+        // a folder missing from this backup falls back to its nearest saved parent, not an empty table
+        guard let id = selectedID, let s = source, let tree = index[id] else { return }
+        let dirs = tree[s] ?? [:]
+        while !currentPath.isEmpty {
+            let parent = (currentPath as NSString).deletingLastPathComponent
+            if dirs[parent]?.contains(where: { $0.path == currentPath && $0.kind == .directory }) == true { break }
+            currentPath = parent
+        }
     }
 
     func children() -> [Entry] {
         guard let id = selectedID else { return [] }
         return index[id]?[source ?? ""]?[source == nil ? "" : currentPath] ?? []
+    }
+
+    func status(of e: Entry) -> EntryStatus? { statuses[folderKey]?[e.id] }
+
+    private var folderKey: String { "\(selectedID ?? "")\u{0}\(source ?? "")\u{0}\(currentPath)" }
+
+    /// Stats the folder being viewed off the main thread, once: table redraws only read the cache.
+    func refreshStatus() async {
+        guard showsStatus, selected != nil else { return }
+        let key = folderKey, gen = generation
+        guard statuses[key] == nil else { return }
+        let rows = children()
+        let found = await Task.detached(priority: .utility) {
+            Dictionary(rows.map { ($0.id, Restorer.status(of: $0)) }, uniquingKeysWith: { a, _ in a })
+        }.value
+        if gen == generation, !Task.isCancelled { statuses[key] = found }
     }
 
     nonisolated private static func buildIndex(_ s: Snapshot) -> [String: [String: [Entry]]] {
@@ -157,7 +189,7 @@ struct SearchHit: Hashable, Identifiable {
     }
 
     func restore(snapshotID: String, source: String, path: String, mode: RestoreMode) {
-        guard !restoring else { error = "Un ripristino è già in corso: attendi che finisca"; return }
+        guard !restoring else { error = ("Ripristino non riuscito", "Un ripristino è già in corso: attendi che finisca"); return }
         restoring = true
         Task {
             do {
@@ -165,7 +197,7 @@ struct SearchHit: Hashable, Identifiable {
                     try Restorer(repository: repo).restore(try repo.readSnapshot(snapshotID), source: source, path: path, mode: mode)
                 }
                 NSWorkspace.shared.activateFileViewerSelecting([url])
-            } catch { self.error = AppModel.describe(error) }
+            } catch { self.error = ("Ripristino non riuscito", AppModel.describe(error)) }
             restoring = false
         }
     }

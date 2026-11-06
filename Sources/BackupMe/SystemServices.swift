@@ -29,6 +29,34 @@ enum SystemServices {
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
+    static func openNotificationSettings() {
+        let id = Bundle.main.bundleIdentifier ?? ""
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    // MARK: windows
+
+    /// A menu bar app has no Dock icon or menus: while one of its windows is open it acts as a regular app,
+    /// so the window comes to the front, shows up in ⌘-Tab and gets the app menu (with Impostazioni… ⌘,).
+    @MainActor static func windowOpened() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate()
+    }
+
+    /// Back to menu bar only once the last real window closes (the menu bar panel can't become main).
+    @MainActor static func watchWindowsClosing() {
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
+            let closing = (note.object as AnyObject?).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                if !NSApp.windows.contains(where: { ObjectIdentifier($0) != closing && $0.isVisible && $0.canBecomeMain }) {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            }
+        }
+    }
+
     // MARK: single instance
 
     /// A login agent and a manual open can start two copies: the newer one quits.

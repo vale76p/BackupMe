@@ -1,6 +1,7 @@
 import AppKit
 import BackupCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RestoreView: View {
     @State var model: RestoreModel
@@ -8,22 +9,39 @@ struct RestoreView: View {
     @State private var hit: SearchHit?
     @State private var confirmWhole = false
     @State private var versionsOf: Entry?
+    @State private var sortOrder: [KeyPathComparator<Entry>] = []
+    @State private var columns = TableColumnCustomization<Entry>()
 
     private var selection: Entry? { entryID.flatMap(entry) }
 
     var body: some View {
         NavigationSplitView {
             List(selection: $model.selectedID) {
+                if model.computers.count > 1 {
+                    Section("Computer") {
+                        Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
+                            .labelsHidden()
+                            .help("Computer di origine")
+                    }
+                }
                 ForEach(groups, id: \.title) { group in
                     Section(group.title) {
                         ForEach(group.items, id: \.id) { s in Text(label(s.date, in: group.title)).tag(s.id) }
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
         } detail: {
             Group {
-                if model.search.isEmpty { browser } else { results }
+                if !model.hasDestination {
+                    ContentUnavailableView {
+                        Label("Nessuna destinazione", systemImage: "externaldrive.badge.xmark")
+                    } description: {
+                        Text("Scegli dove salvare i backup per poterli sfogliare e ripristinare.")
+                    } actions: {
+                        SettingsLink { Text("Apri Impostazioni…") }
+                    }
+                } else if model.search.isEmpty { browser } else { results }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -46,19 +64,15 @@ struct RestoreView: View {
                     if model.currentPath.isEmpty { model.source = nil; open("") }
                     else { open((model.currentPath as NSString).deletingLastPathComponent) }
                 }
+                .keyboardShortcut(.upArrow, modifiers: .command)
                 .disabled(model.source == nil || !model.search.isEmpty)
                 .help("Cartella superiore")
-            }
-            if model.computers.count > 1 {
-                ToolbarItem {
-                    Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
-                        .help("Computer di origine")
-                }
             }
             ToolbarItem(placement: .primaryAction) {
                 // one native pull-down: click restores beside the original, the arrow offers the rest
                 Menu {
                     Button("Ripristina in…", systemImage: "folder.badge.plus") { if let t = target { restoreInto(path: t.path) } }
+                        .keyboardShortcut("r", modifiers: [.command, .shift])
                     Button("Mostra versioni del file", systemImage: "clock.arrow.circlepath") { versionsOf = target?.entry }
                         .disabled(target?.entry?.kind != .file)
                 } label: {
@@ -68,15 +82,20 @@ struct RestoreView: View {
                     if t.path.isEmpty { confirmWhole = true } else { restore(path: t.path, mode: .besideOriginal) }
                 }
                 .labelStyle(.titleAndIcon)
-                .controlSize(.large)
+                .keyboardShortcut("r")
                 .disabled(target == nil || model.restoring)
-                .help("Ripristina accanto all'originale, senza sovrascrivere")
+                .help(restoreHelp)
             }
         }
         .searchable(text: $model.search, prompt: "Cerca in tutti i backup")
         .onChange(of: model.selectedID) { entryID = nil }
         .onChange(of: model.search) { hit = nil }
-        .onChange(of: model.computer) { hit = nil; entryID = nil }
+        .onChange(of: model.computer, initial: true) {
+            hit = nil; entryID = nil
+            columns[visibility: "stato"] = model.showsStatus ? .automatic : .hidden
+        }
+        .onChange(of: model.app.settings.destination) { model.reload() }
+        .task(id: [model.selectedID, model.source, model.currentPath, model.selected?.id]) { await model.refreshStatus() }
         .onAppear { model.reload() }
         .frame(minWidth: 860, minHeight: 500)
         .confirmationDialog("Ripristinare l'intera cartella?", isPresented: $confirmWhole) {
@@ -91,9 +110,9 @@ struct RestoreView: View {
             Text("Sostituisci sposta nel Cestino la cartella attuale, comprese le cartelle escluse dal backup (es. node_modules) e i file più recenti del backup, e la rimpiazza con la versione salvata.")
         }
         .sheet(item: $versionsOf) { VersionsSheet(model: model, entry: $0) }
-        .alert("Errore", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+        .alert(model.error?.title ?? "", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") {}
-        } message: { Text(model.error ?? "") }
+        } message: { Text(model.error?.message ?? "") }
     }
 
     // MARK: browser
@@ -110,24 +129,19 @@ struct RestoreView: View {
         } else if model.selected == nil {
             ProgressView() // the chosen backup's index is still loading
         } else {
-            Table(model.children(), selection: $entryID) {
-                TableColumn("Nome") { e in
-                    HStack(spacing: 6) {
-                        icon(e)
-                        Text(e.name).lineLimit(1).truncationMode(.middle)
-                        switch Restorer.status(of: e) {
-                        case .modified: Tag(text: "modificato")
-                        case .missing: Tag(text: "non più presente oggi")
-                        case .unchanged: EmptyView()
-                        }
-                    }
+            Table(rows, selection: $entryID, sortOrder: $sortOrder, columnCustomization: $columns) {
+                TableColumn("Nome", value: \.name) { e in
+                    HStack(spacing: 6) { icon(e); Text(e.name).lineLimit(1).truncationMode(.middle) }
                 }
-                TableColumn("Dimensione") { e in
+                TableColumn("Stato") { e in statusIcon(e) }
+                    .width(min: 36, ideal: 44, max: 60)
+                    .customizationID("stato")
+                TableColumn("Dimensione", value: \.size) { e in
                     Text(e.kind == .file ? ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file) : "—")
                         .foregroundStyle(.secondary).monospacedDigit()
                 }
                 .width(min: 70, ideal: 90, max: 120)
-                TableColumn("Modificato") { e in
+                TableColumn("Modificato", value: \.mtime) { e in
                     Text(e.mtime.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary).monospacedDigit()
                 }
                 .width(min: 120, ideal: 150, max: 200)
@@ -175,10 +189,23 @@ struct RestoreView: View {
         }
     }
 
+    /// No sort chosen keeps the index order: folders first, then names.
+    private var rows: [Entry] { sortOrder.isEmpty ? model.children() : model.children().sorted(using: sortOrder) }
+
     private func icon(_ e: Entry) -> some View {
-        Image(systemName: e.kind == .directory ? "folder.fill" : e.kind == .symlink ? "arrow.turn.up.right" : "doc")
-            .foregroundStyle(e.kind == .directory ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-            .frame(width: 16)
+        Image(nsImage: FileIcon.image(for: e)).resizable().frame(width: 16, height: 16)
+    }
+
+    @ViewBuilder private func statusIcon(_ e: Entry) -> some View {
+        switch model.status(of: e) {
+        case .modified?: statusSymbol("pencil.circle", "modificato")
+        case .missing?: statusSymbol("minus.circle", "non più presente oggi")
+        default: EmptyView()
+        }
+    }
+
+    private func statusSymbol(_ name: String, _ text: String) -> some View {
+        Image(systemName: name).foregroundStyle(.secondary).help(text).accessibilityLabel(text)
     }
 
     private func entry(_ id: Entry.ID) -> Entry? { model.children().first { $0.id == id } }
@@ -219,6 +246,11 @@ struct RestoreView: View {
         if let e = selection { return (id, e.source, e.path, e) }
         guard let source = model.source else { return nil } // top level, nothing selected
         return (id, source, model.currentPath, nil)
+    }
+
+    private var restoreHelp: String {
+        guard let t = target else { return "Seleziona un elemento da ripristinare" }
+        return "Ripristina «\(t.entry?.name ?? title)» accanto all'originale, senza sovrascrivere"
     }
 
     private func restore(path: String, mode: RestoreMode) {
@@ -262,42 +294,70 @@ struct RestoreView: View {
     }
 }
 
-private struct Tag: View {
-    let text: String
-    var body: some View {
-        // a fill, not glass: glass is for controls, and dozens of glass views in a scrolling table glitch
-        Text(text).font(.caption).padding(.horizontal, 6).padding(.vertical, 1)
-            .background(.quaternary, in: Capsule())
+/// One NSWorkspace lookup per extension: the table asks for an icon on every redraw.
+@MainActor private enum FileIcon {
+    static var cache: [String: NSImage] = [:]
+
+    static func image(for e: Entry) -> NSImage {
+        let key = e.kind == .directory ? "/" : e.kind == .symlink ? "@" : (e.name as NSString).pathExtension.lowercased()
+        if let image = cache[key] { return image }
+        let type: UTType = e.kind == .directory ? .folder : e.kind == .symlink ? .symbolicLink : UTType(filenameExtension: key) ?? .data
+        let image = NSWorkspace.shared.icon(for: type)
+        cache[key] = image
+        return image
     }
 }
 
 private struct VersionsSheet: View {
     let model: RestoreModel
     let entry: Entry
-    @State private var versions: [(snapshotID: String, entry: Entry)] = []
+    @State private var versions: [SearchHit]? // nil while loading
+    @State private var selection: SearchHit?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading) {
-            Text("Versioni di \(entry.name)").font(.headline)
-            List(versions, id: \.snapshotID) { v in
-                HStack {
-                    Text(Snapshot.date(fromID: v.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? v.snapshotID)
-                    Text(ByteCountFormatter.string(fromByteCount: v.entry.size, countStyle: .file)).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Ripristina", systemImage: "arrow.uturn.backward") {
-                        model.restore(snapshotID: v.snapshotID, source: v.entry.source, path: v.entry.path, mode: .besideOriginal)
-                        dismiss()
+        NavigationStack {
+            Group {
+                if let versions {
+                    Table(versions, selection: $selection) {
+                        TableColumn("Data") { v in
+                            Text(Snapshot.date(fromID: v.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? v.snapshotID)
+                                .monospacedDigit()
+                        }
+                        TableColumn("Dimensione") { v in
+                            Text(ByteCountFormatter.string(fromByteCount: v.entry.size, countStyle: .file))
+                                .foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        .width(min: 70, ideal: 90, max: 120)
                     }
-                    .glassButton()
+                    .contextMenu(forSelectionType: SearchHit.self) { _ in } primaryAction: { hits in hits.first.map(restore) }
+                    .overlay {
+                        if versions.isEmpty {
+                            ContentUnavailableView("Nessuna versione", systemImage: "clock.arrow.circlepath",
+                                                   description: Text("Questo file non compare in nessun backup."))
+                        }
+                    }
+                } else {
+                    ProgressView()
                 }
             }
-            .frame(minHeight: 200)
-            HStack { Spacer(); Button("Chiudi") { dismiss() }.keyboardShortcut(.cancelAction).glassButton() }
+            .navigationTitle("Versioni di \(entry.name)")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Chiudi") { dismiss() }.keyboardShortcut(.cancelAction) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Ripristina") { selection.map(restore) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(selection == nil || model.restoring)
+                }
+            }
         }
-        .padding()
-        .frame(width: 460)
-        .task { versions = await model.versions(of: entry) }
+        .frame(minWidth: 480, minHeight: 320)
+        .task { versions = await model.versions(of: entry).map { SearchHit(snapshotID: $0.snapshotID, entry: $0.entry) } }
+    }
+
+    private func restore(_ v: SearchHit) {
+        model.restore(snapshotID: v.snapshotID, source: v.entry.source, path: v.entry.path, mode: .besideOriginal)
+        dismiss()
     }
 }
 

@@ -62,7 +62,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             try? SystemServices.setLaunchAtLogin(true)
             UserDefaults.standard.set(true, forKey: "loginAgentConfigured")
         }
-        SystemServices.requestNotificationPermission()
+        // asked in context: the first-run window asks when the first backup starts
+        if settings.isConfigured { SystemServices.requestNotificationPermission() }
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
             MainActor.assumeIsolated { self.tick() }
         }

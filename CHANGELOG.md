@@ -2,6 +2,21 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.4.0] - 2026-11-06
+
+### Aggiunto
+- Icona dell'app (rigenerabile con `swift scripts/make-icon.swift`).
+- Finestra di benvenuto al primo avvio: cartelle, destinazione e frequenza in un solo passo, poi "Avvia il primo backup". Il permesso per le notifiche si chiede lì, non più all'avvio.
+- Icona nella barra dei menu con lo stato: a posto, backup in corso, sospeso, errore, da configurare. VoiceOver legge lo stato.
+- Pannello: menu "…" con Info su BackupMe, Impostazioni… (⌘,) ed Esci (⌘Q); scorciatoie ⌘O per Sfoglia e Invio per il pulsante principale; "Configura BackupMe…" quando mancano cartelle o destinazione.
+- Impostazioni › Pianificazione: interruttore "Backup automatici", data del prossimo backup e, se le notifiche sono disattivate, un pulsante per aprire Impostazioni di Sistema.
+
+### Cambiato
+- Impostazioni è la finestra standard di macOS: pannelli come pannelli nella barra degli strumenti, ⌘, e voce nel menu dell'app, pulsanti di dimensione standard senza vetro. Spazio occupato con indicatore rispetto al tetto, conservazione con etichette leggibili ("Giornalieri: 15 giorni", "Disattivati"), conferma prima di ripristinare le esclusioni predefinite, errori nel corpo della sezione.
+- Mentre Sfoglia backup, Impostazioni o il benvenuto sono aperti, BackupMe compare nel Dock, in ⌘-Tab e ha la sua barra dei menu; torna solo nella barra dei menu quando si chiude l'ultima finestra.
+- Pannello: righe ad altezza fissa, cerchio di stato colorato invece del vetro su vetro, riquadri più grandi raggruppati in un unico vetro, pulsante principale più grande.
+- Sfoglia backup: scelta del computer nella barra laterale, colonne ordinabili, icone vere dei file, colonna "Stato" (nascosta per l'archivio di un altro computer) calcolata una volta per cartella, scorciatoie ⌘↑ (cartella superiore), ⌘R (ripristina) e ⇧⌘R (ripristina in…), foglio "Versioni" nativo con caricamento e stato vuoto, "Nessuna destinazione" con "Apri Impostazioni…" al posto dell'avviso, titoli d'errore specifici; se la cartella aperta non esiste nel backup scelto si risale alla più vicina.
+
 ## [0.3.1] - 2026-11-06
 
 ### Corretto
