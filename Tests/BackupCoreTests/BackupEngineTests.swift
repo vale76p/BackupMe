@@ -143,6 +143,24 @@ import Testing
         #expect(try e.run(sources: [src]).excluded?.count == 200)
     }
 
+    @Test func unreadableFileIsSkippedNotWarned() throws {
+        write("a", to: src.appending(path: "a.txt"))
+        let locked = src.appending(path: ".taniu")
+        write("segreto", to: locked)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: locked.path) }
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        func run(skip: Bool) throws -> BackupReport {
+            try BackupEngine(repository: repo, cache: HashCache(url: cacheURL), excludes: ExcludeRules(patterns: []),
+                             skipUnreadable: skip).run(sources: [src])
+        }
+        let warned = try run(skip: false)
+        #expect(warned.warnings.count == 1 && warned.skipped == nil)
+        let skipped = try run(skip: true)
+        #expect(skipped.warnings.isEmpty && skipped.error == nil && skipped.fileCount == 1)
+        #expect(skipped.skipped == [locked.path])
+    }
+
     @Test func oldReportWithoutExcludedDecodes() throws {
         let json = #"{"date":0,"duration":1,"fileCount":2,"newBytes":3,"warnings":[]}"#
         let r = try JSONDecoder().decode(BackupReport.self, from: Data(json.utf8))

@@ -441,6 +441,7 @@ private struct ExcludesSection: View {
         pathsSection
         automaticSection
         lastBackupSection
+        unreadableSection
     }
 
     // MARK: name patterns
@@ -639,6 +640,38 @@ private struct ExcludesSection: View {
         let name = String(item[..<slash])
         let full = model.settings.sources.first { ($0 as NSString).lastPathComponent == name }.map { $0 + "/" + path }
         return full.map { rules.paths.contains(ExcludeRules.resolved($0)) } == true ? "esclusa per percorso" : "CACHEDIR.TAG"
+    }
+
+    // MARK: unreadable files
+
+    private var unreadableSection: some View {
+        Section {
+            Toggle("Salta in automatico i file senza permessi di lettura", isOn: $model.settings.skipUnreadable)
+            if let skipped = model.lastReport?.skipped, !skipped.isEmpty {
+                DisclosureGroup(skipped.count >= 200 ? "200 o più file saltati nell'ultimo backup"
+                                : skipped.count == 1 ? "1 file saltato nell'ultimo backup"
+                                : "\(skipped.count) file saltati nell'ultimo backup") {
+                    ForEach(skipped, id: \.self) { path in
+                        Text((path as NSString).abbreviatingWithTildeInPath).font(.callout.monospaced()).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                            .contextMenu {
+                                Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+                            }
+                    }
+                }
+            }
+            if let n = model.lastReport?.warnings.count, n > 0 {
+                HStack {
+                    Text(n == 1 ? "1 avviso nell'ultimo backup" : "\(n) avvisi nell'ultimo backup")
+                    Spacer()
+                    Button("Cancella avvisi", role: .destructive) { model.clearWarnings() }
+                }
+            }
+        } header: {
+            Text("File non leggibili")
+        } footer: {
+            Text("I file che macOS non ti lascia aprire (\"non hai i privilegi necessari\") non sono nel backup: con l'opzione attiva vengono elencati qui invece di comparire tra gli avvisi.")
+        }
     }
 
     private func removeButton(_ name: String, action: @escaping () -> Void) -> some View {

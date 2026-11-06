@@ -10,11 +10,14 @@ public struct BackupReport: Codable, Sendable {
     public var error: String?
     /// Folders skipped by the excludes or a CACHEDIR.TAG, as "<source folder name>/<path>"; at most 200.
     public var excluded: [String]?
+    /// Files left out because macOS denied reading them (`skipUnreadable`), as absolute paths; at most 200.
+    public var skipped: [String]?
 
     public init(snapshotID: String?, date: Date, duration: TimeInterval, fileCount: Int,
-                newBytes: Int64, warnings: [String], error: String?, excluded: [String]? = nil) {
+                newBytes: Int64, warnings: [String], error: String?, excluded: [String]? = nil, skipped: [String]? = nil) {
         self.snapshotID = snapshotID; self.date = date; self.duration = duration; self.fileCount = fileCount
         self.newBytes = newBytes; self.warnings = warnings; self.error = error; self.excluded = excluded
+        self.skipped = skipped
     }
 }
 
@@ -57,9 +60,11 @@ public final class BackupEngine {
     /// Absolute paths never descended into: the excludes' own plus the archives' folder, so a source holding the
     /// destination (the whole profile, with OneDrive inside Library) never backs up its own backups.
     private let skipped: Set<String>
+    /// Files the user has no permission to read are listed in the report's `skipped`, not as warnings.
+    private let skipUnreadable: Bool
 
-    public init(repository: Repository, cache: HashCache, excludes: ExcludeRules) {
-        self.repository = repository; self.cache = cache; self.excludes = excludes
+    public init(repository: Repository, cache: HashCache, excludes: ExcludeRules, skipUnreadable: Bool = false) {
+        self.repository = repository; self.cache = cache; self.excludes = excludes; self.skipUnreadable = skipUnreadable
         skipped = excludes.paths.union([ExcludeRules.resolved(repository.root.deletingLastPathComponent().path)])
     }
 
@@ -94,6 +99,7 @@ public final class BackupEngine {
             var done = 0
             var warnings: [String] = []
             var excluded: [String] = []
+            var denied: [String] = []
             var entries: [Entry] = []
             var newBytes: Int64 = 0
             var fileCount = 0
@@ -116,7 +122,7 @@ public final class BackupEngine {
                                              + "durante il backup, ripeti il backup per averne una copia coerente")
                     }
                 }
-                entries += pass.entries; fileCount += pass.fileCount
+                entries += pass.entries; fileCount += pass.fileCount; denied += pass.denied
                 sourceErrors += scan.unreadable
                 warnings += scan.warnings + pass.warnings
                 excluded += scan.excluded
@@ -126,7 +132,8 @@ public final class BackupEngine {
             func report(_ id: String?) -> BackupReport {
                 BackupReport(snapshotID: id, date: now, duration: Date().timeIntervalSince(start), fileCount: fileCount,
                              newBytes: newBytes, warnings: warnings, error: id == nil ? (error ?? "Nessun file da salvare") : error,
-                             excluded: Array(excluded.prefix(Self.excludedLimit)))
+                             excluded: Array(excluded.prefix(Self.excludedLimit)),
+                             skipped: denied.isEmpty ? nil : Array(denied.prefix(Self.excludedLimit)))
             }
             guard !entries.isEmpty else { return report(nil) }
 
@@ -158,8 +165,8 @@ public final class BackupEngine {
     }
 
     private func store(_ scan: Scan, isCancelled: () -> Bool, tick: () -> Void) throws
-        -> (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64) {
-        var r: (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64) = ([], [], 0, 0)
+        -> (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64, denied: [String]) {
+        var r: (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64, denied: [String]) = ([], [], 0, 0, [])
         for item in scan.found {
             if isCancelled() { throw BackupError.cancelled }
             let full = item.path.isEmpty ? scan.source : scan.source + "/" + item.path
@@ -171,7 +178,7 @@ public final class BackupEngine {
             case .symlink:
                 linkTarget = try? FileManager.default.destinationOfSymbolicLink(atPath: full)
             case .file:
-                guard let s = try storeFile(full, stat: st, warnings: &r.warnings) else { tick(); continue }
+                guard let s = try storeFile(full, stat: st, warnings: &r.warnings, denied: &r.denied) else { tick(); continue }
                 hash = s.hash; st = s.stat; r.newBytes += s.written; r.fileCount += 1
             }
             r.entries.append(Entry(source: scan.source, path: item.path, kind: st.kind, hash: hash, size: st.size,
@@ -259,7 +266,7 @@ public final class BackupEngine {
     /// Hashes and stores one file. Returns nil (with a warning) if the source is unreadable or changing while read;
     /// throws if the archive can't be written (disk full, destination gone), which fails the whole backup.
     /// Files above `Repository.streamThreshold` are hashed and copied as streams, never held in memory.
-    private func storeFile(_ path: String, stat initial: FileStat, warnings: inout [String]) throws
+    private func storeFile(_ path: String, stat initial: FileStat, warnings: inout [String], denied: inout [String]) throws
         -> (hash: String, stat: FileStat, written: Int64)? {
         if let h = cache.lookup(path: path, inode: initial.inode, size: initial.size, mtime: initial.mtime, ctime: initial.ctime),
            repository.hasObject(h) {
@@ -279,7 +286,9 @@ public final class BackupEngine {
                     hash = sha256Hex(data)
                 }
             } catch {
-                warnings.append("\(path): \(error.localizedDescription)")
+                if skipUnreadable, Self.isPermissionDenied(error) { denied.append(path) } else {
+                    warnings.append("\(path): \(error.localizedDescription)")
+                }
                 return nil
             }
             var stable = FileStat(path: path).map { $0.unchanged(since: st) } ?? false
@@ -301,6 +310,13 @@ public final class BackupEngine {
             return (hash, st, written)
         }
         return nil
+    }
+
+    static func isPermissionDenied(_ error: Error) -> Bool {
+        let e = error as NSError
+        if e.domain == NSCocoaErrorDomain, e.code == NSFileReadNoPermissionError { return true }
+        let posix = e.userInfo[NSUnderlyingErrorKey] as? NSError ?? e
+        return posix.domain == NSPOSIXErrorDomain && (posix.code == Int(EACCES) || posix.code == Int(EPERM))
     }
 }
 

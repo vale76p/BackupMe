@@ -11,6 +11,8 @@ struct AppSettings: Codable, Equatable {
     /// Specific folders or files left out, as absolute paths
     var excludedPaths: [String] = []
     var paused = false
+    /// Files macOS won't let the user read are skipped silently and listed in Esclusioni.
+    var skipUnreadable = true
 
     static let intervals = [1, 2, 4, 6, 12, 24]
 
@@ -27,6 +29,7 @@ struct AppSettings: Codable, Equatable {
         excludes = try c.decodeIfPresent([String].self, forKey: .excludes) ?? excludes
         excludedPaths = try c.decodeIfPresent([String].self, forKey: .excludedPaths) ?? excludedPaths
         paused = try c.decodeIfPresent(Bool.self, forKey: .paused) ?? paused
+        skipUnreadable = try c.decodeIfPresent(Bool.self, forKey: .skipUnreadable) ?? skipUnreadable
     }
 
     static func load() -> AppSettings {

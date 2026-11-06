@@ -232,7 +232,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         var report: BackupReport
         let cache = HashCache(url: AppPaths.hashCache(archive))
         do {
-            let engine = BackupEngine(repository: repo, cache: cache, excludes: s.excludeRules)
+            let engine = BackupEngine(repository: repo, cache: cache, excludes: s.excludeRules,
+                                        skipUnreadable: s.skipUnreadable)
             report = try engine.run(sources: s.sources.map { URL(fileURLWithPath: $0) }, now: start,
                                     progress: progress, isCancelled: isCancelled)
         } catch {
@@ -286,8 +287,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     private func finish(_ report: BackupReport, overCap: Bool?) {
         history.append(report)
         if history.count > 50 { history.removeFirst(history.count - 50) }
-        let enc = JSONEncoder(); enc.dateEncodingStrategy = .secondsSince1970
-        try? enc.encode(history).write(to: AppPaths.history, options: .atomic)
+        saveHistory()
 
         if report.error == nil, let id = report.snapshotID { lastComplete = id }
         // "Interrompi" must not be followed by a new backup a minute later: retry as after a failure
@@ -307,6 +307,18 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             overCapNotified = overCap
             if overCap { SystemServices.notify("BackupMe", "Il tetto è troppo basso per le cartelle selezionate.") }
         }
+    }
+
+    private func saveHistory() {
+        let enc = JSONEncoder(); enc.dateEncodingStrategy = .secondsSince1970
+        try? enc.encode(history).write(to: AppPaths.history, options: .atomic)
+    }
+
+    /// Empties the last backup's warnings, from Impostazioni: the backup itself is untouched.
+    func clearWarnings() {
+        guard !history.isEmpty else { return }
+        history[history.count - 1].warnings = []
+        saveHistory()
     }
 
     private func fail(_ message: String) {
