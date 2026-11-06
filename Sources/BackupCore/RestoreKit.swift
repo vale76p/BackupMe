@@ -5,7 +5,7 @@ import Foundation
 enum RestoreKit {
     /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
-    static let version = 6
+    static let version = 7
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit.
     static func install(in base: URL) {
@@ -184,7 +184,17 @@ function run(argv) {
   var raw = $.NSData.dataWithContentsOfFile(archive + '/snapshots/' + id + '.json.lzfse')
   var json = raw.isNil() ? raw : raw.decompressedDataUsingAlgorithmError(0, null) // 0 = LZFSE
   if (json.isNil()) fail('Indice del backup illeggibile: ' + id)
-  var snapshot = JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(json, utf8)))
+  var text = ObjC.unwrap($.NSString.alloc.initWithDataEncoding(json, utf8))
+  // BackupMe 0.9.2 and later put a checksum first: one byte flipped in the compressed file can still decode,
+  // into other hashes and names. It covers the bytes after {"check":"<64 hex>",
+  if (text.indexOf('{"check":"') === 0) {
+    var body = ObjC.unwrap($.NSTemporaryDirectory()) + 'backupme-indice-' + ObjC.unwrap($.NSUUID.UUID.UUIDString)
+    json.subdataWithRange($.NSMakeRange(76, json.length - 76)).writeToFileAtomically(body, false)
+    var intact = sha256([body])[0] === text.slice(10, 74)
+    fm.removeItemAtPathError(body, null)
+    if (!intact) fail('Indice del backup danneggiato, niente è stato scritto: ' + id + '. Prova con un altro backup.')
+  }
+  var snapshot = JSON.parse(text)
 
   // check everything before writing anything
   // names are compared as APFS does (case and Unicode form ignored): "App" and "app" are the same folder
@@ -268,6 +278,26 @@ function run(argv) {
     else problems.push('non ripristinato: ' + p)
     if (ok && e.kind === 'directory') made.add(p)
   }))
+
+  // Foundation writes names decomposed ("u" + "¨"); the saved ones are most likely composed ("ü"): the same for the
+  // Finder, another name for git, rsync or a Linux server. perl's rename keeps the bytes it reads from stdin
+  // (arguments would be decomposed too)
+  var renames = []
+  plans.forEach(plan => plan.tree.forEach(e => {
+    if (!e.dest) return
+    var name = e.path === '' ? plan.target.slice(plan.target.lastIndexOf('/') + 1) : e.path.slice(e.path.lastIndexOf('/') + 1)
+    if (name !== name.normalize('NFD')) renames.push(e.dest.slice(0, e.dest.length - name.length) + name.normalize('NFD'), e.dest)
+  }))
+  if (renames.length) {
+    var t = $.NSTask.alloc.init, input = $.NSPipe.pipe
+    t.launchPath = '/usr/bin/perl'
+    t.arguments = $(['-e', 'local $/ = "\\0"; my @p = <STDIN>; chomp @p; while (@p) { my ($a, $b) = splice(@p, 0, 2); rename($a, $b) }'])
+    t.standardInput = input
+    t.launch
+    input.fileHandleForWriting.writeData($(renames.join('\0') + '\0').dataUsingEncoding($.NSUTF8StringEncoding))
+    input.fileHandleForWriting.closeFile
+    t.waitUntilExit
+  }
 
   for (var i = 0; i < files.length; i += 200) {
     var batch = files.slice(i, i + 200), hashes = sha256(batch.map(e => e.dest))

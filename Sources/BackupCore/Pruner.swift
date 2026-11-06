@@ -103,6 +103,23 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
     }
 }
 
+/// Deletes the manifests among `ids` that can't be read: those backups can't be restored, and keep the archive
+/// marked damaged until retention takes them. A readable one is never deleted. They also leave the references
+/// cache, or the next cleanup would take them for vanished. Returns the ones deleted.
+public func deleteDamagedSnapshots(_ ids: [String], repository: Repository, refsCache: URL?) throws -> [String] {
+    try repository.withLock {
+        var deleted: [String] = []
+        for id in ids where repository.snapshotExists(id) && !repository.snapshotIsIntact(id) {
+            try repository.deleteSnapshot(id)
+            deleted.append(id)
+            for name in [id, id + ".seen", id + ".gone", id + ".previous"] {
+                try? refsCache.map { try FileManager.default.removeItem(at: $0.appending(path: name)) }
+            }
+        }
+        return deleted
+    }
+}
+
 /// Remembers every manifest seen (`<id>.seen`, or `<id>` once its references are cached). Marks the ones
 /// missing from the listing as `<id>.gone`, and restores them if they come back.
 /// `wait` while any manifest has been missing for less than 3 days: object cleanup must wait. `warn` only when

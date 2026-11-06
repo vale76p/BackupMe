@@ -181,6 +181,33 @@ import Testing
         #expect(try Repository(destination: dest, computerName: "Mac", create: false).archiveID == "x", "browsing still works")
     }
 
+    @Test func scriptKeepsComposedNames() throws {
+        // made with POSIX calls: Foundation would write the names decomposed already
+        let name = "Caffè ü 日本", file = "è.txt"
+        try fm.createDirectory(at: src, withIntermediateDirectories: true)
+        #expect((src.path + "/" + name).withCString { mkdir($0, 0o755) } == 0)
+        let fd = (src.path + "/" + name + "/" + file).withCString { open($0, O_CREAT | O_WRONLY, 0o644) }
+        #expect(fd >= 0); close(fd)
+        let out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", try backup(), out.path, "--si"])
+        #expect(r.status == 0, "\(r.out)")
+        #expect(rawNames(out.path + "/progetto").contains(Array(name.utf8)))
+        #expect(rawNames(out.path + "/progetto/" + name) == [Array(file.utf8)])
+    }
+
+    @Test func scriptRefusesAlteredIndex() throws {
+        let id = try backup()
+        let url = kit.appending(path: "Mac/snapshots/\(id).json.lzfse")
+        var text = String(decoding: try (Data(contentsOf: url) as NSData).decompressed(using: .lzfse) as Data, as: UTF8.self)
+        // still valid JSON with valid hashes: only the checksum can tell
+        text = text.replacingOccurrences(of: "\"size\":", with: "\"size\":1")
+        try ((Data(text.utf8) as NSData).compressed(using: .lzfse) as Data).write(to: url)
+        let out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", id, out.path, "--si"])
+        #expect(r.status != 0 && r.out.contains("danneggiato"), "\(r.out)")
+        #expect(!fm.fileExists(atPath: out.path))
+    }
+
     @Test func foldersDifferingOnlyInCaseBothRestored() throws {
         let a = tmp().appending(path: "App", directoryHint: .isDirectory), b = tmp().appending(path: "app", directoryHint: .isDirectory)
         write("uno", to: a.appending(path: "a.txt"))

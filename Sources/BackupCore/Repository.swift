@@ -268,6 +268,11 @@ public final class Repository {
         }
     }
 
+    /// Free space on the destination's volume, nil when the volume doesn't say.
+    public func availableCapacity() -> Int64? {
+        (try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage
+    }
+
     public func poolSize() throws -> Int64 {
         try objectSizes().values.reduce(0, +) + snapshotSizes().values.reduce(0, +)
     }

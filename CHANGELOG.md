@@ -2,6 +2,17 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.9.3] - 2026-11-06
+
+Quello che la 0.9.2 aveva lasciato aperto.
+
+### Aggiunto
+- Impostazioni › Avanzate: dopo "Controlla ora", i backup con l'indice illeggibile si possono eliminare ("Elimina…", con conferma). Vengono cancellati solo quelli che davvero non si leggono; se non c'erano altri problemi l'archivio torna integro e l'avviso sparisce. Prima l'avviso restava finché la conservazione non toglieva quei backup, anche per mesi.
+
+### Corretto
+- Con il disco pieno ogni tentativo ricopiava il file troppo grande fino a riempire il disco, poi lo saltava: circa un giga scritto e cancellato ogni volta. Ora un file grande che non ci sta nello spazio libero viene saltato senza copiarlo.
+- `RIPRISTINO.command` (kit versione 7) verifica il checksum dell'indice e si ferma, senza scrivere niente, se non corrisponde. Ripristina i nomi con accenti nella forma in cui sono stati salvati, come l'app.
+
 ## [0.9.2] - 2026-11-06
 
 Difetti trovati da uno stress test sull'app installata: backup interrotti con `kill -9`, destinazione espulsa a metà copia, disco pieno, oggetti, indici e `repo.json` corrotti o cancellati.

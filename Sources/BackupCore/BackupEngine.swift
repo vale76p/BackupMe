@@ -177,7 +177,7 @@ public final class BackupEngine {
                     try? cache.save()
                     return report(last.id)
                 }
-                warnings.append("\(Self.damagedPrefix) il backup del \(Snapshot.date(fromID: last.id)?.formatted(date: .abbreviated, time: .shortened) ?? last.id) non si legge più e non si può ripristinare: i file sono stati salvati in un backup nuovo")
+                warnings.append("\(Self.damagedPrefix) il backup del \(Snapshot.date(fromID: last.id)?.formatted(date: .abbreviated, time: .shortened) ?? last.id) non si legge più e non si può ripristinare: i file sono stati salvati in un backup nuovo. Dopo «Controlla ora» lo elimini da Impostazioni › Avanzate.")
             }
             var date = now
             while repository.snapshotExists(Snapshot.id(for: date)) { date += 1 } // one manifest per second, never overwritten
@@ -353,7 +353,11 @@ public final class BackupEngine {
             var stable = FileStat(path: path).map { $0.unchanged(since: st) } ?? false
             var written: Int64 = 0
             if stable, !repository.hasObject(hash) {
-                guard st.size < noRoom.from else { noRoom.count += 1; noRoom.bytes += st.size; return nil }
+                // a big file that can't fit is not copied until the disk is full, at every attempt
+                guard st.size < noRoom.from, !big || st.size <= repository.availableCapacity() ?? .max else {
+                    noRoom = (noRoom.count + 1, noRoom.bytes + st.size, min(noRoom.from, st.size))
+                    return nil
+                }
                 do {
                     if big {
                         // nil: the file changed between hashing and copying, and nothing was stored

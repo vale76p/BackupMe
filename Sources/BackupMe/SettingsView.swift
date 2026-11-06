@@ -841,6 +841,7 @@ private struct LogViewSection: View {
 
 private struct ArchiveCheckSection: View {
     @Bindable var model: AppModel
+    @State private var confirmDelete = false
 
     var body: some View {
         Section {
@@ -858,6 +859,20 @@ private struct ArchiveCheckSection: View {
             if let r = model.checkResult {
                 Label(r.text, systemImage: r.healthy ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                     .foregroundStyle(r.healthy ? Color.green : Color.red)
+            }
+            if !model.damagedBackups.isEmpty {
+                let n = model.damagedBackups.count
+                LabeledContent(n == 1 ? "1 backup illeggibile" : "\(n) backup illeggibili") {
+                    Button("Elimina…", role: .destructive) { confirmDelete = true }
+                        .disabled(model.isRunning || model.checkProgress != nil)
+                }
+                .confirmationDialog(n == 1 ? "Eliminare il backup illeggibile?" : "Eliminare i \(n) backup illeggibili?",
+                                    isPresented: $confirmDelete) {
+                    Button("Elimina", role: .destructive, action: model.deleteDamagedBackups)
+                } message: {
+                    Text(model.damagedBackups.map { Snapshot.date(fromID: $0)?.formatted(date: .abbreviated, time: .shortened) ?? $0 }
+                        .joined(separator: ", ") + "\n\nNon si possono ripristinare in nessun modo. Gli altri backup non vengono toccati; i file usati solo da questi vengono tolti alle prossime pulizie.")
+                }
             }
         } header: {
             Text("Integrità dell'archivio")

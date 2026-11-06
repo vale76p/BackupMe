@@ -93,18 +93,25 @@ import Testing
         let snap = try r.readSnapshot(try #require(try engine(r).run(sources: [src], now: t0).snapshotID))
         let out = tmp()
         let restored = try Restorer(repository: r).restore(snap, source: src.path, path: "", mode: .into(out))
-        func names(_ dir: String) -> [[UInt8]] {
-            guard let d = opendir(dir) else { return [] }
-            defer { closedir(d) }
-            var all: [[UInt8]] = []
-            while let e = readdir(d) {
-                let n = withUnsafeBytes(of: e.pointee.d_name) { Array($0.prefix(Int(e.pointee.d_namlen))) }
-                if n != Array(".".utf8), n != Array("..".utf8) { all.append(n) }
-            }
-            return all
-        }
-        #expect(names(restored.path) == [Array(name.utf8)])
-        #expect(names(restored.path + "/" + name) == [Array("è.txt".utf8)])
+        #expect(rawNames(restored.path) == [Array(name.utf8)])
+        #expect(rawNames(restored.path + "/" + name) == [Array("è.txt".utf8)])
+    }
+
+    @Test func onlyDamagedBackupsAreDeleted() throws {
+        let refs = tmp()
+        write("uno", to: src.appending(path: "a.txt"))
+        let r = try repo()
+        let good = try #require(try engine(r).run(sources: [src], now: t0).snapshotID)
+        write("due", to: src.appending(path: "a.txt"))
+        let bad = try #require(try engine(r).run(sources: [src], now: t0.addingTimeInterval(3600)).snapshotID)
+        _ = try prune(repository: r, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(3600), refsCache: refs)
+        let raw = try Data(contentsOf: manifest(bad))
+        try raw.prefix(raw.count / 2).write(to: manifest(bad))
+        #expect(try deleteDamagedSnapshots([good, bad], repository: r, refsCache: refs) == [bad])
+        #expect(try r.snapshotIDs() == [good])
+        // gone on purpose: cleanup must not take it for a backup that vanished
+        let p = try prune(repository: r, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(7200), refsCache: refs)
+        #expect(!p.vanished && !p.gcSkipped)
     }
 
     @Test func foundationErrorsGiveTheirPosixCode() {
@@ -114,4 +121,16 @@ import Testing
         #expect(BackupEngine.posixCode(POSIXError(.EACCES)) == EACCES)
         #expect(BackupEngine.posixCode(CocoaError(.fileReadCorruptFile)) == nil)
     }
+}
+
+/// Names in a folder as the bytes on disk: FileManager may hand them back in another Unicode form.
+func rawNames(_ dir: String) -> [[UInt8]] {
+    guard let d = opendir(dir) else { return [] }
+    defer { closedir(d) }
+    var all: [[UInt8]] = []
+    while let e = readdir(d) {
+        let n = withUnsafeBytes(of: e.pointee.d_name) { Array($0.prefix(Int(e.pointee.d_namlen))) }
+        if n != Array(".".utf8), n != Array("..".utf8) { all.append(n) }
+    }
+    return all.sorted { $0.lexicographicallyPrecedes($1) }
 }

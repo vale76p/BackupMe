@@ -63,6 +63,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     var restoring = false
     /// The last full check's outcome, in words, and whether the archive was healthy.
     var checkResult: (text: String, healthy: Bool)?
+    /// Backups the last full check couldn't read, which Impostazioni › Avanzate offers to delete.
+    var damagedBackups: [String] = []
+    /// Whether the last full check found anything besides those backups.
+    private var otherCheckProblems = false
     private var checkCancel = OSAllocatedUnfairLock(initialState: false)
     private var lastCheckProgressUptime = ProcessInfo.processInfo.systemUptime
     var isRunning: Bool { if case .running = status { true } else { false } }
@@ -219,6 +223,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         guard !isRunning, !workerActive, checkProgress == nil, let dest = settings.destination else { return }
         checkProgress = 0
         checkResult = nil
+        damagedBackups = []
         deferral = nil
         lastCheckProgressUptime = ProcessInfo.processInfo.systemUptime
         let flag = OSAllocatedUnfairLock(initialState: false)
@@ -270,6 +275,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             if c.missingObjects > 0 { problems.append("\(c.missingObjects) file mancanti nell'archivio") }
             if !c.objects.corrupt.isEmpty { problems.append("\(c.objects.corrupt.count) file danneggiati senza una copia attuale per ripararli") }
             let repaired = c.objects.repaired.isEmpty ? "" : "; \(c.objects.repaired.count) file danneggiati riparati"
+            damagedBackups = c.unreadableSnapshots
+            otherCheckProblems = c.missingObjects > 0 || !c.objects.corrupt.isEmpty
             if problems.isEmpty {
                 archiveProblem = nil
                 checkResult = ("Archivio integro: \(c.snapshots) backup, \(c.objects.checked) file controllati (\(size))\(repaired)", true)
@@ -278,6 +285,33 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 checkResult = ("Problemi trovati: " + problems.joined(separator: ", ") + repaired, false)
                 Log.backup.error(checkResult!.text)
                 if !c.unreadableSnapshots.isEmpty { Log.backup.error("Backup illeggibili: \(c.unreadableSnapshots.joined(separator: ", "))") }
+            }
+        }
+    }
+
+    func deleteDamagedBackups() {
+        guard !isRunning, !workerActive, checkProgress == nil, let dest = settings.destination, !damagedBackups.isEmpty else { return }
+        let ids = damagedBackups, archive = AppPaths.archiveName
+        Task.detached(priority: .userInitiated) {
+            let result = Result {
+                let repo = try Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false)
+                return try BackupCore.deleteDamagedSnapshots(ids, repository: repo, refsCache: AppPaths.refsCache(archive, destination: repo.root.path))
+            }
+            await MainActor.run {
+                switch result {
+                case .failure(let error):
+                    self.checkResult = ("Eliminazione non riuscita: \(Self.describe(error))", false)
+                case .success(let deleted):
+                    self.damagedBackups.removeAll { deleted.contains($0) }
+                    let what = deleted.count == 1 ? "Eliminato 1 backup illeggibile" : "Eliminati \(deleted.count) backup illeggibili"
+                    Log.backup.info("\(what): \(deleted.joined(separator: ", "))")
+                    if self.damagedBackups.isEmpty, !self.otherCheckProblems {
+                        self.archiveProblem = nil
+                        self.checkResult = ("\(what): l'archivio è integro", true)
+                    } else {
+                        self.checkResult = ("\(what); restano altri problemi, usa di nuovo Controlla ora", false)
+                    }
+                }
             }
         }
     }
@@ -372,7 +406,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 // reads them before a restore
                 let ids = (try? repo.snapshotIDs()) ?? []
                 for id in Set([ids.last, ids.randomElement()].compactMap { $0 }) where !repo.snapshotIsIntact(id) {
-                    report.warnings.append("\(Self.damaged) il backup del \(Snapshot.date(fromID: id)?.formatted(date: .abbreviated, time: .shortened) ?? id) non si legge e non si può ripristinare")
+                    report.warnings.append("\(Self.damaged) il backup del \(Snapshot.date(fromID: id)?.formatted(date: .abbreviated, time: .shortened) ?? id) non si legge e non si può ripristinare. Dopo «Controlla ora» lo elimini da Impostazioni › Avanzate.")
                 }
                 if !v.corrupt.isEmpty {
                     report.warnings.append("\(Self.damaged) \(v.corrupt.count) file non si possono leggere e manca una copia attuale per ripararli: i backup che li usano non si ripristinano per intero")
