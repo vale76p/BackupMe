@@ -57,9 +57,7 @@ struct SettingsView: View {
         case .schedule: ScheduleSection(model: model)
         case .retention: RetentionSection(model: model)
         case .excludes: ExcludesSection(model: model)
-        case .log:
-            LogViewSection()
-            LoggingSection()
+        case .log: LogViewSection()
         case .advanced: ArchiveCheckSection(model: model)
         }
     }
@@ -224,7 +222,7 @@ struct DestinationSection: View {
 }
 
 /// The destination at a glance, like Time Machine's: where it is, space, the span of the backups, the next one.
-private struct DestinationCard: View {
+struct DestinationCard: View {
     let model: AppModel
     let path: String
     @State private var info: Info?
@@ -239,7 +237,7 @@ private struct DestinationCard: View {
         HStack(alignment: .top, spacing: 12) {
             Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.title3).lineLimit(1).truncationMode(.middle)
+                Text(Self.title(path)).font(.title3).lineLimit(1).truncationMode(.middle)
                 Group {
                     Text(spaceLine)
                     Text(backupsLine)
@@ -253,11 +251,15 @@ private struct DestinationCard: View {
         .padding(.vertical, 4)
         .help((path as NSString).abbreviatingWithTildeInPath)
         // reloaded after every backup: the span and the space change with it
-        .task(id: "\(path)\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)") { info = await Self.load(path) }
+        .task(id: Self.key(path, model)) { info = await Self.info(path, key: Self.key(path, model)) }
+    }
+
+    static func key(_ path: String, _ model: AppModel) -> String {
+        "\(path)\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)"
     }
 
     /// "TEST – Dropbox": the folder, then the cloud service it syncs with, or the disk it is on.
-    private var title: String {
+    static func title(_ path: String) -> String {
         let url = URL(fileURLWithPath: path)
         let parts = url.pathComponents
         // the cloud service as "Usa una cartella cloud" names it, iCloud Drive and older clients included
@@ -289,15 +291,31 @@ private struct DestinationCard: View {
         }
     }
 
+    /// The last load, shared with the menu bar panel: listing a big archive takes seconds, so it is redone only after
+    /// a backup (`key`); the free space is read again every time.
+    @MainActor private static var cache: (key: String, info: Info)?
+
+    @MainActor static func info(_ path: String, key: String) async -> Info {
+        if var c = cache?.info, cache?.key == key {
+            c.available = await Task.detached(priority: .utility) { available(path) }.value
+            return c
+        }
+        let info = await load(path)
+        cache = (key, info)
+        return info
+    }
+
+    nonisolated private static func available(_ path: String) -> Int64? {
+        (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage
+    }
+
     private static func load(_ path: String) async -> Info {
         let archive = AppPaths.archiveName
         return await Task.detached(priority: .utility) {
-            let url = URL(fileURLWithPath: path)
-            let available = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-                .volumeAvailableCapacityForImportantUsage
-            let repo = try? Repository(destination: url, computerName: archive, create: false)
+            let repo = try? Repository(destination: URL(fileURLWithPath: path), computerName: archive, create: false)
             let dates = ((try? repo?.snapshotIDs()) ?? []).compactMap(Snapshot.date(fromID:)).sorted()
-            return Info(available: available, used: (try? repo?.poolSize()) ?? 0, dates: dates)
+            return Info(available: available(path), used: (try? repo?.poolSize()) ?? 0, dates: dates)
         }.value
     }
 }
@@ -360,14 +378,17 @@ private struct ScheduleSection: View {
     @State private var launchAtLogin = SystemServices.launchAtLogin
     @State private var loginError: String?
 
+    // every text sits in a row or a one-line footer: the whole pane fits the window without scrolling
     var body: some View {
         Section {
-            Toggle("Backup automatici", isOn: Binding(get: { !model.settings.paused }, set: { model.settings.paused = !$0 }))
+            Toggle(isOn: Binding(get: { !model.settings.paused }, set: { model.settings.paused = !$0 })) {
+                Text("Backup automatici")
+                Text("Prossimo backup: \(model.nextBackupText)").monospacedDigit()
+            }
             Picker("Backup ogni", selection: $model.settings.intervalHours) {
                 ForEach(AppSettings.intervals, id: \.self) { Text($0 == 1 ? "1 ora" : "\($0) ore").tag($0) }
             }
             .disabled(model.settings.paused)
-            LabeledContent("Prossimo backup", value: model.nextBackupText)
             Toggle("Avvia al login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, on in
                     do { try SystemServices.setLaunchAtLogin(on); loginError = nil } catch {
@@ -384,25 +405,27 @@ private struct ScheduleSection: View {
         } header: {
             Text("Quando rimandare")
         } footer: {
-            Text("Il backup pianificato aspetta anche con il Risparmio energetico, la batteria sotto il 20% o il Mac troppo caldo. Ogni rinvio, compresi questi due, dura al massimo un giorno senza backup. «Esegui backup ora» parte sempre, tranne durante il controllo completo dell'archivio.")
+            Text("Anche con Risparmio energetico, batteria sotto il 20% o Mac caldo. Mai oltre un giorno.")
         }
         .disabled(model.settings.paused)
+        .help("«Esegui backup ora» parte sempre, tranne durante il controllo completo dell'archivio.")
         Section {
-            Picker("Notifiche", selection: $model.settings.notify) {
+            Picker(selection: $model.settings.notify) {
                 Text("Solo problemi").tag(AppSettings.NotifyLevel.errors)
                 Text("Anche gli avvisi").tag(AppSettings.NotifyLevel.warnings)
                 Text("Ogni backup").tag(AppSettings.NotifyLevel.all)
+            } label: {
+                Text("Notifiche")
+                Text("Backup non riusciti, archivio danneggiato e 3 giorni senza backup sempre")
             }
             if model.notificationsDenied {
                 LabeledContent {
                     Button("Apri Impostazioni di Sistema") { SystemServices.openNotificationSettings() }
                 } label: {
                     Label("Notifiche disattivate", systemImage: "bell.slash")
-                    Text("Senza notifiche gli errori dei backup non vengono segnalati.")
                 }
+                .help("Senza notifiche gli errori dei backup non vengono segnalati.")
             }
-        } footer: {
-            Text("Backup non riusciti, archivio danneggiato e nessun backup da 3 giorni vengono sempre notificati.")
         }
     }
 }
@@ -747,9 +770,12 @@ private struct ExcludesSection: View {
     }
 }
 
+/// The log and its level in one section, sized so the pane needs no scrolling.
 private struct LogViewSection: View {
     @State private var lines: [String] = []
     @State private var onlyErrors = false
+    @AppStorage(Log.levelKey) private var level = Log.Level.info
+    private static let command = "log stream --predicate 'subsystem == \"\(Log.subsystem)\"' --level debug"
 
     var body: some View {
         Section {
@@ -762,7 +788,7 @@ private struct LogViewSection: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .defaultScrollAnchor(.bottom)
-            .frame(height: 220)
+            .frame(height: 230)
             HStack {
                 Toggle("Solo errori", isOn: $onlyErrors)
                 Spacer()
@@ -775,10 +801,36 @@ private struct LogViewSection: View {
                     .disabled(lines.isEmpty)
                 Button("Svuota", role: .destructive) { Log.clear(); reload() }
             }
+            HStack {
+                // label apart: a labelled picker in a form row takes the whole width and squeezes the buttons
+                Text("Livello")
+                Picker("Livello", selection: $level) {
+                    Text("Info").tag(Log.Level.info)
+                    Text("Debug").tag(Log.Level.debug)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .onChange(of: level) { _, l in Log.app.info("Livello di log: \(l.rawValue)") }
+                Spacer()
+                Button("Apri Console") {
+                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .help("Filtra per \(Log.subsystem) e attiva Azione › Includi messaggi \(level == .debug ? "di debug" : "informativi")")
+                Button("Copia comando") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(Self.command, forType: .string)
+                }
+                .help("Per il Terminale: \(Self.command)")
+            }
         } header: {
             Text("Registro di BackupMe")
         } footer: {
-            Text("Avvii, esiti, rinvii ed errori di backup, ripristini e controlli, anche dopo un riavvio. Con il livello Debug anche i dettagli di ogni passaggio.")
+            Text(level == .debug
+                 ? "Debug aggiunge i dettagli di ogni passaggio: esclusioni, scansione, pulizia, verifica, caricamento nel cloud."
+                 : "Avvii, esiti, rinvii ed errori di backup, ripristini e controlli, anche dopo un riavvio.")
         }
         .task { reload() }
     }
@@ -811,42 +863,6 @@ private struct ArchiveCheckSection: View {
             Text("Integrità dell'archivio")
         } footer: {
             Text("Rilegge ogni backup e ogni file dell'archivio di questo Mac e ripara i file danneggiati quando la copia attuale è ancora uguale. Ogni giorno ne viene già controllato un campione. Se la destinazione è nel cloud con i file su richiesta, scarica l'intero archivio; i backup aspettano la fine del controllo.")
-        }
-    }
-}
-
-private struct LoggingSection: View {
-    @AppStorage(Log.levelKey) private var level = Log.Level.info
-    private static let command = "log stream --predicate 'subsystem == \"\(Log.subsystem)\"' --level debug"
-
-    var body: some View {
-        Section {
-            Picker("Livello", selection: $level) {
-                Text("Info").tag(Log.Level.info)
-                Text("Debug").tag(Log.Level.debug)
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: level) { _, l in Log.app.info("Livello di log: \(l.rawValue)") }
-            LabeledContent("Dove leggerlo") {
-                HStack {
-                    Button("Apri Console") {
-                        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    Button("Copia comando") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(Self.command, forType: .string)
-                    }
-                    .help(Self.command)
-                }
-            }
-        } header: {
-            Text("Registro di sistema")
-        } footer: {
-            Text(level == .debug
-                 ? "Debug aggiunge i dettagli di ogni passaggio: cartelle ed esclusioni, scansione, pulizia, verifica, caricamento nel cloud. In Console filtra per \(Log.subsystem) e attiva Azione › Includi messaggi di debug; oppure incolla il comando nel Terminale."
-                 : "Info registra avvii, esiti ed errori di backup e ripristini. In Console filtra per \(Log.subsystem) e attiva Azione › Includi messaggi informativi; oppure incolla il comando nel Terminale.")
         }
     }
 }

@@ -58,8 +58,8 @@ private struct MenuBarLabel: View {
 
     /// A symbol at the menu bar's default 13 pt looks small next to Apple's items, and its badge shrinks the
     /// drive further: 15 pt matches them, medium weight so its thin strokes read as well as theirs. Template (it follows
-    /// the menu bar's light/dark), except for the states whose badge has a color: green check when all is well,
-    /// yellow triangle for warnings, red triangle for errors.
+    /// the menu bar's light/dark), except for the states whose badge has a color: blue arrow while a backup runs,
+    /// green check when all is well, yellow triangle for warnings, red triangle for errors.
     private static func icon(_ name: String, colors: [NSColor]?) -> NSImage {
         var config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         if let colors { config = config.applying(.init(paletteColors: colors)) }
@@ -82,7 +82,8 @@ extension AppModel {
 
     var iconName: String {
         switch status {
-        case .running: "arrow.triangle.2.circlepath"
+        // the drive with the circular arrow of the app icon, as a badge: the icon keeps its shape while it runs
+        case .running: "externaldrive.badge.timemachine"
         case .failed: "externaldrive.trianglebadge.exclamationmark"
         case .idle:
             !settings.isConfigured ? "externaldrive.badge.xmark"
@@ -94,8 +95,8 @@ extension AppModel {
     /// nil keeps the icon a template, in the menu bar's own color.
     var iconColors: [NSColor]? {
         switch status {
-        case .running: nil
         // palette order for these symbols: badge first, then the drive (the drive keeps the menu bar's text color)
+        case .running: [.systemBlue, .labelColor]
         case .failed: [.systemRed, .labelColor]
         case .idle:
             !settings.isConfigured || settings.paused ? nil
@@ -134,6 +135,43 @@ extension AppModel {
             }
             return "Ultimo backup: \(f.string(from: last))"
         }
+    }
+}
+
+/// Where the backups go, as Impostazioni › Destinazione shows it, in the panel's width.
+private struct DestinationRow: View {
+    let model: AppModel
+    let path: String
+    @State private var info: DestinationCard.Info?
+
+    var body: some View {
+        let key = DestinationCard.key(path, model)
+        HStack(spacing: 10) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(DestinationCard.title(path)).font(.callout.weight(.medium))
+                Group {
+                    Text(space)
+                    Text("Prossimo: \(model.nextBackupText)")
+                }
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            .lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        // fixed: the lines filling in after the load must not resize the panel
+        .frame(height: 46)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .help((path as NSString).abbreviatingWithTildeInPath)
+        .accessibilityElement(children: .combine)
+        .task(id: key) { info = await DestinationCard.info(path, key: key) }
+    }
+
+    private var space: String {
+        guard let info else { return "Calcolo dello spazio…" }
+        let f = { (n: Int64) in ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }
+        return (info.available.map { "\(f($0)) liberi · " } ?? "") + "\(f(info.used)) di backup"
     }
 }
 
@@ -191,6 +229,8 @@ struct MenuContent: View {
                         .frame(height: 16)
                 }
             }
+
+            if let path = model.settings.destination { DestinationRow(model: model, path: path) }
 
             // one button whose label changes: swapping two buttons makes the glass flicker
             Button {
