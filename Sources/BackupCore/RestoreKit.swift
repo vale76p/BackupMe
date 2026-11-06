@@ -5,7 +5,7 @@ import Foundation
 enum RestoreKit {
     /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
-    static let version = 2
+    static let version = 3
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit.
     static func install(in base: URL) {
@@ -49,6 +49,14 @@ enum RestoreKit {
 
        sh RIPRISTINO.command MacBook-1A2B3C 2026-11-05T10-00-00Z ~/Desktop/Ripristino
 
+    Prima di scrivere qualsiasi cosa lo script controlla il backup e mostra un riepilogo: quali
+    cartelle ricrea e dove, quanti file e quanti MB, lo spazio libero e cosa succederà. Poi chiede
+    due conferme: rispondi "s" alla prima e scrivi RIPRISTINA alla seconda. Qualsiasi altra
+    risposta annulla e non viene scritto nulla.
+    Per usarlo in uno script, senza domande, aggiungi --si (in qualsiasi posizione):
+
+       sh RIPRISTINO.command --si MacBook-1A2B3C 2026-11-05T10-00-00Z ~/Desktop/Ripristino
+
     Lo script ricrea nella cartella scelta ogni cartella salvata nel backup (file, cartelle,
     link simbolici, permessi, date di modifica) e controlla il contenuto di ogni file.
     Non sovrascrive mai niente: se una cartella esiste già usa un nome nuovo ("progetto 2").
@@ -71,6 +79,30 @@ var utf8 = $.NSUTF8StringEncoding
 function write(handle, s) { handle.writeData($(s + '\n').dataUsingEncoding(utf8)) }
 function out(s) { write($.NSFileHandle.fileHandleWithStandardOutput, s) }
 function fail(s) { write($.NSFileHandle.fileHandleWithStandardError, s); $.exit(1) }
+function prompt(s) { $.NSFileHandle.fileHandleWithStandardOutput.writeData($(s).dataUsingEncoding(utf8)) }
+// one line from the terminal (stdin), without the newline; null at end of input
+var pending = ''
+function readLine() {
+  while (pending.indexOf('\n') < 0) {
+    var data = $.NSFileHandle.fileHandleWithStandardInput.availableData
+    if (data.length === 0) break
+    pending += ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, utf8)) || ''
+  }
+  if (!pending) return null
+  var i = pending.indexOf('\n'), line = i < 0 ? pending : pending.slice(0, i)
+  pending = i < 0 ? '' : pending.slice(i + 1)
+  return line.trim()
+}
+function size(n) {
+  var f = (x, u) => x.toLocaleString('it-IT', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' ' + u
+  return n >= 1e9 ? f(n / 1e9, 'GB') : f(n / 1e6, 'MB')
+}
+function freeSpace(p) {
+  while (!exists(p)) p = ObjC.unwrap($(p).stringByDeletingLastPathComponent)
+  var key = 'NSURLVolumeAvailableCapacityForImportantUsageKey'
+  var v = ObjC.deepUnwrap($.NSURL.fileURLWithPath(p).resourceValuesForKeysError($([key]), null))
+  return v && typeof v[key] === 'number' ? v[key] : undefined
+}
 function exists(p) { return fm.fileExistsAtPath(p) }
 function list(p) { return (ObjC.deepUnwrap(fm.contentsOfDirectoryAtPathError(p, null)) || []).sort() }
 function absolute(p) {
@@ -119,7 +151,11 @@ function run(argv) {
   var script = absolute(args[args.length - argv.length - 1])
   var base = ObjC.unwrap($(script).stringByDeletingLastPathComponent)
   var computers = list(base).filter(c => exists(base + '/' + c + '/repo.json'))
+  var yes = argv.indexOf('--si') >= 0
+  argv = argv.filter(a => a !== '--si')
   var usage = 'Per ripristinare:\n  sh "' + script + '" <computer> <backup> <cartella di destinazione>'
+    + '\nPrima di scrivere mostra cosa farà e chiede due conferme. Con --si (in qualsiasi posizione) non le chiede,'
+    + '\nper usarlo in uno script.'
   if (argv.length === 0) {
     if (!computers.length) fail('Nessun archivio di BackupMe in ' + base)
     computers.forEach(c => {
@@ -150,9 +186,48 @@ function run(argv) {
     var target = dest + '/' + name
     for (var n = 2; exists(target) || taken.has(target); n++) target = dest + '/' + name + ' ' + n
     taken.add(target)
-    plans.push({ target: target, tree: tree })
+    var sizes = tree.filter(e => e.kind === 'file').map(e => e.size || 0)
+    plans.push({ source: source, name: name, target: target, tree: tree,
+                 files: sizes.length, bytes: sizes.reduce((a, b) => a + b, 0) })
   })
   if (!plans.length) fail('Il backup ' + id + ' non contiene cartelle')
+
+  // say what will happen, then ask twice: nothing is written before both answers
+  var count = plans.reduce((a, p) => a + p.files, 0), bytes = plans.reduce((a, p) => a + p.bytes, 0)
+  var free = freeSpace(dest)
+  var when = new Date(snapshot.date * 1000).toLocaleString('it-IT', { dateStyle: 'long', timeStyle: 'medium' })
+  out('Ripristino del computer "' + computer + '", backup del ' + when + ' (ora locale)\n')
+  out('Cartelle che verranno ricreate:')
+  plans.forEach(p => {
+    out('  ' + p.source + '\n    → ' + p.target)
+    if (p.target !== dest + '/' + p.name) out('      (esiste già "' + p.name + '": la cartella esistente non viene toccata)')
+    out('      ' + p.files + ' file, ' + size(p.bytes))
+  })
+  out('\nIn tutto: ' + count + ' file, ' + size(bytes) + '. Spazio libero nella destinazione: '
+    + (free === undefined ? 'sconosciuto' : size(free)) + '.')
+  if (free !== undefined && free < bytes) out('ATTENZIONE: lo spazio libero non basta, il ripristino si fermerebbe a metà.')
+  out('\nCosa succede:\n'
+    + '  - Niente di quello che esiste già viene sovrascritto o cancellato; l\'archivio non viene modificato.\n'
+    + '  - Il contenuto viene letto dall\'archivio: se è su OneDrive o Dropbox con i file su richiesta, viene\n'
+    + '    prima scaricato (serve la connessione, può richiedere tempo e altro spazio sul disco).\n'
+    + '  - Ogni file viene controllato: se il contenuto non corrisponde viene rinominato ".danneggiato"\n'
+    + '    e lo script termina con un errore.\n'
+    + '  - Vengono ripristinati permessi e date di modifica.\n')
+  if (!yes) {
+    var cancel = () => { out('Ripristino annullato, non è stato scritto nulla.'); $.exit(2) }
+    prompt('Procedere con il ripristino? [s/N] ')
+    var answer = readLine()
+    if (answer === null) {
+      write($.NSFileHandle.fileHandleWithStandardError, '\nNessuna risposta: lo script non è in un Terminale. Non è stato scritto nulla.\n'
+        + 'Per ripristinare senza domande, per esempio da uno script, aggiungi --si:\n'
+        + '  sh "' + script + '" --si <computer> <backup> <cartella di destinazione>')
+      $.exit(2)
+    }
+    if (!/^s[iì]?$/i.test(answer)) cancel()
+    prompt('Per confermare scrivi RIPRISTINA: ')
+    if ((readLine() || '').toUpperCase() !== 'RIPRISTINA') cancel()
+  }
+
   if (!fm.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(dest, true, $(), null)) {
     fail('Non riesco a creare ' + dest)
   }

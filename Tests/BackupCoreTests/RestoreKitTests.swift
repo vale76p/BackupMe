@@ -8,14 +8,18 @@ import Testing
     let fm = FileManager.default
     var kit: URL { dest.appending(path: "BackupMe") }
 
-    func sh(_ args: [String]) throws -> (status: Int32, out: String) {
+    /// `input` is what the user types; nil = no terminal at all (/dev/null).
+    func sh(_ args: [String], input: String? = nil) throws -> (status: Int32, out: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = [kit.appending(path: "RIPRISTINO.command").path] + args
-        let pipe = Pipe()
+        let pipe = Pipe(), stdin = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
+        p.standardInput = input == nil ? FileHandle.nullDevice : stdin
         try p.run()
+        stdin.fileHandleForWriting.write(Data((input ?? "").utf8))
+        try stdin.fileHandleForWriting.close()
         let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         p.waitUntilExit()
         return (p.terminationStatus, out)
@@ -71,7 +75,7 @@ import Testing
         #expect(listing.status == 0 && listing.out.contains("Computer: Mac") && listing.out.contains(id))
 
         let out = tmp().appending(path: "ripristino")
-        let r = try sh(["Mac", id, out.path])
+        let r = try sh(["Mac", id, out.path, "--si"])
         #expect(r.status == 0, "\(r.out)")
         let restored = out.appending(path: "progetto")
         for e in s.entries {
@@ -89,7 +93,8 @@ import Testing
             }
         }
         // never overwrites: a second run goes beside the first
-        #expect(try sh(["Mac", id, out.path]).status == 0)
+        let again = try sh(["--si", "Mac", id, out.path])
+        #expect(again.status == 0 && again.out.contains("progetto 2"), "\(again.out)")
         #expect(fm.fileExists(atPath: out.appending(path: "progetto 2/testo.txt").path))
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: restored.appending(path: "chiusa").path)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out.appending(path: "progetto 2/chiusa").path)
@@ -107,9 +112,44 @@ import Testing
         try repo.writeSnapshot(Snapshot(date: d, sources: ["/x/progetto"],
                                         entries: [entry("", .directory), entry("../fuori.txt", .file)], warnings: []))
         let out = tmp().appending(path: "ripristino")
-        let r = try sh(["Mac", Snapshot.id(for: d), out.path])
+        let r = try sh(["Mac", Snapshot.id(for: d), out.path, "--si"])
         #expect(r.status != 0 && r.out.contains("fuori.txt"))
         #expect(!fm.fileExists(atPath: out.path))
         #expect(!fm.fileExists(atPath: out.appending(path: "fuori.txt").path))
+    }
+
+    /// A one-file backup of `src`; returns its id.
+    func backup() throws -> String {
+        write("ciao", to: src.appending(path: "ciao.txt"))
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let report = try BackupEngine(repository: repo, cache: HashCache(url: tmp().appending(path: "c.json")),
+                                      excludes: ExcludeRules(patterns: [])).run(sources: [src])
+        return try #require(report.snapshotID)
+    }
+
+    @Test func scriptAsksTwiceBeforeRestoring() throws {
+        let id = try backup(), out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", id, out.path], input: "s\nRIPRISTINA\n")
+        #expect(r.status == 0, "\(r.out)")
+        #expect(r.out.contains(src.path) && r.out.contains(out.appending(path: "progetto").path))
+        #expect(r.out.contains("1 file") && r.out.contains("[s/N]") && r.out.contains("scrivi RIPRISTINA"))
+        #expect(try String(contentsOf: out.appending(path: "progetto/ciao.txt"), encoding: .utf8) == "ciao")
+    }
+
+    @Test(arguments: ["s\nno\n", "\n", "n\nRIPRISTINA\n", "s\n"])
+    func scriptCancelsWithoutBothConfirmations(_ answers: String) throws {
+        let id = try backup(), out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", id, out.path], input: answers)
+        #expect(r.status == 2 && r.out.contains("Ripristino annullato, non è stato scritto nulla."), "\(r.out)")
+        #expect(!fm.fileExists(atPath: out.path))
+    }
+
+    @Test func scriptWithoutAnswersOrFlagWritesNothing() throws {
+        let id = try backup(), out = tmp().appending(path: "ripristino")
+        for input in [nil, ""] as [String?] {
+            let r = try sh(["Mac", id, out.path], input: input)
+            #expect(r.status == 2 && r.out.contains("--si"), "\(r.out)")
+            #expect(!fm.fileExists(atPath: out.path))
+        }
     }
 }
