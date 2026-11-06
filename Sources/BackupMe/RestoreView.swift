@@ -69,7 +69,7 @@ struct RestoreView: View {
                 }
                 .labelStyle(.titleAndIcon)
                 .controlSize(.large)
-                .disabled(target == nil || model.busy != nil)
+                .disabled(target == nil || model.restoring)
                 .help("Ripristina accanto all'originale, senza sovrascrivere")
             }
         }
@@ -202,6 +202,7 @@ struct RestoreView: View {
     }
 
     private var subtitle: String {
+        if model.restoring { return "Ripristino in corso…" }
         if let busy = model.busy { return busy }
         if !model.search.isEmpty { return model.results.count == 1 ? "1 risultato" : "\(model.results.count) risultati" }
         return model.selected.map { "Backup del " + $0.date.formatted(date: .abbreviated, time: .shortened) } ?? ""

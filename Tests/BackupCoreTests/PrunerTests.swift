@@ -34,6 +34,17 @@ import Testing
         #expect(r.deletedObjects == 1)
     }
 
+    @Test func pinnedSnapshotSurvivesRetentionAndCap() throws {
+        let complete = Snapshot.id(for: t0)
+        _ = try backup(["a.txt": random(4000)], at: t0)
+        _ = try backup(["b.txt": random(4000)], at: t0.addingTimeInterval(86400))
+        let repo = try backup(["c.txt": random(4000)], at: t0.addingTimeInterval(2 * 86400))
+        let now = t0.addingTimeInterval(2 * 86400)
+        let r = try prune(repository: repo, policy: keepNewestOnly, capBytes: 1, now: now, pinned: [complete])
+        #expect(try repo.snapshotIDs() == [complete, Snapshot.id(for: now)])
+        #expect(r.deletedSnapshots == [Snapshot.id(for: t0.addingTimeInterval(86400))])
+    }
+
     @Test func orphanObjectsFromInterruptedBackupRemoved() throws {
         let repo = try backup(["a.txt": Data("a".utf8)], at: t0)
         let orphan = Data("orfano".utf8)

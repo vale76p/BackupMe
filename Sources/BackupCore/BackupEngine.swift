@@ -187,7 +187,9 @@ public final class BackupEngine {
             let hash: String
             do {
                 if big { hash = try streamHash(url) } else {
-                    data = try Data(contentsOf: url, options: .mappedIfSafe)
+                    // read, not mapped: compression re-reads the bytes later, and a file rewritten in place
+                    // meanwhile would be stored under a hash that doesn't match it
+                    data = try Data(contentsOf: url)
                     hash = sha256Hex(data)
                 }
             } catch {
@@ -197,11 +199,11 @@ public final class BackupEngine {
             var stable = FileStat(path: path).map { $0.unchanged(since: st) } ?? false
             var written: Int64 = 0
             if stable, !repository.hasObject(hash) {
-                written = big ? try repository.putObjectFile(from: url, hash: hash) : try repository.putObject(data, hash: hash)
-                // a streamed copy happens after hashing: if the file moved meanwhile the stored copy may not match
-                if big, !(FileStat(path: path).map { $0.unchanged(since: st) } ?? false) {
-                    try? repository.deleteObject(hash)
-                    stable = false
+                if big {
+                    // nil: the file changed between hashing and copying, and nothing was stored
+                    if let w = try repository.putObjectFile(from: url, hash: hash) { written = w } else { stable = false }
+                } else {
+                    written = try repository.putObject(data, hash: hash)
                 }
             }
             guard stable else {

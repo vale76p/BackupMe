@@ -16,15 +16,19 @@ public struct PruneResult: Equatable, Sendable {
 /// `refsCache` is a local folder remembering which objects each manifest uses (manifests are immutable), so
 /// manifests on OneDrive are read once. It also detects cached manifests that disappeared without this code
 /// deleting them: then the listing can't be trusted and no object is deleted.
+///
+/// `pinned` snapshots are never deleted, neither by retention nor by the cap (e.g. the last complete backup
+/// while newer ones are partial).
 public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int64?, now: Date,
-                  calendar: Calendar = .backup, refsCache: URL? = nil, forceGC: Bool = false) throws -> PruneResult {
+                  calendar: Calendar = .backup, refsCache: URL? = nil, forceGC: Bool = false,
+                  pinned: Set<String> = []) throws -> PruneResult {
     try repository.withLock {
         var ids = try repository.snapshotIDs()
-        let gcSkipped = refsCache.map { trackVanished(ids: Set(ids), cache: $0) } ?? false
+        let gcSkipped = refsCache.map { trackVanished(ids: Set(ids), cache: $0, now: now) } ?? false
 
         // ids that don't parse as dates are not ours to judge: keep them
         let dated = ids.compactMap { id in Snapshot.date(fromID: id).map { (id: id, date: $0) } }
-        let keep = snapshotsToKeep(dated, policy: policy, now: now, calendar: calendar)
+        let keep = snapshotsToKeep(dated, policy: policy, now: now, calendar: calendar).union(pinned)
         var deleted: [String] = []
         for s in dated where !keep.contains(s.id) {
             try repository.deleteSnapshot(s.id)
@@ -44,8 +48,9 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
                 return reachable.reduce(0) { $0 + (objectSizes[$1] ?? 0) } + manifestSizes.values.reduce(0, +)
             }
             size = pool()
-            while size > cap, ids.count > 1 {
-                let oldest = ids.removeFirst()
+            // oldest first, never the newest, never a pinned one or an id that isn't ours
+            while size > cap, let oldest = ids.dropLast().first(where: { !pinned.contains($0) && Snapshot.date(fromID: $0) != nil }) {
+                ids.removeAll { $0 == oldest }
                 try repository.deleteSnapshot(oldest)
                 deleted.append(oldest)
                 refs[oldest] = nil
@@ -77,7 +82,7 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
 /// Remembers every manifest seen (`<id>.seen`, or `<id>` once its references are cached). Marks the ones
 /// missing from the listing as `<id>.gone`, and restores them if they come back.
 /// Returns true while any manifest has been gone for less than 3 days: object cleanup must wait.
-private func trackVanished(ids: Set<String>, cache dir: URL) -> Bool {
+private func trackVanished(ids: Set<String>, cache dir: URL, now: Date) -> Bool {
     let fm = FileManager.default
     try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
     let names = Set((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
@@ -90,13 +95,13 @@ private func trackVanished(ids: Set<String>, cache dir: URL) -> Bool {
         if name.hasSuffix(".gone") {
             let id = String(name.dropLast(5))
             if ids.contains(id) { try? fm.moveItem(at: url, to: dir.appending(path: id)); continue }
-            let since = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? Date()
-            if Date().timeIntervalSince(since) < 3 * 86400 { waiting = true } else { try? fm.removeItem(at: url) }
+            let since = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? now
+            if now.timeIntervalSince(since) < 3 * 86400 { waiting = true } else { try? fm.removeItem(at: url) }
         } else if !ids.contains(name.hasSuffix(".seen") ? String(name.dropLast(5)) : name) {
             let id = name.hasSuffix(".seen") ? String(name.dropLast(5)) : name
             let gone = dir.appending(path: id + ".gone")
             try? fm.moveItem(at: url, to: gone)
-            try? fm.setAttributes([.modificationDate: Date()], ofItemAtPath: gone.path)
+            try? fm.setAttributes([.modificationDate: now], ofItemAtPath: gone.path)
             waiting = true
         }
     }

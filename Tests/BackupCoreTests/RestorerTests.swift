@@ -94,6 +94,21 @@ import Testing
         #expect(fm.fileExists(atPath: trashDir.appending(path: trashed[0]).appending(path: "b.txt").path))
     }
 
+    @Test func replaceKeepsRestoredCopyWhenFolderReappears() throws {
+        write("vecchio", to: src.appending(path: "a.txt"))
+        let (repo, snap) = try backup()
+        // an IDE recreating the folder right after it went to the Trash
+        let r = Restorer(repository: repo, trash: { url in
+            try FileManager.default.moveItem(at: url, to: trashDir.appending(path: UUID().uuidString))
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        })
+        var kept: String?
+        do { _ = try r.restore(snap, source: src.path, path: "", mode: .replace) } catch RestoreError.keptBeside(let p) { kept = p }
+        let copy = try #require(kept)
+        #expect(try String(contentsOf: URL(fileURLWithPath: copy).appending(path: "a.txt"), encoding: .utf8) == "vecchio")
+        #expect(try fm.contentsOfDirectory(atPath: trashDir.path).count == 1)
+    }
+
     @Test func corruptObjectFailsRestore() throws {
         write("a", to: src.appending(path: "a.txt"))
         let (repo, snap) = try backup()

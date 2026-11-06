@@ -1,4 +1,5 @@
 import AppKit
+import BackupCore
 import SwiftUI
 
 @main
@@ -44,6 +45,11 @@ extension AppModel {
             f.dateStyle = .medium
             f.timeStyle = .short
             f.doesRelativeDateFormatting = true
+            // no changes: the run reused the previous manifest, so the backup list shows nothing new; say why
+            if let r = lastReport, r.error == nil, let id = r.snapshotID, let saved = Snapshot.date(fromID: id),
+               saved < r.date.addingTimeInterval(-2) {
+                return "Nessuna modifica dal \(f.string(from: saved)) · controllato \(r.date.formatted(date: .omitted, time: .shortened))"
+            }
             return "Ultimo backup: \(f.string(from: last))"
         }
     }

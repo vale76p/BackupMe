@@ -124,12 +124,18 @@ public final class Repository {
     }
 
     /// Stores a large file by copying it (a clone on the same APFS volume), without loading it in memory.
-    public func putObjectFile(from source: URL, hash: String) throws -> Int64 {
+    /// The copy is verified before it gets its final name; nil means it didn't match `hash` (the file changed
+    /// after hashing) and nothing was stored. An existing object is never touched, so older backups stay safe.
+    public func putObjectFile(from source: URL, hash: String) throws -> Int64? {
         let url = objectURL(hash, "raw")
         try prepareFanout(url)
         let tmp = url.appendingPathExtension("tmp")
         try? fm.removeItem(at: tmp)
         try fm.copyItem(at: source, to: tmp)
+        guard try streamHash(tmp) == hash else {
+            try? fm.removeItem(at: tmp)
+            return nil
+        }
         let fd = open(tmp.path, O_RDONLY)
         if fd >= 0 { fsync(fd); close(fd) }
         guard rename(tmp.path, url.path) == 0 else {

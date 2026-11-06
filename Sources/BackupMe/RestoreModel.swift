@@ -18,7 +18,9 @@ struct SearchHit: Hashable, Identifiable {
     var currentPath = ""
     var search = "" { didSet { searchChanged() } }
     var results: [SearchHit] = []
+    /// Search progress only; a restore has its own flag so neither can cancel or block the other.
     var busy: String?
+    var restoring = false
     var error: String?
     /// True until the snapshot list arrives: "no backups" must not flash while it loads.
     var isLoading = true
@@ -155,8 +157,8 @@ struct SearchHit: Hashable, Identifiable {
     }
 
     func restore(snapshotID: String, source: String, path: String, mode: RestoreMode) {
-        guard busy == nil else { return }
-        busy = "Ripristino in corso…"
+        guard !restoring else { error = "Un ripristino è già in corso: attendi che finisca"; return }
+        restoring = true
         Task {
             do {
                 let url = try await withRepository { repo in
@@ -164,7 +166,7 @@ struct SearchHit: Hashable, Identifiable {
                 }
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             } catch { self.error = AppModel.describe(error) }
-            busy = nil
+            restoring = false
         }
     }
 }

@@ -2,6 +2,19 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.3.1] - 2026-11-06
+
+### Corretto
+- Un file piccolo riscritto mentre veniva salvato (database, log, file degli IDE) poteva finire nell'archivio con un contenuto diverso dalla sua impronta: ora viene letto una volta sola, non mappato in memoria.
+- Un file grande che cambiava durante la copia poteva far cancellare una copia già nell'archivio e usata dai backup precedenti: ora la copia viene verificata prima di diventare definitiva e quella esistente non si tocca mai.
+- "Sostituisci": se dopo aver spostato la cartella attuale nel Cestino non si riusciva a metterci la versione ripristinata (per esempio perché un IDE la ricreava subito), la versione ripristinata veniva cancellata. Ora resta accanto, con un messaggio che dice dove.
+- Se una cartella da salvare veniva cancellata o rinominata, ogni backup era parziale e la pulizia non girava più, riempiendo la destinazione. Ora la pulizia gira e protegge l'ultimo backup completo.
+- Dopo l'errore "Backup bloccato da più di 2 ore" ogni nuovo tentativo falliva con "Un altro backup è già in corso": ora non se ne avvia un altro finché quello bloccato non termina.
+- Il Mac non va più in stop per inattività durante un backup.
+- Sfoglia backup: durante una ricerca "Ripristina" non faceva nulla, e svuotare la ricerca riattivava il pulsante a ripristino in corso.
+- Un backup senza modifiche sembrava non eseguito: il pannello ora dice "Nessuna modifica dal … · controllato …".
+- Pulizia: il tetto allo spazio poteva cancellare backup con nomi non suoi, e i tempi di attesa per i backup spariti dalla destinazione usavano l'orologio invece della data del backup.
+
 ## [0.3.0] - 2026-11-06
 
 ### Cambiato

@@ -2,7 +2,12 @@ import Foundation
 
 public enum RestoreMode: Equatable, Sendable { case besideOriginal, replace, into(URL) }
 public enum EntryStatus: Equatable, Sendable { case unchanged, modified, missing }
-public enum RestoreError: Error, Equatable { case notFound(String), invalidEntry(String) }
+public enum RestoreError: Error, Equatable {
+    case notFound(String), invalidEntry(String)
+    /// Replace moved the current item to the Trash but couldn't put the restored copy in its place:
+    /// the copy was kept beside it, at this path.
+    case keptBeside(String)
+}
 
 public final class Restorer {
     private let repository: Repository
@@ -37,11 +42,17 @@ public final class Restorer {
         let parent = target.deletingLastPathComponent()
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
         let staging = parent.appending(path: ".backupme-restore-\(UUID().uuidString)")
+        var trashed = false
         do {
             try build(entries, prefix: path, at: staging)
-            if mode == .replace, (try? fm.attributesOfItem(atPath: target.path)) != nil { try trash(target) }
+            if mode == .replace, (try? fm.attributesOfItem(atPath: target.path)) != nil { try trash(target); trashed = true }
             return try place(staging, at: target, renameIfTaken: mode != .replace)
         } catch {
+            // the current item is already in the Trash: the rebuilt copy is now the only one outside it, keep it
+            if trashed, let kept = try? place(staging, at: parent.appending(path: Self.restoredName(name, date: snapshot.date)),
+                                              renameIfTaken: true) {
+                throw RestoreError.keptBeside(kept.path)
+            }
             try? makeWritable(staging)
             try? fm.removeItem(at: staging)
             throw error

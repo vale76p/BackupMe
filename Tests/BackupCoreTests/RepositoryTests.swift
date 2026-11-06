@@ -25,6 +25,18 @@ import Testing
         #expect(Repository.destination(for: other).path == other.standardizedFileURL.path)
     }
 
+    @Test func largeCopyThatDoesNotMatchIsNotStored() throws {
+        let r = try Repository(destination: dest, computerName: "Mac")
+        let file = tmp().appending(path: "big.bin")
+        write("contenuto attuale", to: file)
+        let staleHash = sha256Hex(Data("contenuto di prima".utf8)) // hashed before the file was rewritten
+        #expect(try r.putObjectFile(from: file, hash: staleHash) == nil)
+        #expect(objectFile(r, staleHash) == nil)
+        let goodHash = sha256Hex(Data("contenuto attuale".utf8))
+        #expect(try r.putObjectFile(from: file, hash: goodHash) != nil)
+        #expect(try r.readObject(goodHash) == Data("contenuto attuale".utf8))
+    }
+
     @Test func createsLayout() throws {
         let r = try Repository(destination: dest, computerName: "Mac")
         #expect(r.root.path.hasSuffix("BackupMe/Mac"))

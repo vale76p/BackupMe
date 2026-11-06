@@ -29,6 +29,12 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     private var overCapNotified = UserDefaults.standard.bool(forKey: "overCapNotified") {
         didSet { UserDefaults.standard.set(overCapNotified, forKey: "overCapNotified") }
     }
+    /// Newest backup with every source saved: cleanup after a partial backup must never delete it.
+    private var lastComplete = UserDefaults.standard.string(forKey: "lastCompleteSnapshot") {
+        didSet { UserDefaults.standard.set(lastComplete, forKey: "lastCompleteSnapshot") }
+    }
+    /// True until the backup task really ends: after a "stuck" timeout it may still hold the archive lock.
+    private var workerActive = false
     var isRunning: Bool { if case .running = status { true } else { false } }
     var lastReport: BackupReport? { history.last }
 
@@ -78,7 +84,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         if isRunning, now.timeIntervalSince(lastProgressAt) > Self.stuckAfter {
             // a read blocked forever (offline OneDrive file, hung volume) must not stop every later backup
             cancelBackup()
-            fail("Backup bloccato da più di 2 ore: verrà ritentato")
+            fail("Backup bloccato da più di 2 ore: riparte appena si sblocca, o riavvia BackupMe")
         }
         // stale since the last success, or since setup if none ever succeeded; a future date means a wrong clock
         if settings.isConfigured, let since = lastSuccess ?? configuredSince,
@@ -94,7 +100,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     func backupNow() {
-        guard !isRunning else { return }
+        guard !isRunning, !workerActive else { return }
         guard settings.isConfigured else {
             status = .failed(Self.notConfigured)
             return
@@ -106,9 +112,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         cancelFlag = flag
         let s = settings
         let archive = AppPaths.archiveName
+        let complete = lastComplete
+        workerActive = true
         Task.detached(priority: .utility) {
+            // a long first backup must not stop at every idle sleep; also keeps App Nap away
+            let activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled, .suddenTerminationDisabled],
+                                                                 reason: "Backup in corso")
+            defer { ProcessInfo.processInfo.endActivity(activity) }
             var lastSent = 0.0
-            let (report, overCap) = Self.perform(settings: s, archive: archive, isCancelled: { flag.withLock { $0 } }) { p in
+            let (report, overCap) = Self.perform(settings: s, archive: archive, lastComplete: complete,
+                                                 isCancelled: { flag.withLock { $0 } }) { p in
                 guard p - lastSent >= 0.01 || p == 1 else { return }
                 lastSent = p
                 Task { @MainActor in
@@ -116,13 +129,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                     if self.isRunning { self.status = .running(p) }
                 }
             }
-            await MainActor.run { self.finish(report, overCap: overCap) }
+            await MainActor.run {
+                self.workerActive = false
+                self.finish(report, overCap: overCap)
+            }
         }
     }
 
     func cancelBackup() { cancelFlag.withLock { $0 = true } }
 
-    nonisolated static func perform(settings s: AppSettings, archive: String, isCancelled: @escaping () -> Bool,
+    nonisolated static func perform(settings s: AppSettings, archive: String, lastComplete: String?, isCancelled: @escaping () -> Bool,
                                     progress: @escaping (Double) -> Void) -> (BackupReport, Bool?) {
         let start = Date()
         func failed(_ error: Error) -> BackupReport {
@@ -144,14 +160,18 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         } catch {
             report = failed(error)
         }
-        // a partial backup (a source unreadable) must not let retention replace complete snapshots with it
-        guard report.error == nil || report.snapshotID == nil else { return (report, nil) }
+        // a partial backup (a source unreadable, deleted or renamed) must not let retention replace complete
+        // snapshots with it: the last complete one is pinned. Unknown or not in this archive: skip cleanup.
+        let partial = report.error != nil && report.snapshotID != nil
+        let pin = partial ? lastComplete.flatMap { repo.snapshotExists($0) ? $0 : nil } : nil
+        guard !partial || pin != nil else { return (report, nil) }
         do {
             // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
             let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
             // a failed run may have left orphan objects: collect them (this also frees space when the disk is full)
             let result = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
-                                   refsCache: AppPaths.refsCache(archive, destination: repo.root.path), forceGC: report.snapshotID == nil)
+                                   refsCache: AppPaths.refsCache(archive, destination: repo.root.path), forceGC: report.snapshotID == nil,
+                                   pinned: pin.map { [$0] } ?? [])
             if result.gcSkipped { report.warnings.append("Pulizia rinviata: alcuni backup sono spariti dalla destinazione, riprende da sola entro 3 giorni") }
             return (report, result.overCap)
         } catch {
@@ -166,6 +186,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         let enc = JSONEncoder(); enc.dateEncodingStrategy = .secondsSince1970
         try? enc.encode(history).write(to: AppPaths.history, options: .atomic)
 
+        if report.error == nil, let id = report.snapshotID { lastComplete = id }
         if let err = report.error {
             fail(err)
         } else {
@@ -203,6 +224,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case BackupError.cancelled: return "Backup interrotto"
         case RestoreError.notFound(let p): return "\(p.isEmpty ? "La cartella" : p) non è in questo backup"
         case RestoreError.invalidEntry(let p): return "Backup non valido o manomesso (percorso \"\(p)\"): ripristino annullato"
+        case RestoreError.keptBeside(let p):
+            return "Non è stato possibile sostituire: l'originale è nel Cestino e la versione ripristinata è in \(p)"
         default: return error.localizedDescription
         }
     }
