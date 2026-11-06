@@ -2,6 +2,17 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.9.4] - 2026-11-07
+
+Dalla revisione di sicurezza delle scritture nell'archivio.
+
+### Sicurezza
+- Le scritture nell'archivio (`repo.json`, oggetti, indici dei backup, kit di ripristino, lock) non seguono più i collegamenti (symlink). Prima un collegamento messo nell'archivio al posto di un file temporaneo `.tmp`, di `RIPRISTINO.command` o del lock faceva sovrascrivere o creare file fuori dall'archivio. La destinazione scelta nelle Impostazioni può ancora essere un collegamento.
+- Se la cartella `BackupMe`, quella del Mac o una sua sottocartella è un collegamento, i backup si fermano con un messaggio che lo spiega, invece di scrivere dove punta.
+
+### Corretto
+- Su dischi exFAT e FAT32 nessun backup si completava: il sistema non permette di salvare l'indice con la rinomina esclusiva. Ora l'indice viene salvato senza mai sostituirne uno esistente.
+
 ## [0.9.3] - 2026-11-06
 
 Quello che la 0.9.2 aveva lasciato aperto.
