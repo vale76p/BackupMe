@@ -194,7 +194,8 @@ public final class Restorer {
 
     /// Compares a backed-up entry with what is on disk now.
     public static func status(of entry: Entry) -> EntryStatus {
-        guard let st = FileStat(path: entry.url.path) else { return .missing }
+        // a saved folder that is a symlink was backed up through the link: compare with the real folder
+        guard let st = FileStat(path: entry.url.path, followSymlink: entry.path.isEmpty) else { return .missing }
         guard st.kind == entry.kind else { return .modified }
         switch entry.kind {
         case .directory: return .unchanged

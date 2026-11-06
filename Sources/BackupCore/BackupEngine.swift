@@ -174,16 +174,18 @@ public final class BackupEngine {
     }
 
     /// True if a repository of the source has a git operation in progress (a lock file), or refs changed since `date`.
+    /// A lock older than 10 minutes is a leftover of a crashed git, not an operation: it would warn at every backup.
     private func gitChanged(_ scan: Scan, since date: Date) -> Bool {
         let fm = FileManager.default
+        func live(_ lock: String) -> Bool { FileStat(path: lock).map { $0.mtime > date.addingTimeInterval(-600) } ?? false }
         for item in scan.found where item.stat.kind == .directory && (item.path == ".git" || item.path.hasSuffix("/.git")) {
             let git = scan.source + "/" + item.path
             let top = (try? fm.contentsOfDirectory(atPath: git)) ?? []
-            if top.contains(where: { $0.hasSuffix(".lock") }) { return true }
+            if top.contains(where: { $0.hasSuffix(".lock") && live(git + "/" + $0) }) { return true }
             var paths = [git + "/HEAD", git + "/packed-refs", git + "/refs"]
             paths += (fm.enumerator(atPath: git + "/refs")?.allObjects as? [String] ?? []).map { git + "/refs/" + $0 }
             for p in paths {
-                if p.hasSuffix(".lock") { return true }
+                if p.hasSuffix(".lock") { if live(p) { return true } else { continue } }
                 if let st = FileStat(path: p), st.ctime > date { return true }
             }
         }

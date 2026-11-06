@@ -2,6 +2,22 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.6.1] - 2026-11-06
+
+### Aggiunto
+- Sfoglia backup: trascinando un file nel Finder se ne ripristina una copia dove lo lasci, con il nome "… (ripristinato …)" per non sostituire mai l'originale.
+- Sfoglia backup: Indietro e Avanti tra le cartelle con ⌘[ e ⌘], come nel Finder.
+- Filtro "Aggiunti da allora": elementi che oggi ci sono nella cartella ma non in quel backup (escluse le cartelle che il backup salterebbe); un doppio clic li mostra nel Finder.
+- Notifiche raggruppate in un'unica pila, con i pulsanti "Riprova" e "Apri Impostazioni" quando c'è un problema.
+- Pannello: ⌘Q chiude BackupMe anche senza aprire il menu "…".
+- Icona Liquid Glass (Icon Composer, `Resources/AppIcon.icon`) con le varianti chiara, scura, trasparente e tinta su macOS 26 e successivi; su macOS 14 e 15 si vede la versione piatta generata da actool.
+
+### Corretto
+- Una cartella salvata tramite collegamento simbolico risultava "modificata" anche senza cambiamenti.
+- Un file `index.lock` lasciato da git dopo un crash faceva comparire l'avviso "il repository git è cambiato durante il backup" a ogni backup: ora contano solo i lock recenti.
+- `scripts/build-app.sh` falliva a volte con "resource fork, Finder information, or similar detritus not allowed" quando il progetto è in una cartella sincronizzata (Documenti su iCloud): ora pulisce gli attributi prima di firmare e sulla copia installata.
+- Due Mac con versioni diverse di BackupMe sulla stessa destinazione si riscrivevano a vicenda lo script di ripristino: ora una versione più vecchia non sostituisce quello più nuovo.
+
 ## [0.6.0] - 2026-11-06
 
 ### Aggiunto

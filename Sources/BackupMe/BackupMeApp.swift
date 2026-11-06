@@ -37,13 +37,23 @@ struct BackupMeApp: App {
 private struct MenuBarLabel: View {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Image(systemName: model.iconName)
             .accessibilityLabel("BackupMe")
             .accessibilityValue(model.statusText)
-            // first run: nothing to back up yet, so the setup window opens by itself
-            .task { if !model.settings.isConfigured { openWindow(id: "welcome") } }
+            .task {
+                // the label lives as long as the app: the one place with the window actions at hand
+                SystemServices.onAction = { action in
+                    switch action {
+                    case .retry: model.backupNow()
+                    case .settings: openSettings(); SystemServices.windowOpened()
+                    }
+                }
+                // first run: nothing to back up yet, so the setup window opens by itself
+                if !model.settings.isConfigured { openWindow(id: "welcome") }
+            }
     }
 }
 
@@ -159,6 +169,8 @@ struct MenuContent: View {
         }
         .padding(14)
         .frame(width: 300)
+        // ⌘Q while the panel is open, as with every menu bar app; Esci is also in the "…" menu
+        .background { Button("Esci da BackupMe") { NSApp.terminate(nil) }.keyboardShortcut("q").opacity(0).accessibilityHidden(true) }
     }
 
     private var primaryTitle: String {

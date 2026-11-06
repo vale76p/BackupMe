@@ -31,6 +31,19 @@ import Testing
         #expect(try String(contentsOf: readme, encoding: .utf8) == RestoreKit.readme)
     }
 
+    @Test func newerKitFromAnotherMacIsKept() throws {
+        _ = try Repository(destination: dest, computerName: "Mac")
+        let script = kit.appending(path: "RIPRISTINO.command")
+        #expect(RestoreKit.installedVersion(try String(contentsOf: script, encoding: .utf8)) == RestoreKit.version)
+        let newer = "#!/bin/sh\n// BackupMe-kit: \(RestoreKit.version + 1)\n"
+        write(newer, to: script)
+        _ = try Repository(destination: dest, computerName: "Mac")
+        #expect(try String(contentsOf: script, encoding: .utf8) == newer)
+        write("#!/bin/sh\n// kit senza versione\n", to: script) // the first kit: always replaced
+        _ = try Repository(destination: dest, computerName: "Mac")
+        #expect(try String(contentsOf: script, encoding: .utf8) == RestoreKit.script)
+    }
+
     @Test func scriptRestoresBackupWithoutTheApp() throws {
         write(String(repeating: "testo comprimibile ", count: 200), to: src.appending(path: "testo.txt"))
         try fm.createDirectory(at: src.appending(path: "sub/annidata"), withIntermediateDirectories: true)

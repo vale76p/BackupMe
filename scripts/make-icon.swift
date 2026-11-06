@@ -1,5 +1,6 @@
 #!/usr/bin/env swift
-// Renders Resources/AppIcon.icns (all macOS sizes) and, if given a path, a 512px PNG preview.
+// Renders Resources/AppIcon.icns (all macOS sizes), the layers of Resources/AppIcon.icon and,
+// if given a path, a 512px PNG preview.
 // Usage: swift scripts/make-icon.swift [preview.png]
 import AppKit
 
@@ -37,6 +38,34 @@ func squircle(_ r: CGRect) -> CGPath {
     }
     path.closeSubpath()
     return path
+}
+
+let centre = CGPoint(x: 512, y: 512)
+
+/// White clockwise circular arrow on the 1024 grid.
+func drawArrow(_ ctx: CGContext, small: Bool = false, tiny: Bool = false) {
+    let ring: CGFloat = 270, line: CGFloat = tiny ? 110 : small ? 70 : 52
+    ctx.setStrokeColor(color(255, 255, 255)); ctx.setLineWidth(line); ctx.setLineCap(.round)
+    // arc runs clockwise from the top-right gap round to just before the arrowhead
+    let start = CGFloat.pi * 0.36, end = CGFloat.pi * 0.62
+    ctx.addArc(center: centre, radius: ring, startAngle: start, endAngle: end, clockwise: true)
+    ctx.strokePath()
+    // arrowhead at the arc's end, pointing clockwise into the gap
+    let tip = CGPoint(x: centre.x + ring * cos(end), y: centre.y + ring * sin(end))
+    let dir = CGVector(dx: sin(end), dy: -cos(end)) // clockwise tangent
+    let nrm = CGVector(dx: cos(end), dy: sin(end))
+    let head: CGFloat = tiny ? 200 : small ? 150 : 120, half: CGFloat = tiny ? 135 : small ? 100 : 82
+    ctx.setFillColor(color(255, 255, 255))
+    ctx.move(to: CGPoint(x: tip.x + dir.dx * head * 0.75, y: tip.y + dir.dy * head * 0.75))
+    ctx.addLine(to: CGPoint(x: tip.x - dir.dx * head * 0.25 + nrm.dx * half, y: tip.y - dir.dy * head * 0.25 + nrm.dy * half))
+    ctx.addLine(to: CGPoint(x: tip.x - dir.dx * head * 0.25 - nrm.dx * half, y: tip.y - dir.dy * head * 0.25 - nrm.dy * half))
+    ctx.closePath(); ctx.fillPath()
+}
+
+/// White external drive centred on the 1024 grid.
+func drawDrive(_ ctx: CGContext, small: Bool = false, tiny: Bool = false) {
+    let drive = symbol("externaldrive.fill", pointSize: tiny ? 270 : small ? 310 : 290, weight: .semibold, canvas: 600)
+    ctx.draw(drive, in: CGRect(x: 212, y: 212, width: 600, height: 600))
 }
 
 /// Draws the icon on a 1024-unit grid scaled to `px` pixels (vector at every size, no downsampling blur).
@@ -78,28 +107,21 @@ func render(px: Int) -> CGImage {
     ctx.saveGState()
     ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 24, color: color(20, 20, 90, 0.35))
     ctx.beginTransparencyLayer(auxiliaryInfo: nil)
-    let centre = CGPoint(x: 512, y: 512)
-    let ring: CGFloat = 270, line: CGFloat = tiny ? 110 : small ? 70 : 52
-    ctx.setStrokeColor(color(255, 255, 255)); ctx.setLineWidth(line); ctx.setLineCap(.round)
-    // arc runs clockwise from the top-right gap round to just before the arrowhead
-    let start = CGFloat.pi * 0.36, end = CGFloat.pi * 0.62
-    ctx.addArc(center: centre, radius: ring, startAngle: start, endAngle: end, clockwise: true)
-    ctx.strokePath()
-    // arrowhead at the arc's end, pointing clockwise into the gap
-    let tip = CGPoint(x: centre.x + ring * cos(end), y: centre.y + ring * sin(end))
-    let dir = CGVector(dx: sin(end), dy: -cos(end)) // clockwise tangent
-    let nrm = CGVector(dx: cos(end), dy: sin(end))
-    let head: CGFloat = tiny ? 200 : small ? 150 : 120, half: CGFloat = tiny ? 135 : small ? 100 : 82
-    ctx.setFillColor(color(255, 255, 255))
-    ctx.move(to: CGPoint(x: tip.x + dir.dx * head * 0.75, y: tip.y + dir.dy * head * 0.75))
-    ctx.addLine(to: CGPoint(x: tip.x - dir.dx * head * 0.25 + nrm.dx * half, y: tip.y - dir.dy * head * 0.25 + nrm.dy * half))
-    ctx.addLine(to: CGPoint(x: tip.x - dir.dx * head * 0.25 - nrm.dx * half, y: tip.y - dir.dy * head * 0.25 - nrm.dy * half))
-    ctx.closePath(); ctx.fillPath()
-
-    let drive = symbol("externaldrive.fill", pointSize: tiny ? 270 : small ? 310 : 290, weight: .semibold, canvas: 600)
-    ctx.draw(drive, in: CGRect(x: 212, y: 212, width: 600, height: 600))
+    drawArrow(ctx, small: small, tiny: tiny)
+    drawDrive(ctx, small: small, tiny: tiny)
     ctx.endTransparencyLayer()
     ctx.restoreGState()
+    return ctx.makeImage()!
+}
+
+/// One Liquid Glass layer: the glyph alone on a transparent 1024 canvas, scaled so it keeps its
+/// proportion to the icon body (Icon Composer's canvas is the body itself, not the 824-in-1024 grid).
+func glassLayer(_ draw: (CGContext) -> Void) -> CGImage {
+    let ctx = CGContext(data: nil, width: 1024, height: 1024, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: rgb, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    let k: CGFloat = 1024 / 824
+    ctx.translateBy(x: 512, y: 512); ctx.scaleBy(x: k, y: k); ctx.translateBy(x: -512, y: -512)
+    draw(ctx)
     return ctx.makeImage()!
 }
 
@@ -124,6 +146,13 @@ p.arguments = ["-c", "icns", iconset.path, "-o", out.path]
 try p.run(); p.waitUntilExit()
 guard p.terminationStatus == 0 else { fatalError("iconutil failed") }
 print("Wrote \(out.path)")
+
+// layers of the Liquid Glass icon (macOS 26+); Resources/AppIcon.icon/icon.json references them by name
+let assets = root.appendingPathComponent("Resources/AppIcon.icon/Assets")
+try fm.createDirectory(at: assets, withIntermediateDirectories: true)
+writePNG(glassLayer { drawArrow($0) }, to: assets.appendingPathComponent("arrow.png"))
+writePNG(glassLayer { drawDrive($0) }, to: assets.appendingPathComponent("drive.png"))
+print("Wrote \(assets.path)")
 
 if CommandLine.arguments.count > 1 {
     let preview = URL(fileURLWithPath: CommandLine.arguments[1])

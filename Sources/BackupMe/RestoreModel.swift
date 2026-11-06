@@ -15,7 +15,7 @@ struct RowStatus: Equatable, Sendable {
     var missingInside = false
 }
 
-enum ChangeFilter: String, CaseIterable { case all, modified, missing }
+enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
 
 @MainActor @Observable final class RestoreModel {
     let app: AppModel
@@ -45,6 +45,8 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing }
     private var index: [String: [String: [String: [Entry]]]] = [:]
     /// snapshot id + source + folder → entry id → status against this Mac's disk, computed once per folder
     private var statuses: [String: [String: RowStatus]] = [:]
+    /// Per folder: what is on this Mac's disk now but not in the backup (and not excluded), as rows without content.
+    private var addedItems: [String: [Entry]] = [:]
     private var searchTask: Task<Void, Never>?
     /// Bumped on reload: results of tasks started for another computer or destination are dropped.
     private var generation = 0
@@ -82,6 +84,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing }
         loadOrder = []
         index = [:]
         statuses = [:]
+        addedItems = [:]
         snapshots = []
         selectedID = nil
         isLoading = true
@@ -139,7 +142,10 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing }
     func status(of e: Entry) -> RowStatus? { statuses[folderKey]?[e.id] }
 
     /// nil while the folder's status is still being computed.
-    var statusReady: Bool { !showsStatus || statuses[folderKey] != nil }
+    var statusReady: Bool { !showsStatus || (statuses[folderKey] != nil && (source == nil || addedItems[folderKey] != nil)) }
+
+    func added() -> [Entry] { addedItems[folderKey] ?? [] }
+    func isAdded(_ e: Entry) -> Bool { e.kind != .directory && e.hash == nil && e.linkTarget == nil && added().contains(e) }
 
     private var folderKey: String { "\(selectedID ?? "")\u{0}\(source ?? "")\u{0}\(currentPath)" }
 
@@ -154,6 +160,30 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing }
             Dictionary(rows.map { ($0.id, Self.rowStatus($0, tree: tree)) }, uniquingKeysWith: { a, _ in a })
         }.value
         if gen == generation, !Task.isCancelled { statuses[key] = found }
+        guard let source else { return }
+        let folder = currentPath, rules = ExcludeRules(patterns: app.settings.excludes)
+        let new = await Task.detached(priority: .utility) { Self.addedSince(rows, source: source, folder: folder, rules: rules) }.value
+        if gen == generation, !Task.isCancelled { addedItems[key] = new }
+    }
+
+    /// Disk items of a folder that the backup lacks, skipping what the backup would exclude (same rules as today).
+    nonisolated private static func addedSince(_ rows: [Entry], source: String, folder: String, rules: ExcludeRules) -> [Entry] {
+        let dir = folder.isEmpty ? source : source + "/" + folder
+        let known = Set(rows.map(\.name))
+        let inGit = folder == ".git" || folder.hasPrefix(".git/") || folder.contains("/.git/") || folder.hasSuffix("/.git")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        return names.sorted().compactMap { name in
+            guard !known.contains(name) else { return nil }
+            let path = folder.isEmpty ? name : folder + "/" + name
+            let url = URL(fileURLWithPath: dir).appending(path: name)
+            guard let v = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey])
+            else { return nil }
+            let isDir = v.isDirectory == true && v.isSymbolicLink != true
+            if !inGit, rules.excludes(name: name, isDirectory: isDir, path: path) { return nil }
+            return Entry(source: source, path: path, kind: isDir ? .directory : v.isSymbolicLink == true ? .symlink : .file,
+                         hash: nil, size: Int64(v.fileSize ?? 0), mtime: v.contentModificationDate ?? .distantPast,
+                         mode: 0, linkTarget: nil)
+        }
     }
 
     /// A folder walks what the backup holds inside it (excluded folders aren't there), stopping once both flags are set.
@@ -288,6 +318,21 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing }
                                 "-merge", copy.deletingLastPathComponent().appending(path: "unione-" + e.name).path]
             _ = try? await NSWorkspace.shared.openApplication(at: app, configuration: config)
         }
+    }
+
+    /// A writable copy named "<name> (ripristinato …)" for dragging into the Finder: dropped back in its own
+    /// folder it lands beside the original instead of offering to replace it.
+    func dragCopy(_ e: Entry) async -> URL? {
+        guard let copy = await extracted(e), let date = selected?.date else { return nil }
+        let url = copy.deletingLastPathComponent().appending(path: "trascina", directoryHint: .isDirectory)
+            .appending(path: Restorer.restoredName(e.name, date: date))
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? fm.copyItem(at: copy, to: url)
+            try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        }
+        return fm.fileExists(atPath: url.path) ? url : nil
     }
 
     /// Leaves the search and opens the folder holding `hit` in its backup, with it selected.

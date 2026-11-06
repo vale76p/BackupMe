@@ -3,8 +3,14 @@ import Foundation
 /// A restore script and a readme kept beside the archives, so a backup can be restored on any Mac with
 /// stock macOS 14+, without BackupMe or developer tools: JavaScript for Automation and /usr/bin/shasum only.
 enum RestoreKit {
-    /// Rewrites a file only when its content differs, so an unchanged kit is never uploaded again.
+    /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
+    /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
+    static let version = 2
+
+    /// Rewrites a file only when its content differs and it isn't from a newer kit.
     static func install(in base: URL) {
+        if let existing = try? String(contentsOf: base.appending(path: "RIPRISTINO.command"), encoding: .utf8),
+           let v = installedVersion(existing), v > version { return }
         for (name, text, mode) in [("RIPRISTINO.command", script, 0o755), ("LEGGIMI.txt", readme, 0o644)] {
             let url = base.appending(path: name)
             let data = Data(text.utf8)
@@ -12,6 +18,14 @@ enum RestoreKit {
             try? data.write(to: url, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
         }
+    }
+
+    /// The `BackupMe-kit: N` line of an installed script; nil for the first kit, which had none.
+    static func installedVersion(_ script: String) -> Int? {
+        script.split(separator: "\n").lazy.compactMap { line -> Int? in
+            guard line.hasPrefix("// BackupMe-kit: ") else { return nil }
+            return Int(line.dropFirst("// BackupMe-kit: ".count))
+        }.first
     }
 
     static let readme = """
@@ -48,6 +62,7 @@ enum RestoreKit {
 #!/bin/sh
 true //; exec /usr/bin/osascript -l JavaScript "$0" "$@"
 // BackupMe: ripristina un backup su un Mac senza BackupMe (macOS 14 o successivo). Vedi LEGGIMI.txt.
+// BackupMe-kit: \#(version)
 ObjC.import('Foundation')
 ObjC.import('stdlib')
 var fm = $.NSFileManager.defaultManager

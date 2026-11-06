@@ -11,9 +11,20 @@ enum SystemServices {
 
     static func requestNotificationPermission() {
         guard hasBundle else { return }
-        UNUserNotificationCenter.current().delegate = presenter
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = presenter
+        center.setNotificationCategories([UNNotificationCategory(
+            identifier: problemCategory,
+            actions: [UNNotificationAction(identifier: Action.retry.rawValue, title: "Riprova"),
+                      UNNotificationAction(identifier: Action.settings.rawValue, title: "Apri Impostazioni", options: [.foreground])],
+            intentIdentifiers: [])])
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
+
+    /// Buttons on problem notifications; the app wires them to a backup and to the settings window.
+    enum Action: String { case retry, settings }
+    @MainActor static var onAction: ((Action) -> Void)?
+    private static let problemCategory = "problem"
 
     /// False when the user denied notifications: errors and the 3-day alert would then go unseen.
     static func notificationsAllowed() async -> Bool {
@@ -22,11 +33,14 @@ enum SystemServices {
         return status != .denied
     }
 
-    static func notify(_ title: String, _ body: String) {
+    /// `problem` adds the Riprova / Apri Impostazioni buttons. All of them stack as one group in Notification Center.
+    static func notify(_ title: String, _ body: String, problem: Bool = true) {
         guard hasBundle else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
+        content.threadIdentifier = "backupme"
+        if problem { content.categoryIdentifier = problemCategory }
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
@@ -126,4 +140,9 @@ enum SystemServices {
 private final class ForegroundPresenter: NSObject, UNUserNotificationCenterDelegate, Sendable {
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
         -> UNNotificationPresentationOptions { [.banner, .sound] }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let action = SystemServices.Action(rawValue: response.actionIdentifier) else { return }
+        await MainActor.run { SystemServices.onAction?(action) }
+    }
 }

@@ -173,4 +173,15 @@ import Testing
         #expect(report.fileCount == 3)
         #expect(try repo.readSnapshot(report.snapshotID!).entries.filter { $0.path == "a.txt" }.count == 1)
     }
+
+    @Test func leftoverGitLockIsIgnored() throws {
+        write("a", to: src.appending(path: "a.txt"))
+        write("ref: refs/heads/main", to: src.appending(path: ".git/HEAD"))
+        let lock = src.appending(path: ".git/index.lock")
+        write("", to: lock) // left behind by a git that crashed an hour ago
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3600)], ofItemAtPath: lock.path)
+        let (e, _) = try engine()
+        let report = try e.run(sources: [src])
+        #expect(!report.warnings.contains { $0.contains("repository git") })
+    }
 }

@@ -16,6 +16,9 @@ struct RestoreView: View {
     @State private var filter = ChangeFilter.all
     @State private var deletedOnly = false
     @State private var sortOrder: [KeyPathComparator<Entry>] = []
+    /// Finder-style Back / Forward (⌘[ ⌘]) over the folders visited in this window.
+    @State private var back: [Place] = []
+    @State private var forward: [Place] = []
     @State private var columns = TableColumnCustomization<Entry>()
 
     // split in steps: as one chain the body is too big for the type checker
@@ -47,6 +50,15 @@ struct RestoreView: View {
                 await model.refreshStatus()
             }
             .onAppear { model.reload() }
+            // Back / Forward have no toolbar buttons (the toolbar stays short): keyboard only, as ⌘[ ⌘] in the Finder
+            .background {
+                Group {
+                    Button("Indietro", action: goBack).keyboardShortcut("[").disabled(back.isEmpty)
+                    Button("Avanti", action: goForward).keyboardShortcut("]").disabled(forward.isEmpty)
+                }
+                .opacity(0)
+                .accessibilityHidden(true)
+            }
     }
 
     private func withDialogs(_ v: some View) -> some View {
@@ -116,7 +128,7 @@ struct RestoreView: View {
                     if i < parts.count - 1 { Button(parts[i], systemImage: "folder") { open(parts[...i].joined(separator: "/")) } }
                 }
                 if !parts.isEmpty { Button(rootName, systemImage: "folder") { open("") } }
-                Button("Tutte le cartelle", systemImage: "externaldrive") { model.source = nil; open("") }
+                Button("Tutte le cartelle", systemImage: "externaldrive") { go(Place(source: nil, path: "")) }
             }
         }
         .toolbar { toolbarItems }
@@ -125,7 +137,7 @@ struct RestoreView: View {
     @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
             ToolbarItem(placement: .navigation) {
                 Button("Cartella superiore", systemImage: "chevron.up") {
-                    if model.currentPath.isEmpty { model.source = nil; open("") }
+                    if model.currentPath.isEmpty { go(Place(source: nil, path: "")) }
                     else { open((model.currentPath as NSString).deletingLastPathComponent) }
                 }
                 .keyboardShortcut(.upArrow, modifiers: .command)
@@ -140,6 +152,7 @@ struct RestoreView: View {
                             Text("Tutti gli elementi").tag(ChangeFilter.all)
                             Text("Modificati da allora").tag(ChangeFilter.modified)
                             Text("Eliminati da allora").tag(ChangeFilter.missing)
+                            Text("Aggiunti da allora").tag(ChangeFilter.added)
                         }
                         .pickerStyle(.inline)
                     } label: {
@@ -187,11 +200,13 @@ struct RestoreView: View {
         } else if model.selected == nil {
             ProgressView() // the chosen backup's index is still loading
         } else {
-            Table(rows, selection: $selectedIDs, sortOrder: $sortOrder, columnCustomization: $columns) {
+            Table(of: Entry.self, selection: $selectedIDs, sortOrder: $sortOrder, columnCustomization: $columns) {
                 TableColumn("Nome", value: \.name) { e in
                     HStack(spacing: 6) { icon(e); Text(e.name).lineLimit(1).truncationMode(.middle) }
                 }
-                TableColumn("Stato") { e in statusIcon(model.status(of: e)) }
+                TableColumn("Stato") { e in
+                    if model.isAdded(e) { statusSymbol("plus.circle", "aggiunto dopo questo backup") } else { statusIcon(model.status(of: e)) }
+                }
                     .width(min: 36, ideal: 44, max: 60)
                     .customizationID("stato")
                 TableColumn("Dimensione", value: \.size) { e in
@@ -203,11 +218,20 @@ struct RestoreView: View {
                     Text(e.mtime.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary).monospacedDigit()
                 }
                 .width(min: 120, ideal: 150, max: 200)
+            } rows: {
+                ForEach(rows) { e in TableRow(e).itemProvider { dragProvider(e) } }
             }
             .contextMenu(forSelectionType: Entry.ID.self) { ids in
                 let picked = model.children().filter { ids.contains($0.id) }
+                let new = model.added().filter { ids.contains($0.id) }
                 if let id = model.selectedID, !picked.isEmpty { rowMenu(snapshotID: id, entries: picked) }
+                // items added after the backup have nothing to restore: only where they are today
+                else if !new.isEmpty { Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting(new.map(\.url)) } }
             } primaryAction: { ids in
+                if let e = model.added().first(where: { ids.contains($0.id) }) {
+                    NSWorkspace.shared.activateFileViewerSelecting([e.url])
+                    return
+                }
                 guard ids.count == 1, let e = model.children().first(where: { ids.contains($0.id) }) else { return }
                 if e.kind == .directory { enter(e) } else if e.kind == .file { preview(e) }
             }
@@ -218,7 +242,7 @@ struct RestoreView: View {
             }
             .overlay {
                 if filter != .all, model.statusReady, rows.isEmpty {
-                    ContentUnavailableView(filter == .modified ? "Nessuna modifica" : "Nessun elemento eliminato",
+                    ContentUnavailableView(filter == .modified ? "Nessuna modifica" : filter == .missing ? "Nessun elemento eliminato" : "Niente di nuovo",
                                            systemImage: "checkmark.circle",
                                            description: Text("In questa cartella niente è cambiato rispetto a questo backup."))
                 } else if filter != .all, !model.statusReady {
@@ -295,6 +319,7 @@ struct RestoreView: View {
         case .all: break
         case .modified: list = list.filter { model.status(of: $0).map { $0.own == .modified || $0.modifiedInside } ?? false }
         case .missing: list = list.filter { model.status(of: $0).map { $0.own == .missing || $0.missingInside } ?? false }
+        case .added: list = model.added()
         }
         return sortOrder.isEmpty ? list : list.sorted(using: sortOrder)
     }
@@ -316,15 +341,53 @@ struct RestoreView: View {
         Image(systemName: name).foregroundStyle(.secondary).help(text).accessibilityLabel(text)
     }
 
-    private func open(_ path: String) {
-        model.currentPath = path
+    struct Place: Equatable { var source: String?; var path: String }
+
+    private var here: Place { Place(source: model.source, path: model.currentPath) }
+
+    private func open(_ path: String) { go(Place(source: model.source, path: path)) }
+
+    /// Works at the top level too, where the rows are the saved folders.
+    private func enter(_ e: Entry) { go(Place(source: e.source, path: e.path)) }
+
+    private func go(_ place: Place) {
+        guard place != here else { return }
+        back.append(here)
+        forward = []
+        show(place)
+    }
+
+    private func show(_ place: Place) {
+        model.source = place.source
+        model.currentPath = place.path
         selectedIDs = []
     }
 
-    /// Works at the top level too, where the rows are the saved folders.
-    private func enter(_ e: Entry) {
-        model.source = e.source
-        open(e.path)
+    private func goBack() {
+        guard let place = back.popLast() else { return }
+        forward.append(here)
+        show(place)
+    }
+
+    private func goForward() {
+        guard let place = forward.popLast() else { return }
+        back.append(here)
+        show(place)
+    }
+
+    /// Dragging a file out restores a copy where it's dropped, named so it never replaces the original.
+    private func dragProvider(_ e: Entry) -> NSItemProvider? {
+        guard e.kind == .file, e.hash != nil, model.search.isEmpty else { return nil }
+        let provider = NSItemProvider()
+        let model = model
+        let type = UTType(filenameExtension: (e.name as NSString).pathExtension) ?? .data
+        provider.registerFileRepresentation(forTypeIdentifier: type.identifier, fileOptions: [], visibility: .all) { done in
+            Task { @MainActor in
+                if let url = await model.dragCopy(e) { done(url, false, nil) } else { done(nil, false, CocoaError(.fileReadUnknown)) }
+            }
+            return nil
+        }
+        return provider
     }
 
     private var rootName: String { model.source.map { ($0 as NSString).lastPathComponent } ?? "Tutte le cartelle" }
@@ -355,6 +418,7 @@ struct RestoreView: View {
         guard model.selectedID != nil else { return [] }
         let picked = model.children().filter { selectedIDs.contains($0.id) }
         if !picked.isEmpty { return picked.map { ($0.source, $0.path, $0) } }
+        guard selectedIDs.isEmpty else { return [] } // only items added after the backup: nothing to restore
         guard let source = model.source else { return [] } // top level, nothing selected
         return [(source, model.currentPath, nil)]
     }

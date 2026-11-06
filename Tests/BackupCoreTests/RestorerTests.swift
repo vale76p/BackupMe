@@ -137,6 +137,17 @@ import Testing
         #expect(Restorer.replaceCheck(snap, source: src.path).repositoryChanged)
     }
 
+    @Test func symlinkedSourceIsComparedThroughTheLink() throws {
+        write("a", to: src.appending(path: "a.txt"))
+        let link = base.appending(path: "collegamento")
+        try fm.createSymbolicLink(at: link, withDestinationURL: src)
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let r = try BackupEngine(repository: repo, cache: HashCache(url: cacheURL), excludes: ExcludeRules(patterns: []))
+            .run(sources: [link], now: Date(timeIntervalSince1970: 1_700_000_000))
+        let root = try #require(try repo.readSnapshot(r.snapshotID!).entries.first { $0.path.isEmpty })
+        #expect(Restorer.status(of: root) == .unchanged)
+    }
+
     @Test func corruptObjectFailsRestore() throws {
         write("a", to: src.appending(path: "a.txt"))
         let (repo, snap) = try backup()
