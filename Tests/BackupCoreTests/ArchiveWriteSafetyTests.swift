@@ -172,6 +172,15 @@ import Testing
         #expect(Repository.updateRestoreKit(destination: dest) == .current(RestoreKit.version))
     }
 
+    @Test func restoreKitReadsAnEmptyFileAsEmpty() throws {
+        let dir = tmp()
+        try Data().write(to: dir.appending(path: "LEGGIMI.txt"))
+        let fd = open(dir.path, O_RDONLY | O_DIRECTORY)
+        defer { close(fd) }
+        #expect(RestoreKit.read("LEGGIMI.txt", in: fd) == Data())
+        #expect(RestoreKit.read("missing", in: fd) == nil)
+    }
+
     /// The physical address of a file's first byte: the same for a clone and its source.
     private func firstBlock(_ url: URL) throws -> off_t {
         let fd = open(url.path, O_RDONLY)

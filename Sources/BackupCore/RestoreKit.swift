@@ -26,7 +26,8 @@ enum RestoreKit {
         let h = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         var st = stat()
         guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
-        return (try? h.readToEnd()).map { $0 ?? Data() }
+        // readToEnd() is nil for an empty file
+        do { return try h.readToEnd() ?? Data() } catch { return nil }
     }
 
     /// The `BackupMe-kit: N` line of an installed script; nil for the first kit, which had none.
