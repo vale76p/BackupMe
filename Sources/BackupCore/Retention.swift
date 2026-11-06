@@ -24,22 +24,25 @@ extension Calendar {
     }
 }
 
-/// Keeps: the newest, everything from the last 24h, and the last snapshot of each of the
-/// last N days / weeks / months (periods counted in `calendar`, starting from the one containing `now`).
+/// Keeps: the newest, everything from the last 24h, and the last snapshot of each of the last N days / weeks /
+/// months THAT HAVE A BACKUP (periods in `calendar`, as restic does). Not counted back from `now`: a clock that
+/// jumped ahead, or a Mac left off for a year, would otherwise empty the history in one cleanup.
 public func snapshotsToKeep(_ snapshots: [(id: String, date: Date)], policy: RetentionPolicy,
                             now: Date, calendar: Calendar) -> Set<String> {
     var keep = Set<String>()
     if let newest = snapshots.max(by: { $0.date < $1.date }) { keep.insert(newest.id) }
     for s in snapshots where now.timeIntervalSince(s.date) < 24 * 3600 { keep.insert(s.id) }
+    let newestFirst = snapshots.sorted { $0.date > $1.date }
     for (component, count) in [(Calendar.Component.day, policy.days), (.weekOfYear, policy.weeks), (.month, policy.months)] {
-        var anchor = now
-        for _ in 0..<max(count, 0) {
-            guard let period = calendar.dateInterval(of: component, for: anchor) else { break }
-            if let last = snapshots.filter({ $0.date >= period.start && $0.date < period.end })
-                .max(by: { $0.date < $1.date }) {
-                keep.insert(last.id)
-            }
-            anchor = period.start.addingTimeInterval(-1)
+        var periods = 0
+        var current: Date?
+        for s in newestFirst {
+            guard let start = calendar.dateInterval(of: component, for: s.date)?.start else { continue }
+            guard start != current else { continue }
+            current = start
+            periods += 1
+            guard periods <= count else { break }
+            keep.insert(s.id) // the newest of its period
         }
     }
     return keep

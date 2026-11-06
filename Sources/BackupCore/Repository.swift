@@ -91,8 +91,13 @@ public final class Repository {
     }
 
     private func existingObjectURL(_ hash: String) -> URL? {
-        Self.extensions.map { objectURL(hash, $0) }.first { fm.fileExists(atPath: $0.path) }
+        // a hash from a tampered manifest ("../../x") must never become a path outside objects/
+        guard Self.isHash(hash) else { return nil }
+        return Self.extensions.map { objectURL(hash, $0) }.first { fm.fileExists(atPath: $0.path) }
     }
+
+    /// A SHA-256 as the archive names objects: 64 lowercase hex digits.
+    public static func isHash(_ s: String) -> Bool { s.utf8.count == 64 && s.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }
 
     /// Every stored object with its size on disk, from one listing of the archive.
     public func objectSizes() throws -> [String: Int64] {
@@ -274,12 +279,18 @@ public final class Repository {
     /// Each Mac writes only its own archive folder, so a machine-local lock is enough.
     @discardableResult
     public func withLock<T>(_ body: () throws -> T) throws -> T {
-        let fd = open(lockURL.path, O_CREAT | O_RDWR, 0o644)
+        // close-on-exec: a process started meanwhile would otherwise inherit the descriptor and hold the lock
+        let fd = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o644)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { close(fd) } // closing releases the lock; the file is kept so waiters never lock a deleted inode
-        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+        // a moment's wait: a process being spawned holds a copy of the descriptor until it execs
+        var attempt = 0
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
             // shortcut: filesystems without flock (some exFAT/SMB) run unlocked; acceptable for a single-user app
-            guard errno == ENOTSUP || errno == EOPNOTSUPP else { throw RepositoryError.locked(pid: 0, host: computer) }
+            if errno == ENOTSUP || errno == EOPNOTSUPP { break }
+            guard errno == EWOULDBLOCK, attempt < 100 else { throw RepositoryError.locked(pid: 0, host: computer) }
+            attempt += 1
+            usleep(10_000)
         }
         return try body()
     }
@@ -323,6 +334,12 @@ func streamHash(_ url: URL) throws -> String {
     let h = try FileHandle(forReadingFrom: url)
     defer { try? h.close() }
     var hasher = SHA256()
-    while let chunk = try h.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+    // a pool per chunk: without it every 4 MB read stays alive until the whole backup ends (a 2 GB file = 2 GB)
+    var done = false
+    while !done {
+        try autoreleasepool {
+            if let chunk = try h.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) } else { done = true }
+        }
+    }
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 }

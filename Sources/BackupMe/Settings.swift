@@ -58,13 +58,19 @@ enum AppPaths {
 
     /// This Mac's archive folder name: computer name plus a piece of the hardware UUID, fixed at first use.
     /// Unique per Mac (two Macs with the same name never share an archive) and stable across renames.
+    /// The saved name is kept per hardware UUID: Migration Assistant copies the preferences to a new Mac, and two
+    /// Macs writing one archive would clean up each other's objects.
     static let archiveName: String = {
-        if let saved = UserDefaults.standard.string(forKey: "archiveName") { return saved }
         var uuid = uuid_t(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         var wait = timespec(tv_sec: 1, tv_nsec: 0)
-        let hostID = gethostuuid(&uuid, &wait) == 0 ? UUID(uuid: uuid).uuidString : UUID().uuidString
-        let name = "\(Host.current().localizedName ?? "Mac")-\(hostID.prefix(8))"
-        UserDefaults.standard.set(name, forKey: "archiveName")
+        let hostID = gethostuuid(&uuid, &wait) == 0 ? UUID(uuid: uuid).uuidString : nil
+        let key = "archiveName-\(hostID ?? "unknown")"
+        if let saved = UserDefaults.standard.string(forKey: key) { return saved }
+        // the name this Mac saved before the key carried the UUID: kept if it was made here
+        let legacy = UserDefaults.standard.string(forKey: "archiveName")
+        let name = legacy.flatMap { old in hostID.map { old.hasSuffix("-" + $0.prefix(8)) } == true ? old : nil }
+            ?? "\(Host.current().localizedName ?? "Mac")-\((hostID ?? UUID().uuidString).prefix(8))"
+        UserDefaults.standard.set(name, forKey: key)
         return name
     }()
 }

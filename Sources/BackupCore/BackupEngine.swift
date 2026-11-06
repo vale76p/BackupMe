@@ -78,6 +78,8 @@ public final class BackupEngine {
         if let err = Self.validate(sources: sources, repositoryRoot: repository.root) { throw err }
         let start = Date()
         return try repository.withLock {
+            // a run that fails or is cancelled keeps the hashes it computed: they are valid without a manifest
+            defer { try? cache.save(dropUnseen: false) }
             var sourceErrors: [String] = []
             var scans: [Scan] = []
             for s in sources {
@@ -112,6 +114,7 @@ public final class BackupEngine {
                     }
                 }
                 entries += pass.entries; fileCount += pass.fileCount
+                sourceErrors += scan.unreadable
                 warnings += scan.warnings + pass.warnings
                 excluded += scan.excluded
             }
@@ -147,6 +150,8 @@ public final class BackupEngine {
         var found: [(path: String, stat: FileStat)] = []
         var warnings: [String] = []
         var excluded: [String] = []
+        /// Folders that couldn't be listed: their files are missing from this backup, so it is partial.
+        var unreadable: [String] = []
     }
 
     private func store(_ scan: Scan, isCancelled: () -> Bool, tick: () -> Void) throws
@@ -182,7 +187,8 @@ public final class BackupEngine {
             let git = scan.source + "/" + item.path
             let top = (try? fm.contentsOfDirectory(atPath: git)) ?? []
             if top.contains(where: { $0.hasSuffix(".lock") && live(git + "/" + $0) }) { return true }
-            var paths = [git + "/HEAD", git + "/packed-refs", git + "/refs"]
+            // objects/pack too: `git maintenance` / gc repack loose objects into a new pack without touching any ref
+            var paths = [git + "/HEAD", git + "/packed-refs", git + "/refs", git + "/objects/pack"]
             paths += (fm.enumerator(atPath: git + "/refs")?.allObjects as? [String] ?? []).map { git + "/refs/" + $0 }
             for p in paths {
                 if p.hasSuffix(".lock") { if live(p) { return true } else { continue } }
@@ -221,7 +227,8 @@ public final class BackupEngine {
         guard st.kind == .directory else { return }
         let names: [String]
         do { names = try FileManager.default.contentsOfDirectory(atPath: full) } catch {
-            scan.warnings.append("\(full): \(error.localizedDescription)")
+            // an error, not a warning: as a "complete" backup it would let cleanup drop the last ones holding these files
+            scan.unreadable.append("Cartella non leggibile, il suo contenuto manca da questo backup: \(full) (\(error.localizedDescription))")
             return
         }
         for name in names.sorted() {

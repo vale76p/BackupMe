@@ -32,6 +32,10 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     var resultsTruncated = false
     /// Selected once "Mostra nel backup" has opened its folder.
     var pendingSelection: Entry.ID?
+    /// Bumped after a restore: what is on disk changed, so the cached status is stale.
+    private(set) var statusEpoch = 0
+    /// Manifests being read: picking a backup again while it loads must not start a second read.
+    private var loading = Set<String>()
     /// Search progress only; a restore has its own flag so neither can cancel or block the other.
     var busy: String?
     var restoring = false
@@ -79,6 +83,9 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         generation += 1
         let gen = generation
         searchTask?.cancel()
+        busy = nil
+        pendingSelection = nil
+        loading = []
         results = []
         loaded = [:]
         loadOrder = []
@@ -94,6 +101,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
                 guard gen == generation else { return }
                 snapshots = ids.reversed().compactMap { id in Snapshot.date(fromID: id).map { (id, $0) } }
                 selectedID = snapshots.first?.id
+                if !search.isEmpty { searchChanged() } // the search of the previous computer was cancelled
             } catch RepositoryError.destinationMissing where computers.isEmpty {
                 // no archive yet: the window shows its empty state, not an alert
             } catch { if gen == generation { self.error = ("Impossibile aprire il backup", AppModel.describe(error)) } }
@@ -103,14 +111,17 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
 
     private func load(_ id: String?) {
         guard let id, loaded[id] == nil else { fixSource(); return }
+        guard loading.insert(id).inserted else { return }
         let gen = generation
         Task {
+            defer { if gen == generation { loading.remove(id) } }
             do {
                 let snapshot = try await withRepository { try $0.readSnapshot(id) }
                 let built = await Task.detached(priority: .userInitiated) { Self.buildIndex(snapshot) }.value
                 guard gen == generation else { return }
                 loaded[id] = snapshot
                 index[id] = built
+                loadOrder.removeAll { $0 == id } // once: a duplicate of the selected one would make the loop below endless
                 loadOrder.append(id)
                 while loadOrder.count > 3 {
                     let old = loadOrder.removeFirst()
@@ -120,6 +131,8 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
             } catch { if gen == generation { self.error = ("Impossibile aprire il backup", AppModel.describe(error)) } }
         }
     }
+
+    func fixLocation() { fixSource() }
 
     /// nil source = the top level, which lists the saved folders themselves.
     private func fixSource() {
@@ -147,7 +160,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     func added() -> [Entry] { addedItems[folderKey] ?? [] }
     func isAdded(_ e: Entry) -> Bool { e.kind != .directory && e.hash == nil && e.linkTarget == nil && added().contains(e) }
 
-    private var folderKey: String { "\(selectedID ?? "")\u{0}\(source ?? "")\u{0}\(currentPath)" }
+    private var folderKey: String { "\(statusEpoch)\u{0}\(selectedID ?? "")\u{0}\(source ?? "")\u{0}\(currentPath)" }
 
     /// Stats the folder being viewed off the main thread, once: table redraws only read the cache.
     func refreshStatus() async {
@@ -246,6 +259,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
                 for e in found where seen.insert("\(e.source)\u{0}\(e.path)\u{0}\(e.hash ?? e.linkTarget ?? "dir")").inserted {
                     new.append(SearchHit(snapshotID: id, entry: e))
                 }
+                guard gen == generation, !Task.isCancelled else { break } // another computer or destination meanwhile
                 hits += new
                 results = hits
                 if compare, !new.isEmpty {
@@ -289,8 +303,12 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
             Log.restore.debug("Ripristinati: \(outcome.0.map(\.path).joined(separator: ", "))")
             for e in outcome.1 { Log.restore.error("Ripristino non riuscito: \(e)") }
             if !outcome.0.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(outcome.0) }
+            statusEpoch += 1
+            statuses = [:]
+            addedItems = [:]
             if let first = outcome.1.first {
-                let more = outcome.1.count > 1 ? " (e altri \(outcome.1.count - 1) errori)" : ""
+                let others = outcome.1.count - 1
+                let more = others == 0 ? "" : others == 1 ? " (e un altro errore)" : " (e altri \(others) errori)"
                 error = ("Ripristino non riuscito", first + more)
             }
             restoring = false
@@ -331,9 +349,13 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
             .appending(path: Restorer.restoredName(e.name, date: date))
         let fm = FileManager.default
         if !fm.fileExists(atPath: url.path) {
+            // copied under a temporary name first: an interrupted copy must never be handed out later
+            let tmp = url.deletingLastPathComponent().appending(path: ".copia-\(UUID().uuidString)")
             try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? fm.copyItem(at: copy, to: url)
-            try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+            try? fm.copyItem(at: copy, to: tmp)
+            try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: tmp.path)
+            _ = rename(tmp.path, url.path)
+            try? fm.removeItem(at: tmp)
         }
         return fm.fileExists(atPath: url.path) ? url : nil
     }

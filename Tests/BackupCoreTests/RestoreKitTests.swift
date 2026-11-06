@@ -121,6 +121,26 @@ import Testing
         #expect(!fm.fileExists(atPath: out.appending(path: "fuori.txt").path))
     }
 
+    @Test func scriptNeverWritesThroughANameThatCollidesOnDisk() throws {
+        // "sub" (a symlink out) and "Sub" are one name on APFS: Sub/evil.txt would land outside
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let data = Data("PWNED".utf8), outside = tmp(), d = Date(timeIntervalSince1970: 1_700_000_000)
+        _ = try repo.putObject(data, hash: sha256Hex(data))
+        func entry(_ path: String, _ kind: EntryKind, link: String? = nil) -> Entry {
+            Entry(source: "/x/progetto", path: path, kind: kind, hash: kind == .file ? sha256Hex(data) : nil,
+                  size: 5, mtime: d, mode: kind == .directory ? 0o755 : 0o644, linkTarget: link)
+        }
+        for sub in ["Sub", "s\u{0075}\u{0301}b"] { // case, and a Unicode form of a different name
+            try repo.writeSnapshot(Snapshot(date: d, sources: ["/x/progetto"], entries: [
+                entry("", .directory), entry("sub", .symlink, link: outside.path),
+                entry(sub, .directory), entry(sub + "/evil.txt", .file)], warnings: []))
+            let out = tmp().appending(path: "ripristino")
+            _ = try sh(["Mac", Snapshot.id(for: d), out.path, "--si"])
+            #expect(!fm.fileExists(atPath: outside.appending(path: "evil.txt").path), "\(sub)")
+            try repo.deleteSnapshot(Snapshot.id(for: d))
+        }
+    }
+
     /// A one-file backup of `src`; returns its id.
     func backup() throws -> String {
         write("ciao", to: src.appending(path: "ciao.txt"))

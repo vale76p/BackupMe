@@ -90,7 +90,7 @@ enum SystemServices {
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { note in
             let closing = (note.object as AnyObject?).map(ObjectIdentifier.init)
             MainActor.assumeIsolated {
-                if !NSApp.windows.contains(where: { ObjectIdentifier($0) != closing && $0.isVisible && $0.canBecomeMain }) {
+                if !NSApp.windows.contains(where: { ObjectIdentifier($0) != closing && ($0.isVisible || $0.isMiniaturized) && $0.canBecomeMain }) {
                     NSApp.setActivationPolicy(.accessory)
                 }
             }
@@ -119,6 +119,21 @@ enum SystemServices {
 
     static var launchAtLogin: Bool { FileManager.default.fileExists(atPath: agentPlist.path) }
 
+    private static var agentExecutable: String? {
+        let installed = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Applications/BackupMe.app/Contents/MacOS/BackupMe")
+        return FileManager.default.fileExists(atPath: installed.path) ? installed.path : Bundle.main.executablePath
+    }
+
+    /// A login agent pointing at an app that was moved or deleted starts nothing at login, silently: rewritten
+    /// at every launch when its path is wrong.
+    static func repairLaunchAgent() {
+        guard launchAtLogin, let exe = agentExecutable,
+              let data = try? Data(contentsOf: agentPlist),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              (plist["ProgramArguments"] as? [String])?.first != exe else { return }
+        try? setLaunchAtLogin(true)
+    }
+
     /// A per-user LaunchAgent: started at login and restarted if it crashes (KeepAlive on unsuccessful exit),
     /// but not after "Esci". Works with an ad-hoc signature, unlike SMAppService. The plist is only written,
     /// not bootstrapped now: RunAtLoad would start a second copy immediately.
@@ -128,9 +143,7 @@ enum SystemServices {
             try? FileManager.default.removeItem(at: agentPlist)
             return
         }
-        let installed = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Applications/BackupMe.app/Contents/MacOS/BackupMe")
-        let exe = FileManager.default.fileExists(atPath: installed.path) ? installed.path : Bundle.main.executablePath
-        guard let exe else { throw CocoaError(.fileNoSuchFile) }
+        guard let exe = agentExecutable else { throw CocoaError(.fileNoSuchFile) }
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [exe],

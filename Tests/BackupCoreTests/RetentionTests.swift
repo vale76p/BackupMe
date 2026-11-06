@@ -47,9 +47,18 @@ import Testing
     }
 
     @Test func keepsLastPerMonth() {
+        // the last 3 months that have a backup: October has none, so August counts
         let dates = [d(2026, 7, 10), d(2026, 8, 15), d(2026, 9, 1), d(2026, 9, 20), d(2026, 11, 1)]
         #expect(snapshotsToKeep(snaps(dates), policy: policy(0, 0, 3), now: now, calendar: cal)
-            == ids([d(2026, 9, 20), d(2026, 11, 1)]))
+            == ids([d(2026, 8, 15), d(2026, 9, 20), d(2026, 11, 1)]))
+    }
+
+    @Test func clockAheadOrMacLeftOffKeepsHistory() {
+        // a year of monthly backups, then one made with the clock two years ahead
+        let history = (1...12).map { d(2025, $0, 10) }
+        let future = d(2027, 11, 1)
+        let keep = snapshotsToKeep(snaps(history + [future]), policy: policy(0, 0, 12), now: future, calendar: cal)
+        #expect(keep.count == 12 && keep.contains(Snapshot.id(for: future)))
     }
 
     @Test func alwaysKeepsNewest() {

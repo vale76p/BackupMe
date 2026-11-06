@@ -298,7 +298,8 @@ private struct SpaceSection: View {
                 }
             }
         }
-        .task(id: model.settings.destination) { await refresh() }
+        // after every backup too, like the destination card above: the two "occupati" must agree
+        .task(id: "\(model.settings.destination ?? "")\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)") { await refresh() }
     }
 
     private func refresh() async {
@@ -375,7 +376,7 @@ private struct RetentionSection: View {
             Section {
                 let keep = snapshotsToKeep(dated, policy: model.settings.retention, now: Date(), calendar: .backup).count
                 LabeledContent("Con queste regole") {
-                    Text(keep == dated.count ? "Si tengono tutti i \(dated.count) backup"
+                    Text(dated.count == 1 ? "Si tiene l'unico backup" : keep == dated.count ? "Si tengono tutti i \(dated.count) backup"
                          : "Si tengono \(keep) backup su \(dated.count), \(dated.count - keep) da eliminare alla prossima pulizia")
                         .multilineTextAlignment(.trailing)
                 }
@@ -403,6 +404,7 @@ private struct ExcludesSection: View {
     @Bindable var model: AppModel
     @State private var text = ""
     @State private var confirmDefaults = false
+    @State private var saving: Task<Void, Never>?
 
     var body: some View {
         Section {
@@ -411,7 +413,13 @@ private struct ExcludesSection: View {
                 .textEditorStyle(.plain)
                 .frame(minHeight: 220)
                 .onChange(of: text) { _, t in
-                    model.settings.excludes = t.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                    // saved once typing pauses: a backup starting between "*" and "*.log" would exclude everything
+                    saving?.cancel()
+                    saving = Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        guard !Task.isCancelled else { return }
+                        model.settings.excludes = t.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                    }
                 }
             HStack {
                 Spacer()
@@ -472,7 +480,7 @@ private struct LoggingSection: View {
             Text("Registro di sistema")
         } footer: {
             Text(level == .debug
-                 ? "Debug aggiunge i dettagli di ogni passaggio: cartelle e esclusioni, scansione, pulizia, verifica, caricamento nel cloud. In Console filtra per \(Log.subsystem) e attiva Azione › Includi messaggi di debug; oppure incolla il comando nel Terminale."
+                 ? "Debug aggiunge i dettagli di ogni passaggio: cartelle ed esclusioni, scansione, pulizia, verifica, caricamento nel cloud. In Console filtra per \(Log.subsystem) e attiva Azione › Includi messaggi di debug; oppure incolla il comando nel Terminale."
                  : "Info registra avvii, esiti ed errori di backup e ripristini. In Console filtra per \(Log.subsystem) e attiva Azione › Includi messaggi informativi; oppure incolla il comando nel Terminale.")
         }
     }

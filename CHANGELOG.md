@@ -2,6 +2,38 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.6.3] - 2026-11-06
+
+Correzioni dalla seconda revisione avversativa (integrità, ripristino, ciclo di vita, scala, interfaccia).
+
+### Corretto: dati e sicurezza
+- `RIPRISTINO.command` poteva scrivere fuori dalla cartella di destinazione con un indice manomesso: un collegamento `sub` e una cartella `Sub` sono lo stesso nome su APFS. Ora scrive solo nelle cartelle che ha creato e rifiuta nomi che differiscono solo per maiuscole o forma Unicode (kit versione 4).
+- La pulizia poteva cancellare il contenuto di un backup ancora presente (anche l'unico) se il suo indice spariva e ricompariva durante una risincronizzazione del cloud.
+- Un backup con l'orologio avanti poteva cancellare tutta la storia, e il tetto poteva poi eliminare il backup appena fatto. La conservazione ora conta gli ultimi giorni, settimane e mesi *che hanno un backup* (come restic) e il backup appena fatto è sempre protetto.
+- Una sottocartella illeggibile dava un backup "riuscito" e la pulizia poteva eliminare gli ultimi che ne contenevano i file: ora il backup è parziale e l'ultimo completo resta protetto.
+- Un `git gc` / `git maintenance` durante il backup poteva salvare un repository rotto: ora la cartella viene riletta.
+- Dopo Migration Assistant due Mac potevano scrivere nello stesso archivio: il nome dell'archivio è legato all'identificativo hardware.
+- Un indice con un hash non valido poteva far mostrare in anteprima un file locale qualsiasi; le anteprime e i trascinamenti non riusano più copie incomplete.
+- "Sostituisci" non è più offerto sull'archivio di un altro Mac, né prima che sia pronto il controllo di cosa finirebbe nel Cestino.
+
+### Corretto: servizio
+- Dopo l'installazione BackupMe girava senza il servizio di login che lo riavvia in caso di errore: ora `build-app.sh --install` lo avvia come servizio, sostituisce l'app senza lasciare il Mac senza BackupMe se la copia fallisce e limita il tempo dell'aggiornamento del kit.
+- Il servizio di login che puntava a un'app spostata non avviava niente al login: viene corretto a ogni avvio.
+- Il permesso per le notifiche non veniva chiesto se la configurazione avveniva da Impostazioni.
+- Uno stop del Mac durante un backup lungo sembrava un backup bloccato; "Interrompi" faceva ripartire il backup dopo un minuto; con un pannello di scelta file aperto non partiva nessun backup; cambiare destinazione ora avvia subito un backup; la verifica giornaliera non risulta più fatta quando non è stata possibile; una cronologia illeggibile viene messa da parte invece di essere sovrascritta.
+
+### Corretto: Sfoglia backup
+- Un filtro poteva nascondere l'elemento selezionato mentre Ripristina continuava ad agire su di esso.
+- Il dialogo "Sostituisci" ora agisce sulla cartella che aveva al momento della pressione e la nomina nel titolo.
+- Scegliere rapidamente più backup poteva bloccare l'app; una ricerca durante il cambio di computer mostrava risultati dell'altro; "Mostra nel backup" nella cartella già aperta non selezionava l'elemento; lo stato non si aggiornava dopo un ripristino; ⌘R e ⇧⌘R non funzionavano; un'anteprima lenta poteva sostituirne una più recente.
+- Le esclusioni si salvano quando si smette di scrivere, non a ogni tasto.
+
+### Prestazioni con progetti grandi
+- L'impronta dei file grandi teneva in memoria tutto il file (2 GB per un file da 2 GB).
+- La pulizia con tetto allo spazio non è più quadratica e non tiene in memoria un insieme di riferimenti per ogni backup.
+- Un backup interrotto non perde più gli hash già calcolati: il tentativo successivo non rilegge tutto.
+- La verifica giornaliera non supera più il suo budget leggendo un file grande.
+
 ## [0.6.2] - 2026-11-06
 
 ### Aggiunto

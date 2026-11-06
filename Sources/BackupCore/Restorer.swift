@@ -32,7 +32,9 @@ public final class Restorer {
         // a source that is a symlink was backed up through the link: restore into the real folder
         let sourceRoot = URL(fileURLWithPath: source).resolvingSymlinksInPath()
         let original = path.isEmpty ? sourceRoot : sourceRoot.appending(path: path)
-        let name = path.isEmpty ? URL(fileURLWithPath: source).lastPathComponent : original.lastPathComponent
+        let last = path.isEmpty ? URL(fileURLWithPath: source).lastPathComponent : original.lastPathComponent
+        // a source "/" (or a tampered name) would otherwise land next to the chosen folder, not inside it
+        let name = ["", "/", ".", ".."].contains(last) ? "Backup" : last
         let target: URL
         switch mode {
         case .besideOriginal: target = original.deletingLastPathComponent().appending(path: Self.restoredName(name, date: snapshot.date))
@@ -74,7 +76,7 @@ public final class Restorer {
             let parts = e.path.split(separator: "/", omittingEmptySubsequences: false)
             guard !e.path.hasPrefix("/"), !parts.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }),
                   dirs.contains((e.path as NSString).deletingLastPathComponent),
-                  e.kind != .file || e.hash != nil else { throw RestoreError.invalidEntry(e.path) }
+                  e.kind != .file || e.hash.map(Repository.isHash) == true else { throw RestoreError.invalidEntry(e.path) }
             if e.kind == .directory { dirs.insert(e.path) }
         }
     }
@@ -153,13 +155,25 @@ public final class Restorer {
     /// nothing outside it is written, and each version is extracted once.
     public func extract(_ entry: Entry,
                         into base: URL = FileManager.default.temporaryDirectory.appending(path: "BackupMe-anteprime")) throws -> URL {
-        guard entry.kind == .file, let hash = entry.hash else { throw RestoreError.notFound(entry.path) }
+        guard entry.kind == .file, let hash = entry.hash, Repository.isHash(hash),
+              !["", ".", ".."].contains(entry.name) else { throw RestoreError.invalidEntry(entry.path) }
         let dir = base.appending(path: hash, directoryHint: .isDirectory)
         let url = dir.appending(path: entry.name)
-        if fm.fileExists(atPath: url.path) { return url }
+        // only a complete, verified copy gets the final name; one of the wrong size is a leftover of an older
+        // version that wrote in place: extracted again
+        if let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int64 {
+            if size == entry.size { return url }
+            try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+            try fm.removeItem(at: url)
+        }
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        try repository.restoreObject(hash, to: url)
-        try? fm.setAttributes([.posixPermissions: 0o444, .modificationDate: entry.mtime], ofItemAtPath: url.path)
+        let tmp = dir.appending(path: ".estrazione-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: tmp) }
+        try repository.restoreObject(hash, to: tmp)
+        try? fm.setAttributes([.posixPermissions: 0o444, .modificationDate: entry.mtime], ofItemAtPath: tmp.path)
+        if rename(tmp.path, url.path) != 0, !fm.fileExists(atPath: url.path) {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
         return url
     }
 

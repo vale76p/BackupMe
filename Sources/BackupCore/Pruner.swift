@@ -39,33 +39,35 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         ids.removeAll { deleted.contains($0) }
 
         var size: Int64 = 0
-        var refs: [String: Set<String>] = [:]
+        // object → how many kept manifests use it: one entry per object, not one set per manifest (that was
+        // gigabytes with a million files), and taking a manifest out updates the size without recounting
+        var users: [String: Int]?
         if let cap = capBytes {
-            // simulate in memory: drop the oldest manifest until what stays referenced fits the cap
-            for id in ids { refs[id] = try references(of: id, in: repository, cache: refsCache) }
+            var counts: [String: Int] = [:]
+            for id in ids { for h in try references(of: id, in: repository, cache: refsCache) { counts[h, default: 0] += 1 } }
             let objectSizes = try repository.objectSizes()
             var manifestSizes = try repository.snapshotSizes()
-            func pool() -> Int64 {
-                let reachable = refs.values.reduce(into: Set<String>()) { $0.formUnion($1) }
-                return reachable.reduce(0) { $0 + (objectSizes[$1] ?? 0) } + manifestSizes.values.reduce(0, +)
-            }
-            size = pool()
+            size = counts.keys.reduce(0) { $0 + (objectSizes[$1] ?? 0) } + manifestSizes.values.reduce(0, +)
             // oldest first, never the newest, never a pinned one or an id that isn't ours
             while size > cap, let oldest = ids.dropLast().first(where: { !pinned.contains($0) && Snapshot.date(fromID: $0) != nil }) {
+                let gone = try references(of: oldest, in: repository, cache: refsCache) // read again rather than kept
                 ids.removeAll { $0 == oldest }
                 try repository.deleteSnapshot(oldest)
                 deleted.append(oldest)
-                refs[oldest] = nil
-                manifestSizes[oldest] = nil
-                size = pool()
+                for h in gone {
+                    counts[h, default: 1] -= 1
+                    if counts[h] == 0 { counts[h] = nil; size -= objectSizes[h] ?? 0 }
+                }
+                size -= manifestSizes.removeValue(forKey: oldest) ?? 0
             }
+            users = counts
         }
 
         var deletedObjects = 0
         var missingObjects = 0
         if !deleted.isEmpty || forceGC, !gcSkipped {
-            for id in ids where refs[id] == nil { refs[id] = try references(of: id, in: repository, cache: refsCache) }
-            let reachable = refs.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+            var reachable = users.map { Set($0.keys) } ?? []
+            if users == nil { for id in ids { reachable.formUnion(try references(of: id, in: repository, cache: refsCache)) } }
             let stored = try repository.allObjectHashes()
             let unreachable = stored.subtracting(reachable)
             for h in unreachable { try repository.deleteObject(h) }
@@ -116,7 +118,9 @@ private func trackVanished(ids: Set<String>, cache dir: URL, now: Date) -> Bool 
 /// Object hashes used by one manifest. A manifest that can't be read throws, which aborts pruning before any delete.
 private func references(of id: String, in repository: Repository, cache: URL?) throws -> Set<String> {
     let cached = cache?.appending(path: id)
-    if let cached, let text = try? String(contentsOf: cached, encoding: .utf8) {
+    // an empty file is a manifest that came back after vanishing before its references were cached (its ".gone"
+    // marker renamed back): read the manifest, or every object it uses would look unreferenced
+    if let cached, let text = try? String(contentsOf: cached, encoding: .utf8), !text.isEmpty {
         return Set(text.split(separator: "\n").map(String.init))
     }
     let hashes = try autoreleasepool { Set(try repository.readSnapshot(id).entries.compactMap(\.hash)) }

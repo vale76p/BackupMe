@@ -8,10 +8,14 @@ struct RestoreView: View {
     @State var model: RestoreModel
     @State private var selectedIDs = Set<Entry.ID>()
     @State private var hit: SearchHit?
-    @State private var confirmWhole = false
     @State private var check: Restorer.ReplaceCheck?
     @State private var versionsOf: Entry?
     @State private var previewURL: URL?
+    /// Bumped on every preview request: a slow extraction finishing late must not replace a newer preview.
+    @State private var previewToken = 0
+    /// What the "whole folder" dialog acts on, fixed when it opens: selecting something else meanwhile must not
+    /// redirect Sostituisci.
+    @State private var whole: (snapshotID: String, target: Target)?
     @State private var bigPreview: Entry?
     @State private var filter = ChangeFilter.all
     @State private var deletedOnly = false
@@ -36,13 +40,17 @@ struct RestoreView: View {
     private func withReactions(_ v: some View) -> some View {
         v.onChange(of: model.selectedID) { selectedIDs = [] }
             .onChange(of: model.search) { hit = nil }
+            // a filter hiding selected rows deselects them: actions act only on what is visible
+            .onChange(of: rows.map(\.id)) { _, ids in selectedIDs.formIntersection(ids) }
+            .onChange(of: deletedOnly) { if let h = hit, !shownResults.contains(h) { hit = nil } }
             .onChange(of: model.computer, initial: true) {
-                hit = nil; selectedIDs = []
+                hit = nil; selectedIDs = []; back = []; forward = []
                 columns[visibility: "stato"] = model.showsStatus ? .automatic : .hidden
                 if !model.showsStatus { filter = .all; deletedOnly = false }
             }
             .onChange(of: model.app.settings.destination) { model.reload() }
-            .task(id: [model.selectedID, model.source, model.currentPath, model.selected?.id]) {
+            .task(id: [model.selectedID, model.source, model.currentPath, model.selected?.id, model.pendingSelection,
+                       String(model.statusEpoch)]) {
                 if let p = model.pendingSelection, model.children().contains(where: { $0.id == p }) {
                     selectedIDs = [p]
                     model.pendingSelection = nil
@@ -55,6 +63,11 @@ struct RestoreView: View {
                 Group {
                     Button("Indietro", action: goBack).keyboardShortcut("[").disabled(back.isEmpty)
                     Button("Avanti", action: goForward).keyboardShortcut("]").disabled(forward.isEmpty)
+                    // here, not on the toolbar pull-down: a Menu's shortcuts don't fire while it is closed
+                    Button("Ripristina") { if wholeBackup { restoreAllInto() } else { restoreTargets() } }
+                        .keyboardShortcut("r").disabled(restoreDisabled)
+                    Button("Ripristina in…") { if wholeBackup { restoreAllInto() } else { restoreTargetsInto() } }
+                        .keyboardShortcut("r", modifiers: [.command, .shift]).disabled(restoreDisabled)
                 }
                 .opacity(0)
                 .accessibilityHidden(true)
@@ -62,16 +75,19 @@ struct RestoreView: View {
     }
 
     private func withDialogs(_ v: some View) -> some View {
-        v.confirmationDialog("Ripristinare l'intera cartella?", isPresented: $confirmWhole) {
-            // replacing in place only for folders this Mac backs up now: a tampered or foreign manifest
-            // must not be able to send an arbitrary folder to the Trash
-            if let t = targets.first, model.app.settings.sources.contains(t.source) {
-                Button("Sostituisci", role: .destructive) { restore([t], mode: .replace) }
+        v.confirmationDialog(Text("Ripristinare l'intera cartella «\(((whole?.target.source ?? "") as NSString).lastPathComponent)»?"),
+                             isPresented: Binding(get: { whole != nil }, set: { if !$0 { whole = nil } }), presenting: whole) { w in
+            let item = [(source: w.target.source, path: w.target.path)]
+            // replacing in place only for folders this Mac backs up now, from this Mac's own archive, and only once
+            // the check of what would go to the Trash is done (a tampered or foreign manifest, another computer's
+            // folder at the same path, a backup still loading: no Sostituisci)
+            if check != nil, model.app.settings.sources.contains(w.target.source) {
+                Button("Sostituisci", role: .destructive) { model.restore(snapshotID: w.snapshotID, items: item, mode: .replace) }
             }
-            Button("Ripristina accanto") { restoreTargets(confirmed: true) }
-            Button("Ripristina in…", action: restoreTargetsInto)
+            Button("Ripristina accanto") { model.restore(snapshotID: w.snapshotID, items: item, mode: .besideOriginal) }
+            Button("Ripristina in…") { chooseFolder { model.restore(snapshotID: w.snapshotID, items: item, mode: .into($0)) } }
             Button("Annulla", role: .cancel) {}
-        } message: {
+        } message: { _ in
             Text(replaceMessage)
         }
         .confirmationDialog("Aprire l'anteprima di un file grande?",
@@ -170,7 +186,6 @@ struct RestoreView: View {
                         Button("Ripristina tutto il backup in…", systemImage: "folder.badge.plus", action: restoreAllInto)
                     } else {
                         Button("Ripristina in…", systemImage: "folder.badge.plus", action: restoreTargetsInto)
-                            .keyboardShortcut("r", modifiers: [.command, .shift])
                     }
                     Button("Anteprima", systemImage: "eye") { singleFile.map(preview) }
                         .disabled(singleFile == nil)
@@ -182,8 +197,7 @@ struct RestoreView: View {
                     if wholeBackup { restoreAllInto() } else { restoreTargets() }
                 }
                 .labelStyle(.titleAndIcon)
-                .keyboardShortcut("r")
-                .disabled((targets.isEmpty && !wholeBackup) || model.restoring)
+                .disabled(restoreDisabled)
                 .help(restoreHelp)
             }
     }
@@ -284,7 +298,9 @@ struct RestoreView: View {
             if shownResults.isEmpty, model.busy == nil {
                 if deletedOnly {
                     ContentUnavailableView("Nessun file eliminato", systemImage: "magnifyingglass",
-                                           description: Text("Tutto ciò che corrisponde a «\(model.search)» esiste ancora su questo Mac."))
+                                           description: Text(model.resultsTruncated
+                                               ? "Nessuno tra i primi 500 risultati: affina la ricerca per vedere gli altri."
+                                               : "Tutto ciò che corrisponde a «\(model.search)» esiste ancora su questo Mac."))
                 } else {
                     ContentUnavailableView.search(text: model.search)
                 }
@@ -362,6 +378,8 @@ struct RestoreView: View {
     private func show(_ place: Place) {
         model.source = place.source
         model.currentPath = place.path
+        model.pendingSelection = nil
+        model.fixLocation() // Back / Forward may lead to a folder this backup doesn't have
         selectedIDs = []
     }
 
@@ -421,7 +439,8 @@ struct RestoreView: View {
     private var targets: [Target] {
         if !model.search.isEmpty { return hit.map { [($0.entry.source, $0.entry.path, $0.entry)] } ?? [] }
         guard model.selectedID != nil else { return [] }
-        let picked = model.children().filter { selectedIDs.contains($0.id) }
+        let visible = Set(rows.map(\.id))
+        let picked = model.children().filter { selectedIDs.contains($0.id) && visible.contains($0.id) }
         if !picked.isEmpty { return picked.map { ($0.source, $0.path, $0) } }
         guard selectedIDs.isEmpty else { return [] } // only items added after the backup: nothing to restore
         guard let source = model.source else { return [] } // top level, nothing selected
@@ -429,6 +448,12 @@ struct RestoreView: View {
     }
 
     private var targetSnapshot: String? { model.search.isEmpty ? model.selectedID : hit?.snapshotID }
+
+    /// Also while the chosen backup is still loading: its folders aren't checked yet, and Sostituisci couldn't
+    /// say what would go to the Trash.
+    private var restoreDisabled: Bool {
+        (targets.isEmpty && !wholeBackup) || model.restoring || (model.search.isEmpty && model.selected == nil)
+    }
 
     /// Top level with nothing selected: every saved folder of the backup, into a folder of choice (a new Mac).
     private var wholeBackup: Bool {
@@ -460,17 +485,16 @@ struct RestoreView: View {
         return text
     }
 
-    private func restoreTargets() { restoreTargets(confirmed: false) }
-
     /// A whole saved folder asks first: replacing it is on offer there, and only there.
-    private func restoreTargets(confirmed: Bool) {
+    private func restoreTargets() {
         let t = targets
-        if !confirmed, t.count == 1, t[0].path.isEmpty {
+        guard let id = targetSnapshot, !t.isEmpty else { return }
+        if t.count == 1, t[0].path.isEmpty {
             check = nil
             let source = t[0].source
             Task {
-                if model.app.settings.sources.contains(source) { check = await model.replaceCheck(source: source) }
-                confirmWhole = true
+                if model.showsStatus, model.app.settings.sources.contains(source) { check = await model.replaceCheck(source: source) }
+                whole = (id, t[0])
             }
             return
         }
@@ -507,7 +531,12 @@ struct RestoreView: View {
 
     private func preview(_ e: Entry, confirmed: Bool) {
         if !confirmed, e.size > 200_000_000 { bigPreview = e; return }
-        Task { previewURL = await model.extracted(e) }
+        previewToken += 1
+        let token = previewToken
+        Task {
+            let url = await model.extracted(e)
+            if token == previewToken { previewURL = url }
+        }
     }
 
     // MARK: backup pop-up grouping

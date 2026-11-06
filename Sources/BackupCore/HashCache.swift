@@ -36,8 +36,10 @@ public final class HashCache {
     /// A file last seen with this content, if any (it may have changed since: check before trusting it).
     public func path(for hash: String) -> String? { items.first { $0.value.hash == hash }?.key }
 
-    public func save() throws {
-        let unseen = items.keys.filter { !seen.contains($0) }
+    /// `dropUnseen: false` after an interrupted run: the paths it didn't reach are still valid, and forgetting them
+    /// would mean reading and hashing every file again at the next attempt.
+    public func save(dropUnseen: Bool = true) throws {
+        let unseen = dropUnseen ? items.keys.filter { !seen.contains($0) } : []
         for k in unseen { items[k] = nil }
         guard changed || !unseen.isEmpty else { return }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

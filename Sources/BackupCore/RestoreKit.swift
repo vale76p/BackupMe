@@ -5,7 +5,7 @@ import Foundation
 enum RestoreKit {
     /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
-    static let version = 3
+    static let version = 4
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit.
     static func install(in base: URL) {
@@ -117,16 +117,19 @@ function depth(e) { return e.path === '' ? 0 : e.path.split('/').length }
 
 // Refuses anything that could write outside the destination: absolute paths, "." or "..", duplicates,
 // and entries whose parent is not a folder of the backup (e.g. a symlink pointing elsewhere).
+// Names that differ only by case or Unicode form are one name on APFS: refused too, or a symlink could stand
+// in for a folder of the same name.
 function validate(tree) {
-  var dirs = new Set(), seen = new Set()
+  var dirs = new Set(), seen = new Set(), folded = new Set()
   tree.forEach(e => {
-    var p = e.path, parts = p.split('/')
-    var ok = typeof p === 'string' && !seen.has(p) && ['file', 'directory', 'symlink'].indexOf(e.kind) >= 0
+    var p = e.path, parts = p.split('/'), key = typeof p === 'string' ? p.normalize('NFD').toLowerCase() : ''
+    var ok = typeof p === 'string' && !seen.has(p) && !folded.has(key) && ['file', 'directory', 'symlink'].indexOf(e.kind) >= 0
       && (p === '' ? e.kind === 'directory'
           : !parts.some(x => x === '' || x === '.' || x === '..') && dirs.has(parts.slice(0, -1).join('/')))
       && (e.kind !== 'file' || /^[0-9a-f]{64}$/.test(e.hash))
     if (!ok) fail('Backup non valido, niente è stato scritto. Voce rifiutata: ' + JSON.stringify(p))
     seen.add(p)
+    folded.add(key)
     if (e.kind === 'directory') dirs.add(p)
   })
 }
@@ -236,10 +239,13 @@ function run(argv) {
     fail('Non riesco a creare ' + dest)
   }
 
-  // never overwrites: every call below fails if the item already exists
-  var problems = [], files = []
+  // never overwrites: every call below fails if the item already exists. An item goes only into a folder this
+  // run created itself: if a folder fails (it appeared meanwhile, or a name collides) nothing goes inside it
+  var problems = [], files = [], made = new Set([dest])
   plans.forEach(plan => plan.tree.forEach(e => {
     var p = e.path === '' ? plan.target : plan.target + '/' + e.path
+    var parent = p.slice(0, p.lastIndexOf('/'))
+    if (!made.has(parent)) { problems.push('saltato, la cartella che lo contiene non è stata creata: ' + p); return }
     var ok
     if (e.kind === 'directory') ok = fm.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(p, false, $(), null)
     else if (e.kind === 'symlink') ok = fm.createSymbolicLinkAtPathWithDestinationPathError(p, e.linkTarget || '', null)
@@ -254,6 +260,7 @@ function run(argv) {
     }
     if (ok) e.dest = p
     else problems.push('non ripristinato: ' + p)
+    if (ok && e.kind === 'directory') made.add(p)
   }))
 
   for (var i = 0; i < files.length; i += 200) {

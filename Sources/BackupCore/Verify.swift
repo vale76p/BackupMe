@@ -13,6 +13,8 @@ public func verifySample(repository: Repository, cache: HashCache, budgetBytes: 
     try repository.withLock {
         var r = VerifyReport(checked: 0, bytes: 0, corrupt: [], repaired: [])
         for (hash, size) in try repository.objectSizes().shuffled() where r.bytes < budgetBytes {
+            // an object bigger than what's left would overshoot the budget (on Files On-Demand, a download of GBs)
+            guard size <= budgetBytes - r.bytes else { continue }
             r.checked += 1
             r.bytes += size
             if try repository.verifyObject(hash) { continue }

@@ -39,14 +39,29 @@ echo "Built $APP"
 if [[ "${1:-}" == "--install" ]]; then
     OLD="$(defaults read "$HOME/Applications/BackupMe.app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true)"
     NEW="$(defaults read "$PWD/$APP/Contents/Info.plist" CFBundleShortVersionString)"
+    AGENT="$HOME/Library/LaunchAgents/com.vale76p.BackupMe.plist"
+    # the copy launchd supervises goes first: with KeepAlive it would be restarted while the app is replaced
+    launchctl bootout "gui/$(id -u)/com.vale76p.BackupMe" 2>/dev/null || true
     pkill -x BackupMe || true
     mkdir -p "$HOME/Applications"
+    # copied beside and then swapped: a copy that fails halfway must not leave this Mac without BackupMe
+    NEXT="$HOME/Applications/.BackupMe-nuova.app"
+    rm -rf "$NEXT"
+    cp -R "$APP" "$NEXT"
+    xattr -cr "$NEXT" # ~/Applications isn't synced: once clean, it stays clean
     rm -rf "$HOME/Applications/BackupMe.app"
-    cp -R "$APP" "$HOME/Applications/"
-    xattr -cr "$HOME/Applications/BackupMe.app" # ~/Applications isn't synced: once clean, it stays clean
+    mv "$NEXT" "$HOME/Applications/BackupMe.app"
     echo "Installed $HOME/Applications/BackupMe.app"
     if [[ -n "$OLD" && "$OLD" != "$NEW" ]]; then echo "Aggiornamento da $OLD a $NEW"; fi
-    # an upgrade may bring a new restore script: put it beside the archives now, not at the next backup
-    "$(swift build -c release --show-bin-path)/KitUpdater" || true
-    open "$HOME/Applications/BackupMe.app" # pkill above stopped it: backups must keep running
+    # under launchd when the login agent is on, so KeepAlive restarts it after a crash from now on, not only
+    # after the next login; otherwise a plain launch (backups must keep running after pkill above)
+    if [[ -f "$AGENT" ]] && launchctl bootstrap "gui/$(id -u)" "$AGENT" 2>/dev/null; then
+        echo "Avviato come servizio di login (riavviato da macOS se si chiude per errore)"
+    else
+        open "$HOME/Applications/BackupMe.app"
+    fi
+    # an upgrade may bring a new restore script: beside the archives now, not at the next backup. Time-limited:
+    # an unreachable network destination must not hang the install
+    perl -e 'alarm 60; exec @ARGV' "$(swift build -c release --show-bin-path)/KitUpdater" \
+        || echo "Kit di ripristino non aggiornato ora: lo farà il prossimo backup"
 fi

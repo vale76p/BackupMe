@@ -45,8 +45,11 @@ import Testing
 
     @Test func budgetLimitsTheSample() throws {
         for i in 0..<3 { write("file \(i)", to: src.appending(path: "\(i).txt")) }
-        let r = try verifySample(repository: try backup(), cache: HashCache(url: cacheURL), budgetBytes: 1)
+        // each object is 6 bytes: a 6-byte budget reads one; a 1-byte one reads none rather than overshooting
+        let repo = try backup()
+        let r = try verifySample(repository: repo, cache: HashCache(url: cacheURL), budgetBytes: 6)
         #expect(r.checked == 1 && r.corrupt.isEmpty)
+        #expect(try verifySample(repository: repo, cache: HashCache(url: cacheURL), budgetBytes: 1).checked == 0)
     }
 
     @Test func largeRawObjectVerifiedAsStreamAndRepaired() throws {
