@@ -2,6 +2,18 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.6.2] - 2026-11-06
+
+### Aggiunto
+- Impostazioni › Destinazione: una scheda come quella di Time Machine con nome e posizione della destinazione (es. "TEST – Dropbox"), spazio disponibile e occupato dai backup, data del primo e dell'ultimo backup e prossimo backup ("Dopo il collegamento all'alimentazione" quando aspetta la batteria). Pulsanti "Mostra nel Finder" e "Cambia…".
+- Registro di sistema con livello Info o Debug in Impostazioni › Avanzate: Debug aggiunge i dettagli di cartelle, esclusioni, scansione, pulizia, verifica, caricamento nel cloud e ripristini. Pulsanti per aprire Console e copiare il comando `log stream`.
+- `RIPRISTINO.command` (kit versione 3): prima di scrivere mostra un riepilogo con le conseguenze (dove finisce ogni cartella, file, MB, spazio libero) e chiede due conferme, "[s/N]" e poi la parola RIPRISTINA; `--si` le salta. La versione del kit è stampata dallo script (`--versione`) e scritta in LEGGIMI.txt.
+- `scripts/build-app.sh --install` dice da quale versione si aggiorna e aggiorna subito il kit di ripristino nella destinazione configurata, se quello presente è più vecchio (strumento `KitUpdater`).
+
+### Cambiato
+- Icona nella barra dei menu a 15 pt, come le icone di sistema; quando è tutto a posto la spunta è verde.
+- Sfoglia backup è una finestra standard senza barra laterale: il backup si sceglie dal menu "Backup" nella barra degli strumenti, raggruppato per Oggi / Ieri / Ultimi 7 giorni / Più vecchi; il sottotitolo mostra il percorso della cartella aperta.
+
 ## [0.6.1] - 2026-11-06
 
 ### Aggiunto
