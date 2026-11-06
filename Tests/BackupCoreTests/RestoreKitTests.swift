@@ -20,8 +20,11 @@ import Testing
         try p.run()
         stdin.fileHandleForWriting.write(Data((input ?? "").utf8))
         try stdin.fileHandleForWriting.close()
+        // a script stuck waiting for an answer becomes a failure instead of blocking the test run
+        DispatchQueue.global().asyncAfter(deadline: .now() + 20) { if p.isRunning { p.terminate() } }
         let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         p.waitUntilExit()
+        #expect(p.terminationReason == .exit, "RIPRISTINO.command bloccato oltre 20 s:\n\(out)")
         return (p.terminationStatus, out)
     }
 
@@ -127,11 +130,21 @@ import Testing
         return try #require(report.snapshotID)
     }
 
+    @Test func scriptPrintsItsVersion() throws {
+        _ = try Repository(destination: dest, computerName: "Mac")
+        let line = "RIPRISTINO.command versione \(RestoreKit.version)"
+        let r = try sh(["--versione"])
+        #expect(r.status == 0 && r.out == line + "\n", "\(r.out)")
+        #expect(try sh([]).out.contains(line))
+        #expect(RestoreKit.readme.contains("Kit di ripristino versione \(RestoreKit.version)"))
+    }
+
     @Test func scriptAsksTwiceBeforeRestoring() throws {
         let id = try backup(), out = tmp().appending(path: "ripristino")
         let r = try sh(["Mac", id, out.path], input: "s\nRIPRISTINA\n")
         #expect(r.status == 0, "\(r.out)")
         #expect(r.out.contains(src.path) && r.out.contains(out.appending(path: "progetto").path))
+        #expect(r.out.hasPrefix("RIPRISTINO.command versione \(RestoreKit.version)"))
         #expect(r.out.contains("1 file") && r.out.contains("[s/N]") && r.out.contains("scrivi RIPRISTINA"))
         #expect(try String(contentsOf: out.appending(path: "progetto/ciao.txt"), encoding: .utf8) == "ciao")
     }

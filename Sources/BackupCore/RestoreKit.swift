@@ -30,6 +30,7 @@ enum RestoreKit {
 
     static let readme = """
     BackupMe: come ripristinare un backup anche senza l'app
+    Kit di ripristino versione \(version)
 
     Questa cartella contiene un archivio per ogni Mac salvato:
 
@@ -85,7 +86,7 @@ var pending = ''
 function readLine() {
   while (pending.indexOf('\n') < 0) {
     var data = $.NSFileHandle.fileHandleWithStandardInput.availableData
-    if (data.length === 0) break
+    if (!Number(data.length)) break // JXA gives length as a string: "0" at end of input
     pending += ObjC.unwrap($.NSString.alloc.initWithDataEncoding(data, utf8)) || ''
   }
   if (!pending) return null
@@ -151,11 +152,13 @@ function run(argv) {
   var script = absolute(args[args.length - argv.length - 1])
   var base = ObjC.unwrap($(script).stringByDeletingLastPathComponent)
   var computers = list(base).filter(c => exists(base + '/' + c + '/repo.json'))
+  var version = 'RIPRISTINO.command versione \#(version)'
+  if (argv.indexOf('--versione') >= 0) { out(version); return }
   var yes = argv.indexOf('--si') >= 0
   argv = argv.filter(a => a !== '--si')
-  var usage = 'Per ripristinare:\n  sh "' + script + '" <computer> <backup> <cartella di destinazione>'
+  var usage = version + '\n\nPer ripristinare:\n  sh "' + script + '" <computer> <backup> <cartella di destinazione>'
     + '\nPrima di scrivere mostra cosa farà e chiede due conferme. Con --si (in qualsiasi posizione) non le chiede,'
-    + '\nper usarlo in uno script.'
+    + '\nper usarlo in uno script. Con --versione mostra solo la versione.'
   if (argv.length === 0) {
     if (!computers.length) fail('Nessun archivio di BackupMe in ' + base)
     computers.forEach(c => {
@@ -196,6 +199,7 @@ function run(argv) {
   var count = plans.reduce((a, p) => a + p.files, 0), bytes = plans.reduce((a, p) => a + p.bytes, 0)
   var free = freeSpace(dest)
   var when = new Date(snapshot.date * 1000).toLocaleString('it-IT', { dateStyle: 'long', timeStyle: 'medium' })
+  out(version + '\n')
   out('Ripristino del computer "' + computer + '", backup del ' + when + ' (ora locale)\n')
   out('Cartelle che verranno ricreate:')
   plans.forEach(p => {
