@@ -37,6 +37,19 @@ import Testing
         #expect(try r.readObject(goodHash) == Data("contenuto attuale".utf8))
     }
 
+    @Test func restoreKitUpdatedOnlyWhenOlder() throws {
+        #expect(Repository.updateRestoreKit(destination: dest) == .noArchive)
+        #expect(!FileManager.default.fileExists(atPath: dest.appending(path: "BackupMe").path))
+        _ = try Repository(destination: dest, computerName: "Mac")
+        let v = RestoreKit.version
+        #expect(Repository.updateRestoreKit(destination: dest) == .current(v))
+        let script = dest.appending(path: "BackupMe/RIPRISTINO.command")
+        write("#!/bin/sh\n// BackupMe-kit: \(v - 1)\n", to: script)
+        #expect(Repository.updateRestoreKit(destination: dest) == .installed(from: v - 1, to: v))
+        write("#!/bin/sh\n// BackupMe-kit: \(v + 1)\n", to: script)
+        #expect(Repository.updateRestoreKit(destination: dest) == .newerKept(v + 1))
+    }
+
     @Test func createsLayout() throws {
         let r = try Repository(destination: dest, computerName: "Mac")
         #expect(r.root.path.hasSuffix("BackupMe/Mac"))

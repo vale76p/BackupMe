@@ -21,7 +21,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     var history: [BackupReport] = []
     var notificationsDenied = false
     /// Why the scheduled backup is waiting right now (battery, heat), shown in the panel.
-    var deferral: String?
+    var deferral: SystemServices.Deferral?
     /// The cloud client isn't uploading the backups (paused, signed out, blocked): they exist only on this Mac.
     var uploadProblem: String?
     private var lastUploadCheck: Date?
@@ -117,7 +117,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         // waits for power or a cooler Mac, but never past a day without a backup; "Esegui ora" always runs
         let overdue = lastSuccess.map { now.timeIntervalSince($0) > 86400 } ?? true
         let reason = overdue ? nil : SystemServices.backupDeferral()
-        if reason != deferral, let reason { Log.backup.info("Backup pianificato rinviato: \(reason)") }
+        if reason != deferral, let reason { Log.backup.info("Backup pianificato rinviato: \(reason.reason)") }
         deferral = reason
         guard deferral == nil else { return }
         backupNow()

@@ -53,10 +53,17 @@ enum SystemServices {
 
     // MARK: power
 
-    /// Why a scheduled backup should wait (Low Power Mode, battery under 20% unplugged, a hot Mac), or nil.
-    static func backupDeferral() -> String? {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return "Risparmio energetico attivo" }
-        if ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue { return "Mac troppo caldo" }
+    /// Why a scheduled backup waits, and until when, in words.
+    struct Deferral: Equatable, Sendable { var reason: String; var until: String }
+
+    /// Low Power Mode, battery under 20% unplugged, a hot Mac: the scheduled backup waits. nil when it can run.
+    static func backupDeferral() -> Deferral? {
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            return Deferral(reason: "Risparmio energetico attivo", until: "Quando il Risparmio energetico è disattivato")
+        }
+        if ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
+            return Deferral(reason: "Mac troppo caldo", until: "Quando il Mac si sarà raffreddato")
+        }
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let list = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return nil }
         for ps in list {
@@ -64,7 +71,7 @@ enum SystemServices {
                   d[kIOPSPowerSourceStateKey] as? String == kIOPSBatteryPowerValue,
                   let level = d[kIOPSCurrentCapacityKey] as? Int, let max = d[kIOPSMaxCapacityKey] as? Int, max > 0,
                   level * 100 / max < 20 else { continue }
-            return "Batteria sotto il 20%"
+            return Deferral(reason: "Batteria sotto il 20%", until: "Dopo il collegamento all'alimentazione")
         }
         return nil
     }

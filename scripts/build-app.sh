@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 swift build -c release --product BackupMe
+swift build -c release --product KitUpdater
 BIN="$(swift build -c release --show-bin-path)/BackupMe"
 APP=build/BackupMe.app
 
@@ -36,11 +37,16 @@ codesign --force --sign "${BACKUPME_SIGN_IDENTITY:--}" "$APP"
 echo "Built $APP"
 
 if [[ "${1:-}" == "--install" ]]; then
+    OLD="$(defaults read "$HOME/Applications/BackupMe.app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true)"
+    NEW="$(defaults read "$PWD/$APP/Contents/Info.plist" CFBundleShortVersionString)"
     pkill -x BackupMe || true
     mkdir -p "$HOME/Applications"
     rm -rf "$HOME/Applications/BackupMe.app"
     cp -R "$APP" "$HOME/Applications/"
     xattr -cr "$HOME/Applications/BackupMe.app" # ~/Applications isn't synced: once clean, it stays clean
     echo "Installed $HOME/Applications/BackupMe.app"
+    if [[ -n "$OLD" && "$OLD" != "$NEW" ]]; then echo "Aggiornamento da $OLD a $NEW"; fi
+    # an upgrade may bring a new restore script: put it beside the archives now, not at the next backup
+    "$(swift build -c release --show-bin-path)/KitUpdater" || true
     open "$HOME/Applications/BackupMe.app" # pkill above stopped it: backups must keep running
 fi

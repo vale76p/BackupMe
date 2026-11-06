@@ -57,11 +57,15 @@ private struct MenuBarLabel: View {
     }
 
     /// A symbol at the menu bar's default 13 pt looks small next to Apple's items, and its badge shrinks the
-    /// drive further: 15 pt matches them. Template, so it follows the menu bar's light/dark and tint.
+    /// drive further: 15 pt matches them. Template (it follows the menu bar's light/dark), except when all is
+    /// well: then the check badge is green and the drive keeps the menu bar's text color.
     private static func icon(_ name: String) -> NSImage {
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: "BackupMe")?
-            .withSymbolConfiguration(.init(pointSize: 15, weight: .regular)) ?? NSImage()
-        image.isTemplate = true
+        var config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        let ok = name == "externaldrive.badge.checkmark"
+        // palette order for this symbol: badge first, then the drive
+        if ok { config = config.applying(.init(paletteColors: [.systemGreen, .labelColor])) }
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: "BackupMe")?.withSymbolConfiguration(config) ?? NSImage()
+        image.isTemplate = !ok
         return image
     }
 }
@@ -77,12 +81,23 @@ extension AppModel {
         }
     }
 
+    /// "Prossimo backup" in Impostazioni, like Time Machine's.
+    var nextBackupText: String {
+        guard settings.isConfigured else { return "Scegli cartelle e destinazione" }
+        guard !settings.paused else { return "Backup automatici sospesi" }
+        if isRunning { return "In corso" }
+        if let deferral { return deferral.until }
+        guard let last = lastSuccess else { return "Entro un minuto" }
+        let next = last.addingTimeInterval(Double(settings.intervalHours) * 3600)
+        return next < Date() ? "A breve" : next.formatted(date: .abbreviated, time: .shortened)
+    }
+
     var statusText: String {
         switch status {
         case .running(let p): return "Backup in corso… \(Int(p * 100))%"
         case .failed(let msg): return "Errore: \(msg)"
         case .idle:
-            if let deferral { return "Backup rinviato: \(deferral)" }
+            if let deferral { return "Backup rinviato: \(deferral.reason)" }
             guard let last = lastSuccess else { return "Nessun backup ancora" }
             let f = DateFormatter()
             f.locale = Locale(identifier: "it_IT")

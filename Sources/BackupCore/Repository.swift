@@ -57,6 +57,23 @@ public final class Repository {
         return u
     }
 
+    public enum RestoreKitUpdate: Equatable, Sendable {
+        case installed(from: Int?, to: Int), current(Int), newerKept(Int), noArchive
+    }
+
+    /// Brings the restore kit beside the archives up to date now, instead of at the next backup. Never creates
+    /// the BackupMe folder, and never replaces a newer kit written by another Mac.
+    public static func updateRestoreKit(destination: URL) -> RestoreKitUpdate {
+        let base = destination.appending(path: "BackupMe", directoryHint: .isDirectory)
+        guard FileManager.default.fileExists(atPath: base.path) else { return .noArchive }
+        let script = base.appending(path: "RIPRISTINO.command")
+        let old = (try? String(contentsOf: script, encoding: .utf8)).flatMap(RestoreKit.installedVersion)
+        if let old, old > RestoreKit.version { return .newerKept(old) }
+        let before = try? Data(contentsOf: script)
+        RestoreKit.install(in: base)
+        return (try? Data(contentsOf: script)) == before ? .current(RestoreKit.version) : .installed(from: old, to: RestoreKit.version)
+    }
+
     public static func computers(in destination: URL) -> [String] {
         let base = destination.appending(path: "BackupMe", directoryHint: .isDirectory)
         let names = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []

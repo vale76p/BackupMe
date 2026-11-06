@@ -125,12 +125,19 @@ struct DestinationSection: View {
 
     var body: some View {
         Section {
-            LabeledContent("Cartella") {
+            if let path = model.settings.destination {
+                DestinationCard(model: model, path: path)
                 HStack {
-                    Text(model.settings.destination.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "Nessuna")
-                        .lineLimit(1).truncationMode(.middle)
-                        .foregroundStyle(model.settings.destination == nil ? .secondary : .primary)
-                    Button("Scegli…", action: choose)
+                    Spacer()
+                    Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+                    Button("Cambia…", action: choose)
+                }
+            } else {
+                LabeledContent("Cartella") {
+                    HStack {
+                        Text("Nessuna").foregroundStyle(.secondary)
+                        Button("Scegli…", action: choose)
+                    }
                 }
             }
             // personal and company OneDrive can both be present: offer each one
@@ -174,6 +181,84 @@ struct DestinationSection: View {
         let cloud = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/CloudStorage")
         let names = (try? FileManager.default.contentsOfDirectory(atPath: cloud.path)) ?? []
         return names.sorted().filter { $0.hasPrefix("OneDrive") }.map { cloud.appending(path: $0) }
+    }
+}
+
+/// The destination at a glance, like Time Machine's: where it is, space, the span of the backups, the next one.
+private struct DestinationCard: View {
+    let model: AppModel
+    let path: String
+    @State private var info: Info?
+
+    struct Info: Sendable {
+        var available: Int64?
+        var used: Int64
+        var dates: [Date]
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 48, height: 48)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.title3).lineLimit(1).truncationMode(.middle)
+                Group {
+                    Text(spaceLine)
+                    Text(backupsLine)
+                    Text("Prossimo backup: \(model.nextBackupText)")
+                }
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            }
+            .textSelection(.enabled)
+        }
+        .padding(.vertical, 4)
+        .help((path as NSString).abbreviatingWithTildeInPath)
+        // reloaded after every backup: the span and the space change with it
+        .task(id: "\(path)\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)") { info = await Self.load(path) }
+    }
+
+    /// "TEST – Dropbox": the folder, then the cloud service it syncs with, or the disk it is on.
+    private var title: String {
+        let url = URL(fileURLWithPath: path)
+        let parts = url.pathComponents
+        var place = (try? url.resourceValues(forKeys: [.volumeLocalizedNameKey]))?.volumeLocalizedName ?? ""
+        if let i = parts.firstIndex(of: "CloudStorage"), i + 1 < parts.count {
+            // "OneDrive-Personal", "GoogleDrive-name@example.com": the service, then the account
+            place = parts[i + 1].replacingOccurrences(of: "-", with: " ")
+        }
+        return place.isEmpty ? url.lastPathComponent : "\(url.lastPathComponent) – \(place)"
+    }
+
+    private var spaceLine: String {
+        guard let info else { return "Calcolo dello spazio…" }
+        let f = { (n: Int64) in ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }
+        var parts: [String] = []
+        if let a = info.available { parts.append("\(f(a)) disponibili") }
+        parts.append("\(f(info.used)) occupati dai backup")
+        if let cap = model.settings.capGB { parts.append("tetto \(f(Int64(cap * 1e9)))") }
+        return parts.joined(separator: ", ")
+    }
+
+    private var backupsLine: String {
+        guard let info else { return "Lettura dei backup…" }
+        let f = { (d: Date) in d.formatted(date: .numeric, time: .shortened) }
+        switch info.dates.count {
+        case 0: return "Nessun backup ancora"
+        case 1: return "Backup: \(f(info.dates[0]))"
+        default: return "Backup: \(f(info.dates.first!)) – \(f(info.dates.last!)) (\(info.dates.count))"
+        }
+    }
+
+    private static func load(_ path: String) async -> Info {
+        let archive = AppPaths.archiveName
+        return await Task.detached(priority: .utility) {
+            let url = URL(fileURLWithPath: path)
+            let available = (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+                .volumeAvailableCapacityForImportantUsage
+            let repo = try? Repository(destination: url, computerName: archive, create: false)
+            let dates = ((try? repo?.snapshotIDs()) ?? []).compactMap(Snapshot.date(fromID:)).sorted()
+            return Info(available: available, used: (try? repo?.poolSize()) ?? 0, dates: dates)
+        }.value
     }
 }
 
@@ -241,7 +326,7 @@ private struct ScheduleSection: View {
                 ForEach(AppSettings.intervals, id: \.self) { Text($0 == 1 ? "1 ora" : "\($0) ore").tag($0) }
             }
             .disabled(model.settings.paused)
-            LabeledContent("Prossimo backup", value: nextBackup)
+            LabeledContent("Prossimo backup", value: model.nextBackupText)
             Toggle("Avvia al login", isOn: $launchAtLogin)
                 .onChange(of: launchAtLogin) { _, on in
                     do { try SystemServices.setLaunchAtLogin(on); loginError = nil } catch {
@@ -261,14 +346,6 @@ private struct ScheduleSection: View {
                 }
             }
         }
-    }
-
-    private var nextBackup: String {
-        guard model.settings.isConfigured else { return "Scegli cartelle e destinazione" }
-        guard !model.settings.paused else { return "Sospesi" }
-        guard let last = model.lastSuccess else { return "Entro un minuto" }
-        let next = last.addingTimeInterval(Double(model.settings.intervalHours) * 3600)
-        return next < Date() ? "A breve" : next.formatted(date: .abbreviated, time: .shortened)
     }
 }
 
