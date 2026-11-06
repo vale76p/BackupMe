@@ -57,10 +57,10 @@ private struct MenuBarLabel: View {
     }
 
     /// A symbol at the menu bar's default 13 pt looks small next to Apple's items, and its badge shrinks the
-    /// drive further: 15 pt matches them. Template (it follows the menu bar's light/dark), except when all is
+    /// drive further: 15 pt matches them, medium weight so its thin strokes read as well as theirs. Template (it follows the menu bar's light/dark), except when all is
     /// well: then the check badge is green and the drive keeps the menu bar's text color.
     private static func icon(_ name: String) -> NSImage {
-        var config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        var config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         let ok = name == "externaldrive.badge.checkmark"
         // palette order for this symbol: badge first, then the drive
         if ok { config = config.applying(.init(paletteColors: [.systemGreen, .labelColor])) }

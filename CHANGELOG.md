@@ -4,6 +4,9 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la n
 
 ## [0.6.4] - 2026-11-06
 
+### Cambiato
+- Icona nella barra dei menu leggermente più marcata (peso medio invece di regolare).
+
 ### Corretto
 - `scripts/build-app.sh` si fermava su un Mac gestito senza permessi di amministratore con "xattr: [Errno 1] Operation not permitted" (su `AppIcon.icns` e `Info.plist`): cercava di togliere tutti gli attributi estesi, compresi quelli di sistema come `com.apple.provenance` che lì non si possono togliere. Ora toglie solo quelli che `codesign` rifiuta (informazioni del Finder, resource fork, etichette della cartella sincronizzata) e non si ferma mai per un attributo.
 
