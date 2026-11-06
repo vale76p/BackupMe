@@ -1,4 +1,5 @@
 import AppKit
+import BackupCore
 import SwiftUI
 
 /// First run: folders, destination and frequency in one step, then the first backup.
@@ -6,12 +7,19 @@ struct WelcomeView: View {
     @Bindable var model: AppModel
     @Environment(\.dismissWindow) private var dismissWindow
 
+    /// Names the cloud services found on this Mac, none when there are none.
+    private var intro: String {
+        let saved = "Salva le cartelle dei tuoi progetti, .git compreso, "
+        return saved + (CloudFolder.serviceList(CloudFolder.installed()).map { "in una cartella sincronizzata come \($0)." }
+            ?? "su un disco esterno o in una cartella sincronizzata con il cloud.") + " Non servono permessi di amministratore."
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 8) {
                 Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
                 Text("Benvenuto in BackupMe").font(.title.bold())
-                Text("Salva le cartelle dei tuoi progetti, .git compreso, in una cartella sincronizzata come OneDrive o Dropbox. Non servono permessi di amministratore.")
+                Text(intro)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -97,7 +97,7 @@ struct RestoreView: View {
             Button("Apri anteprima") { if let e = bigPreview { bigPreview = nil; preview(e, confirmed: true) } }
             Button("Annulla", role: .cancel) {}
         } message: {
-            Text("Per mostrarlo va estratto dall'archivio in una cartella temporanea (\(ByteCountFormatter.string(fromByteCount: bigPreview?.size ?? 0, countStyle: .file))); se l'archivio è su OneDrive può dover essere scaricato.")
+            Text("Per mostrarlo va estratto dall'archivio in una cartella temporanea (\(ByteCountFormatter.string(fromByteCount: bigPreview?.size ?? 0, countStyle: .file))); se l'archivio è in una cartella cloud può dover essere scaricato.")
         }
         .alert(model.error?.title ?? "", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") {}

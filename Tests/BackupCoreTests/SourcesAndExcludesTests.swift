@@ -55,6 +55,26 @@ import Testing
         #expect(report.excluded?.contains(base.lastPathComponent + "/Library") == true)
     }
 
+    @Test func cloudFoldersFound() throws {
+        let home = base.path
+        for name in ["OneDrive-Personal", "OneDrive-Acme", "Dropbox", "Dropbox (28-12-22 10:05) Archive",
+                     "GoogleDrive-io@example.com", "iCloudDrive-iCloudDrive (18-08-2026 22:26)"] {
+            try fm.createDirectory(at: base.appending(path: "Library/CloudStorage/\(name)"), withIntermediateDirectories: true)
+        }
+        try fm.createDirectory(at: base.appending(path: "Library/Mobile Documents/com~apple~CloudDocs"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: base.appending(path: "Dropbox"), withIntermediateDirectories: true) // older client, already above
+        let found = CloudFolder.installed(home: home)
+        #expect(found.map(\.title) == ["Dropbox", "Google Drive (io@example.com)", "OneDrive (Acme)", "OneDrive (Personal)", "iCloud Drive"])
+        #expect(CloudFolder.serviceList(found) == "Dropbox, Google Drive, OneDrive e iCloud Drive")
+        #expect(ExcludeRules.automatic(destination: nil, home: home)[1].reason == "Cartelle di Dropbox, Google Drive e OneDrive")
+    }
+
+    @Test func noCloudFoldersNoNames() {
+        #expect(CloudFolder.installed(home: base.path).isEmpty)
+        #expect(CloudFolder.serviceList([]) == nil)
+        #expect(ExcludeRules.automatic(destination: nil, home: base.path)[0].reason == "Libreria: dati delle app e cache")
+    }
+
     @Test func archiveFolderSkippedEvenWithoutRules() throws {
         write("codice", to: base.appending(path: "main.swift"))
         let dest = base.appending(path: "backup", directoryHint: .isDirectory)

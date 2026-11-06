@@ -15,6 +15,7 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la n
 ### Cambiato
 - Finestra Sfoglia rifatta: i backup sono nella barra laterale, raggruppati per giorno con le ore come chip (i mesi più vecchi con i giorni), con i dati nuovi salvati e gli avvisi di ciascuno; il percorso cliccabile è nella barra degli strumenti; i filtri Modificati, Eliminati e Nuovi sono pulsanti con il conteggio; lo stato di ogni elemento è un'etichetta colorata; una barra in basso dice cosa si ripristina e da quale backup. Un ispettore a destra mostra i dettagli e tutte le versioni salvate del file scelto, con Anteprima, Confronta e Ripristina.
 - Icona nella barra dei menu: freccia tonda durante il backup, badge giallo con gli avvisi, badge rosso con gli errori.
+- I servizi cloud vengono rilevati sul Mac (OneDrive, Dropbox, Google Drive, iCloud Drive, Box e gli altri client in `~/Library/CloudStorage`, più le cartelle dei client vecchi nella Inizio): come destinazione si propongono solo quelli presenti, con un account per voce, e i testi nominano solo quelli. Gli archivi lasciati da un client rimosso ("Dropbox (data) Archive") non contano.
 
 ### Corretto
 - Dopo aver cancellato e ricreato l'archivio nella stessa destinazione, ogni backup per 3 giorni avvisava "Pulizia rinviata: alcuni backup sono spariti". Ora un archivio nuovo (un nuovo id in `repo.json`) viene riconosciuto: la pulizia aspetta comunque per prudenza, ma senza avviso.

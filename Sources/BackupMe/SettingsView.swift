@@ -173,20 +173,31 @@ struct DestinationSection: View {
                     }
                 }
             }
-            // personal and company OneDrive can both be present: offer each one
-            let oneDrive = Self.oneDriveFolders
-            if model.settings.destination == nil, !oneDrive.isEmpty {
-                Menu("Usa OneDrive", systemImage: "cloud") {
-                    ForEach(oneDrive, id: \.self) { od in Button(od.lastPathComponent) { set(od) } }
+            // only the services found on this Mac; personal and company accounts of one service are offered each
+            if model.settings.destination == nil {
+                if cloud.count == 1, let only = cloud.first {
+                    Button("Usa \(only.title)", systemImage: "cloud") { set(only.url) }
+                } else if !cloud.isEmpty {
+                    Menu("Usa una cartella cloud", systemImage: "cloud") {
+                        ForEach(cloud, id: \.self) { c in Button(c.title) { set(c.url) } }
+                    }
+                    .fixedSize()
                 }
-                .fixedSize()
             }
             if let error { ErrorRow(text: error) }
         } header: {
             Text("Destinazione")
         } footer: {
-            Text("Di solito una cartella sincronizzata, come OneDrive o Dropbox: il suo client carica i backup nel cloud.")
+            Text(Self.hint(cloud))
         }
+    }
+
+    private var cloud: [CloudFolder] { CloudFolder.installed() }
+
+    /// Names the services this Mac has; without any, a cloud folder is only one of the options.
+    static func hint(_ cloud: [CloudFolder]) -> String {
+        CloudFolder.serviceList(cloud).map { "Di solito una cartella sincronizzata, come \($0): il suo client carica i backup nel cloud." }
+            ?? "Una cartella su un disco esterno, o sincronizzata con un servizio cloud se ne installi uno."
     }
 
     private func choose() {
@@ -210,11 +221,6 @@ struct DestinationSection: View {
         model.settings.destination = url.path
     }
 
-    static var oneDriveFolders: [URL] {
-        let cloud = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/CloudStorage")
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: cloud.path)) ?? []
-        return names.sorted().filter { $0.hasPrefix("OneDrive") }.map { cloud.appending(path: $0) }
-    }
 }
 
 /// The destination at a glance, like Time Machine's: where it is, space, the span of the backups, the next one.
@@ -624,8 +630,9 @@ private struct ExcludesSection: View {
     /// Automatic exclusions inside a saved folder; one inside another listed one (Library holds CloudStorage) is left out.
     private var automatic: [ExcludeRules.Automatic] {
         let s = model.settings
+        // only what exists here: no line for a cloud service this Mac doesn't have
         let inside = ExcludeRules.automatic(destination: s.destination).filter { a in
-            s.sources.contains { a.path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
+            FileManager.default.fileExists(atPath: a.path) && s.sources.contains { a.path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
         }
         return inside.filter { a in !inside.contains { a.path.hasPrefix($0.path + "/") } }
     }
@@ -795,7 +802,7 @@ private struct ArchiveCheckSection: View {
         } header: {
             Text("Integrità dell'archivio")
         } footer: {
-            Text("Rilegge ogni backup e ogni file dell'archivio di questo Mac e ripara i file danneggiati quando la copia attuale è ancora uguale. Ogni giorno ne viene già controllato un campione. Su OneDrive con «File su richiesta» scarica l'intero archivio; i backup aspettano la fine del controllo.")
+            Text("Rilegge ogni backup e ogni file dell'archivio di questo Mac e ripara i file danneggiati quando la copia attuale è ancora uguale. Ogni giorno ne viene già controllato un campione. Se la destinazione è nel cloud con i file su richiesta, scarica l'intero archivio; i backup aspettano la fine del controllo.")
         }
     }
 }

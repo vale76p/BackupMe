@@ -73,9 +73,13 @@ public struct ExcludeRules: Sendable {
     public static func automatic(destination: String?, home: String = NSHomeDirectory()) -> [Automatic] {
         var list: [Automatic] = []
         if let destination { list.append(Automatic(path: destination, reason: "Destinazione dei backup")) }
+        // the reasons name only the services on this Mac; the paths stay, so a client installed later is left out too
+        let cloud = CloudFolder.installed(home: home)
+        let inStorage = CloudFolder.serviceList(cloud.filter { $0.url.path.hasPrefix(home + "/Library/CloudStorage/") })
+        let inLibrary = CloudFolder.serviceList(cloud.filter { $0.url.path.hasPrefix(home + "/Library/") })
         list += [
-            Automatic(path: home + "/Library", reason: "Libreria: OneDrive, Dropbox, iCloud Drive, dati delle app e cache"),
-            Automatic(path: home + "/Library/CloudStorage", reason: "Cartelle di OneDrive, Dropbox, Google Drive"),
+            Automatic(path: home + "/Library", reason: "Libreria: " + (inLibrary.map { $0 + ", " } ?? "") + "dati delle app e cache"),
+            Automatic(path: home + "/Library/CloudStorage", reason: inStorage.map { "Cartelle di " + $0 } ?? "Cartelle dei servizi cloud"),
             Automatic(path: home + "/Library/Mobile Documents", reason: "iCloud Drive"),
             Automatic(path: home + "/.Trash", reason: "Cestino"),
         ]
