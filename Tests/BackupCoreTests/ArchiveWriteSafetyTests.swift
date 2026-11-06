@@ -133,6 +133,45 @@ import Testing
         #expect(try fm.contentsOfDirectory(atPath: r.root.appending(path: "objects/\(hash.prefix(2))").path).isEmpty)
     }
 
+    @Test func lockIgnoresPlantedLink() throws {
+        let r = try Repository(destination: tmp(), computerName: "Mac"), outside = tmp()
+        try plant(outside.appending(path: "created"), at: r.root.appending(path: "lock"))
+        #expect(throws: (any Error).self) { try r.withLock {} }
+        #expect(try fm.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    @Test func lockRefusesAPipe() throws {
+        let r = try Repository(destination: tmp(), computerName: "Mac")
+        #expect(mkfifo(r.root.appending(path: "lock").path, 0o644) == 0)
+        var ran = false
+        #expect(throws: (any Error).self) { try r.withLock { ran = true } }
+        #expect(!ran)
+    }
+
+    @Test func restoreKitIgnoresLinkedBackupMeFolder() throws {
+        let dest = tmp(), outside = tmp()
+        try plant(outside, at: dest.appending(path: "BackupMe"))
+        #expect(Repository.updateRestoreKit(destination: dest) == .noArchive)
+        #expect(try fm.contentsOfDirectory(atPath: outside.path).isEmpty)
+    }
+
+    @Test func restoreKitReplacesPlantedFiles() throws {
+        let dest = tmp(), victim = try sentinel()
+        let base = dest.appending(path: "BackupMe")
+        try fm.createDirectory(at: base, withIntermediateDirectories: true)
+        try plant(victim, at: base.appending(path: "RIPRISTINO.command"))
+        // a pipe: never read (a plain read would wait forever), only replaced
+        #expect(mkfifo(base.appending(path: "LEGGIMI.txt").path, 0o644) == 0)
+        _ = try Repository(destination: dest, computerName: "Mac")
+        try unchanged(victim)
+        for (name, mode) in [("RIPRISTINO.command", 0o755), ("LEGGIMI.txt", 0o644)] {
+            let attributes = try fm.attributesOfItem(atPath: base.appending(path: name).path)
+            #expect(attributes[.type] as? FileAttributeType == .typeRegular)
+            #expect(attributes[.posixPermissions] as? Int == mode)
+        }
+        #expect(Repository.updateRestoreKit(destination: dest) == .current(RestoreKit.version))
+    }
+
     /// The physical address of a file's first byte: the same for a clone and its source.
     private func firstBlock(_ url: URL) throws -> off_t {
         let fd = open(url.path, O_RDONLY)

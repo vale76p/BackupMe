@@ -542,6 +542,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             return "«\((p as NSString).lastPathComponent)» oggi è un collegamento a un'altra cartella: usa Ripristina in…"
         case RestoreError.containsArchive(let p):
             return "«\((p as NSString).lastPathComponent)» contiene l'archivio dei backup: Sostituisci lo manderebbe nel Cestino. Usa Ripristina accanto o Ripristina in…"
+        case let e where BackupEngine.posixCode(e) == ELOOP: return linkInArchive
         default: return error.localizedDescription
         }
     }
@@ -553,7 +554,14 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case EACCES, EPERM: "permesso negato"
         case EROFS: "il disco è in sola lettura"
         case ENOENT: "cartella dell'archivio non trovata"
+        case ELOOP: linkInArchive
         default: error.localizedDescription
         }
+    }
+
+    /// ELOOP from the archive's writes, which never follow links: BackupMe, this Mac's folder or a file in it is one.
+    nonisolated static var linkInArchive: String {
+        "Nell'archivio dei backup c'è un collegamento (symlink) al posto di una cartella o di un file: per sicurezza "
+            + "BackupMe non lo segue. Rimettilo come cartella o file normale per riprendere i backup"
     }
 }

@@ -27,7 +27,6 @@ public final class Repository {
 
     private var objectsDir: URL { root.appending(path: "objects", directoryHint: .isDirectory) }
     private var snapshotsDir: URL { root.appending(path: "snapshots", directoryHint: .isDirectory) }
-    private var lockURL: URL { root.appending(path: "lock") }
 
     /// `create: false` opens an existing archive only (browsing must never write to the destination).
     /// repo.json was there but unreadable and has been written again (same layout, a new id).
@@ -71,7 +70,8 @@ public final class Repository {
             let json = #"{"format":\#(Self.format),"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
             try atomicWrite(Data(json.utf8), to: info, sync: .file)
         }
-        RestoreKit.install(in: root.deletingLastPathComponent())
+        // the BackupMe folder opened again without following links: a link swapped in since is never written through
+        if let base = try? Self.childDirectory("BackupMe", in: destinationFD) { RestoreKit.install(in: base); close(base) }
     }
 
     /// The archive's identity, from repo.json: a different one means the archive was made again from nothing.
@@ -104,14 +104,18 @@ public final class Repository {
     /// Brings the restore kit beside the archives up to date now, instead of at the next backup. Never creates
     /// the BackupMe folder, and never replaces a newer kit written by another Mac.
     public static func updateRestoreKit(destination: URL) -> RestoreKitUpdate {
-        let base = destination.appending(path: "BackupMe", directoryHint: .isDirectory)
-        guard FileManager.default.fileExists(atPath: base.path) else { return .noArchive }
-        let script = base.appending(path: "RIPRISTINO.command")
-        let old = (try? String(contentsOf: script, encoding: .utf8)).flatMap(RestoreKit.installedVersion)
+        let dest = open(destination.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard dest >= 0 else { return .noArchive }
+        defer { close(dest) }
+        // a BackupMe that is a link is not followed out of the destination, as when backing up
+        guard let base = try? childDirectory("BackupMe", in: dest) else { return .noArchive }
+        defer { close(base) }
+        let script = "RIPRISTINO.command"
+        let old = RestoreKit.read(script, in: base).flatMap { String(data: $0, encoding: .utf8) }.flatMap(RestoreKit.installedVersion)
         if let old, old > RestoreKit.version { return .newerKept(old) }
-        let before = try? Data(contentsOf: script)
+        let before = RestoreKit.read(script, in: base)
         RestoreKit.install(in: base)
-        return (try? Data(contentsOf: script)) == before ? .current(RestoreKit.version) : .installed(from: old, to: RestoreKit.version)
+        return RestoreKit.read(script, in: base) == before ? .current(RestoreKit.version) : .installed(from: old, to: RestoreKit.version)
     }
 
     public static func computers(in destination: URL) -> [String] {
@@ -369,10 +373,16 @@ public final class Repository {
     /// Each Mac writes only its own archive folder, so a machine-local lock is enough.
     @discardableResult
     public func withLock<T>(_ body: () throws -> T) throws -> T {
-        // close-on-exec: a process started meanwhile would otherwise inherit the descriptor and hold the lock
-        let fd = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o644)
+        let archive = try archiveDirectory()
+        defer { close(archive) }
+        // close-on-exec: a process started meanwhile would otherwise inherit the descriptor and hold the lock.
+        // No-follow: a link planted as the lock never creates a file outside the archive
+        let fd = openat(archive, "lock", O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o644)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { close(fd) } // closing releases the lock; the file is kept so waiters never lock a deleted inode
+        // only a plain file: a pipe or a device put in its place is refused
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { throw POSIXError(.EFTYPE) }
         // a moment's wait: a process being spawned holds a copy of the descriptor until it execs
         var attempt = 0
         while flock(fd, LOCK_EX | LOCK_NB) != 0 {
@@ -399,7 +409,7 @@ public final class Repository {
         }
     }
 
-    private static func childDirectory(_ name: String, in parent: Int32, create: Bool = false) throws -> Int32 {
+    static func childDirectory(_ name: String, in parent: Int32, create: Bool = false) throws -> Int32 {
         try checkComponent(name)
         if create, mkdirat(parent, name, 0o755) != 0, errno != EEXIST { throw posixError() }
         let fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -439,7 +449,15 @@ public final class Repository {
                          body: (_ fd: Int32, _ cloned: Bool) throws -> Bool) throws -> Bool {
         let parent = try parentDirectory(of: url)
         defer { close(parent) }
-        let name = url.lastPathComponent
+        return try Self.publish(url.lastPathComponent, in: parent, sync: sync, exclusive: exclusive, mode: mode,
+                                cloning: source, body: body)
+    }
+
+    /// `publish(to:)` for a file directly in `parent`, a folder already opened without following links.
+    @discardableResult
+    static func publish(_ name: String, in parent: Int32, sync: Sync, exclusive: Bool = false, mode: mode_t = 0o644,
+                        cloning source: Int32? = nil, body: (_ fd: Int32, _ cloned: Bool) throws -> Bool) throws -> Bool {
+        try checkComponent(name)
         let tmp = name + ".tmp"
         // a leftover of an interrupted run (its space comes back now) or a planted link: removed, never followed
         guard unlinkat(parent, tmp, 0) == 0 || errno == ENOENT else { throw Self.posixError() }
@@ -470,7 +488,14 @@ public final class Repository {
     }
 
     private func atomicWrite(_ data: Data, to url: URL, sync: Sync, exclusive: Bool = false) throws {
-        try publish(to: url, sync: sync, exclusive: exclusive) { fd, _ in
+        let parent = try parentDirectory(of: url)
+        defer { close(parent) }
+        try Self.atomicWrite(data, named: url.lastPathComponent, in: parent, sync: sync, exclusive: exclusive)
+    }
+
+    static func atomicWrite(_ data: Data, named name: String, in parent: Int32, sync: Sync, exclusive: Bool = false,
+                            mode: mode_t = 0o644) throws {
+        try publish(name, in: parent, sync: sync, exclusive: exclusive, mode: mode) { fd, _ in
             try data.withUnsafeBytes { buf in
                 var offset = 0
                 while offset < buf.count {

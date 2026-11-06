@@ -7,17 +7,26 @@ enum RestoreKit {
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
     static let version = 7
 
-    /// Rewrites a file only when its content differs and it isn't from a newer kit.
-    static func install(in base: URL) {
-        if let existing = try? String(contentsOf: base.appending(path: "RIPRISTINO.command"), encoding: .utf8),
+    /// Rewrites a file only when its content differs and it isn't from a newer kit. `base`: the BackupMe folder,
+    /// opened without following links; a link under a kit file's name is replaced, never read or written through.
+    static func install(in base: Int32) {
+        if let existing = read("RIPRISTINO.command", in: base).flatMap({ String(data: $0, encoding: .utf8) }),
            let v = installedVersion(existing), v > version { return }
         for (name, text, mode) in [("RIPRISTINO.command", script, 0o755), ("LEGGIMI.txt", readme, 0o644)] {
-            let url = base.appending(path: name)
             let data = Data(text.utf8)
-            guard (try? Data(contentsOf: url)) != data else { continue }
-            try? data.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
+            guard read(name, in: base) != data else { continue }
+            try? Repository.atomicWrite(data, named: name, in: base, sync: .file, mode: mode_t(mode))
         }
+    }
+
+    /// A regular file's content; nil for a link, a folder or a pipe (whose read would never end).
+    static func read(_ name: String, in dir: Int32) -> Data? {
+        let fd = openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        let h = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var st = stat()
+        guard fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG else { return nil }
+        return (try? h.readToEnd()).map { $0 ?? Data() }
     }
 
     /// The `BackupMe-kit: N` line of an installed script; nil for the first kit, which had none.
