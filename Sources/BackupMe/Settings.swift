@@ -8,6 +8,8 @@ struct AppSettings: Codable, Equatable {
     var retention = RetentionPolicy()
     var capGB: Double? = nil
     var excludes = ExcludeRules.defaults
+    /// Specific folders or files left out, as absolute paths
+    var excludedPaths: [String] = []
     var paused = false
 
     static let intervals = [1, 2, 4, 6, 12, 24]
@@ -23,6 +25,7 @@ struct AppSettings: Codable, Equatable {
         retention = try c.decodeIfPresent(RetentionPolicy.self, forKey: .retention) ?? retention
         capGB = try c.decodeIfPresent(Double.self, forKey: .capGB)
         excludes = try c.decodeIfPresent([String].self, forKey: .excludes) ?? excludes
+        excludedPaths = try c.decodeIfPresent([String].self, forKey: .excludedPaths) ?? excludedPaths
         paused = try c.decodeIfPresent(Bool.self, forKey: .paused) ?? paused
     }
 
@@ -39,6 +42,19 @@ struct AppSettings: Codable, Equatable {
     }
 
     var isConfigured: Bool { destination != nil && !sources.isEmpty }
+
+    /// The rules a backup runs with: the patterns, the chosen paths and the automatic ones.
+    var excludeRules: ExcludeRules {
+        ExcludeRules(patterns: excludes, paths: excludedPaths + ExcludeRules.automatic(destination: destination).map(\.path))
+    }
+
+    /// The source that already holds `path` and backs it up, unless a rule leaves it out there.
+    func source(containing path: String) -> String? {
+        let skipped = excludeRules.paths
+        return sources.first { s in
+            path.hasPrefix(s == "/" ? "/" : s + "/") && !skipped.contains { path == $0 || path.hasPrefix($0 + "/") }
+        }
+    }
 }
 
 enum AppPaths {

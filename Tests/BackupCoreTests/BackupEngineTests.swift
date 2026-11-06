@@ -93,7 +93,9 @@ import Testing
 
     @Test func validateRejectsOverlap() throws {
         let (_, repo) = try engine()
-        #expect(BackupEngine.validate(sources: [dest], repositoryRoot: repo.root) == .sourceOverlapsDestination(dest.path))
+        // a source holding the archive is fine (the engine skips it); one inside it is not
+        #expect(BackupEngine.validate(sources: [dest], repositoryRoot: repo.root) == nil)
+        #expect(BackupEngine.validate(sources: [repo.root], repositoryRoot: repo.root) == .sourceOverlapsDestination(repo.root.path))
         #expect(BackupEngine.validate(sources: [repo.root.appending(path: "objects")], repositoryRoot: repo.root) != nil)
         #expect(BackupEngine.validate(sources: [src], repositoryRoot: repo.root) == nil)
     }

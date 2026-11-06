@@ -17,9 +17,12 @@ strip_detritus() {
 swift build -c release --product BackupMe
 swift build -c release --product KitUpdater
 BIN="$(swift build -c release --show-bin-path)/BackupMe"
-APP=build/BackupMe.app
+# assembled and signed outside the repo: in a synced folder (Documents in iCloud) the sync daemon tags the bundle
+# again between the cleanup and codesign. build/ gets the signed copy
+STAGE="$(mktemp -d -t backupme-build)"
+trap 'rm -rf "$STAGE"' EXIT
+APP="$STAGE/BackupMe.app"
 
-rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/BackupMe"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
@@ -41,14 +44,17 @@ rm -f "$PARTIAL"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" # regenerate with scripts/make-icon.swift
 # ad-hoc by default; set BACKUPME_SIGN_IDENTITY to a certificate name (even self-signed) so macOS keeps
 # folder and notification permissions across rebuilds: an ad-hoc identity changes with every build
-# actool sets the bundle bit in Finder info, and a synced folder (Documents in iCloud) keeps tagging the bundle
+# actool sets the bundle bit in Finder info
 strip_detritus "$APP"
 codesign --force --sign "${BACKUPME_SIGN_IDENTITY:--}" "$APP"
-echo "Built $APP"
+mkdir -p build
+rm -rf build/BackupMe.app
+cp -R "$APP" build/BackupMe.app
+echo "Built build/BackupMe.app"
 
 if [[ "${1:-}" == "--install" ]]; then
     OLD="$(defaults read "$HOME/Applications/BackupMe.app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true)"
-    NEW="$(defaults read "$PWD/$APP/Contents/Info.plist" CFBundleShortVersionString)"
+    NEW="$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString)"
     AGENT="$HOME/Library/LaunchAgents/com.vale76p.BackupMe.plist"
     # the copy launchd supervises goes first: with KeepAlive it would be restarted while the app is replaced
     launchctl bootout "gui/$(id -u)/com.vale76p.BackupMe" 2>/dev/null || true

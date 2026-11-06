@@ -103,6 +103,18 @@ import Testing
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: out.appending(path: "progetto 2/chiusa").path)
     }
 
+    @Test func scriptRestoresASingleFileSource() throws {
+        let file = src.deletingLastPathComponent().appending(path: "nota.txt")
+        write("solo questo", to: file)
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let report = try BackupEngine(repository: repo, cache: HashCache(url: tmp().appending(path: "c.json")),
+                                      excludes: ExcludeRules(patterns: [])).run(sources: [file])
+        let out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", try #require(report.snapshotID), out.path, "--si"])
+        #expect(r.status == 0, "\(r.out)")
+        #expect(try String(contentsOf: out.appending(path: "nota.txt"), encoding: .utf8) == "solo questo")
+    }
+
     @Test func scriptRefusesPathsOutsideDestination() throws {
         let repo = try Repository(destination: dest, computerName: "Mac")
         let data = Data("fuori".utf8)

@@ -150,7 +150,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         let complete = lastComplete
         let verify = lastVerify.map { Date().timeIntervalSince($0) > 86400 || $0 > Date() } ?? true
         Log.backup.info("Avvio backup di \(s.sources.count) cartelle in \(s.destination ?? "")")
-        Log.backup.debug("Cartelle: \(s.sources.joined(separator: ", ")); esclusioni: \(s.excludes.joined(separator: " ")); verifica a campione: \(verify ? "sì" : "no")")
+        Log.backup.debug("Cartelle: \(s.sources.joined(separator: ", ")); esclusioni: \(s.excludes.joined(separator: " ")) \(s.excludeRules.paths.sorted().joined(separator: " ")); verifica a campione: \(verify ? "sì" : "no")")
         workerActive = true
         Task.detached(priority: .utility) {
             // a long first backup must not stop at every idle sleep; also keeps App Nap away
@@ -232,7 +232,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         var report: BackupReport
         let cache = HashCache(url: AppPaths.hashCache(archive))
         do {
-            let engine = BackupEngine(repository: repo, cache: cache, excludes: ExcludeRules(patterns: s.excludes))
+            let engine = BackupEngine(repository: repo, cache: cache, excludes: s.excludeRules)
             report = try engine.run(sources: s.sources.map { URL(fileURLWithPath: $0) }, now: start,
                                     progress: progress, isCancelled: isCancelled)
         } catch {
@@ -326,7 +326,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RepositoryError.destinationMissing(let p): return "Destinazione non trovata: \(p)"
         case RepositoryError.locked: return "Un altro backup è già in corso"
         case RepositoryError.corruptObject(let h): return "Archivio danneggiato (oggetto \(h.prefix(12)))"
-        case BackupError.sourceOverlapsDestination(let p): return "La cartella \(p) contiene la destinazione o è al suo interno"
+        case BackupError.sourceOverlapsDestination(let p): return "\((p as NSString).abbreviatingWithTildeInPath) è dentro la destinazione dei backup"
         case BackupError.cancelled: return "Backup interrotto"
         case RestoreError.notFound(let p): return "\(p.isEmpty ? "La cartella" : p) non è in questo backup"
         case RestoreError.invalidEntry(let p): return "Backup non valido o manomesso (percorso \"\(p)\"): ripristino annullato"

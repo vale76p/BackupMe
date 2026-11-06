@@ -65,19 +65,25 @@ struct SettingsView: View {
 struct FoldersSection: View {
     @Bindable var model: AppModel
     @State private var error: String?
+    private static let home = NSHomeDirectory()
 
     var body: some View {
         Section {
             if model.settings.sources.isEmpty {
-                Text("Nessuna cartella: aggiungi quelle dei progetti da salvare.").foregroundStyle(.secondary)
+                Text("Niente da salvare: aggiungi le cartelle dei progetti, singoli file o il profilo completo.")
+                    .foregroundStyle(.secondary)
             }
             ForEach(model.settings.sources, id: \.self) { path in
                 HStack {
                     Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 24, height: 24)
                     VStack(alignment: .leading) {
-                        Text((path as NSString).lastPathComponent)
-                        Text((path as NSString).abbreviatingWithTildeInPath)
+                        Text(path == Self.home ? "Profilo completo" : (path as NSString).lastPathComponent)
+                        Text(detail(path))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        if let parent = model.settings.source(containing: path) {
+                            Label("Già compreso in \((parent as NSString).abbreviatingWithTildeInPath)", systemImage: "info.circle")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                     }
                     Spacer()
                     Button("Rimuovi", systemImage: "minus.circle.fill", role: .destructive) { remove(path) }
@@ -92,10 +98,28 @@ struct FoldersSection: View {
             }
             if let error { ErrorRow(text: error) }
             // controls go in the section body: footers of a grouped form don't take clicks reliably
-            Button("Aggiungi cartelle…", systemImage: "plus", action: addSources)
+            HStack {
+                Button("Aggiungi cartelle o file…", systemImage: "plus", action: addSources)
+                if !model.settings.sources.contains(Self.home) {
+                    Button("Aggiungi profilo completo", systemImage: "person.crop.circle") { add([URL(fileURLWithPath: Self.home)]) }
+                        .help("Tutta la cartella Inizio, file e cartelle; Libreria e Cestino esclusi")
+                }
+            }
         } header: {
-            Text("Cartelle da salvare")
+            Text("Cartelle e file da salvare")
+        } footer: {
+            if model.settings.sources.contains(Self.home) {
+                Text("Il profilo completo salva tutte le cartelle e i file della cartella Inizio. Libreria, Cestino e destinazione sono esclusi in automatico: per salvare una cartella della Libreria aggiungila qui.")
+            }
         }
+    }
+
+    private func detail(_ path: String) -> String {
+        let place = (path as NSString).abbreviatingWithTildeInPath
+        if path == Self.home { return "\(place) · tutte le cartelle e i file" }
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              attrs[.type] as? FileAttributeType == .typeRegular, let size = attrs[.size] as? Int64 else { return place }
+        return "\(place) · \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))"
     }
 
     private func remove(_ path: String) { model.settings.sources.removeAll { $0 == path } }
@@ -103,12 +127,16 @@ struct FoldersSection: View {
     private func addSources() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
         panel.prompt = "Aggiungi"
         guard panel.runModal() == .OK else { return }
+        add(panel.urls)
+    }
+
+    private func add(_ urls: [URL]) {
         error = nil
-        for url in panel.urls where !model.settings.sources.contains(url.path) {
+        for url in urls where !model.settings.sources.contains(url.path) {
             if let dest = model.settings.destination,
                let err = BackupEngine.validate(sources: [url], repositoryRoot: URL(fileURLWithPath: dest)) {
                 error = AppModel.describe(err)
@@ -402,51 +430,222 @@ private struct RetentionSection: View {
 
 private struct ExcludesSection: View {
     @Bindable var model: AppModel
-    @State private var text = ""
+    @State private var newPattern = ""
+    @State private var error: String?
+    @State private var pathError: String?
     @State private var confirmDefaults = false
-    @State private var saving: Task<Void, Never>?
+    private static let suggestions = ["*.log", "*.tmp", ".cache", "coverage", ".next", ".terraform", "*.xcarchive"]
 
     var body: some View {
+        patternsSection
+        pathsSection
+        automaticSection
+        lastBackupSection
+    }
+
+    // MARK: name patterns
+
+    private var patternsSection: some View {
         Section {
-            TextEditor(text: $text)
-                .font(.system(.body, design: .monospaced))
-                .textEditorStyle(.plain)
-                .frame(minHeight: 220)
-                .onChange(of: text) { _, t in
-                    // saved once typing pauses: a backup starting between "*" and "*.log" would exclude everything
-                    saving?.cancel()
-                    saving = Task {
-                        try? await Task.sleep(for: .seconds(1.5))
-                        guard !Task.isCancelled else { return }
-                        model.settings.excludes = t.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            ForEach(model.settings.excludes, id: \.self) { p in
+                HStack {
+                    Image(systemName: icon(p)).foregroundStyle(.secondary).frame(width: 20)
+                    VStack(alignment: .leading) {
+                        Text(p).font(.body.monospaced())
+                        Text(describe(p)).font(.caption).foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    removeButton(p) { model.settings.excludes.removeAll { $0 == p } }
                 }
+            }
+            HStack {
+                TextField("Nuova regola", text: $newPattern, prompt: Text("es. *.log o apps/*/dist"))
+                    .labelsHidden()
+                    .font(.body.monospaced())
+                    .onSubmit { addPattern(newPattern) }
+                Button("Aggiungi") { addPattern(newPattern) }
+                    .disabled(newPattern.trimmingCharacters(in: .whitespaces).isEmpty)
+                let missing = Self.suggestions.filter { !model.settings.excludes.contains($0) }
+                if !missing.isEmpty {
+                    Menu("Suggerite") {
+                        ForEach(missing, id: \.self) { s in Button("\(s)  —  \(describe(s))") { addPattern(s) } }
+                    }
+                    .fixedSize()
+                }
+            }
+            if let error { ErrorRow(text: error) }
             HStack {
                 Spacer()
                 Button("Ripristina predefinite…") { confirmDefaults = true }
             }
         } header: {
-            Text("Un nome di cartella per riga")
+            Text("Regole per nome")
         } footer: {
-            Text("Es. node_modules. Con una / il pattern vale per il percorso dentro la cartella salvata (es. apps/*/dist). I pattern con * o che iniziano con . valgono anche per i file (es. *.log). Mai applicate dentro .git.")
+            Text("Un nome vale per le cartelle (build); con * o un punto iniziale anche per i file (*.log, .DS_Store); con una / per il percorso dentro la cartella salvata (apps/*/dist, /build solo in cima). Mai applicate dentro .git.")
         }
-        .onAppear { text = model.settings.excludes.joined(separator: "\n") }
-        .confirmationDialog("Sostituire le esclusioni con quelle predefinite?", isPresented: $confirmDefaults) {
-            Button("Ripristina predefinite") { text = ExcludeRules.defaults.joined(separator: "\n") }
+        .confirmationDialog("Sostituire le regole con quelle predefinite?", isPresented: $confirmDefaults) {
+            Button("Ripristina predefinite") { model.settings.excludes = ExcludeRules.defaults; error = nil }
             Button("Annulla", role: .cancel) {}
+        } message: {
+            Text(ExcludeRules.defaults.joined(separator: "  "))
         }
-        // a default like build or target can also hit real sources: show what was actually left out
+    }
+
+    private func addPattern(_ raw: String) {
+        let p = raw.trimmingCharacters(in: .whitespaces)
+        if let problem = ExcludeRules.problem(with: p, in: model.settings.excludes) { error = problem; return }
+        model.settings.excludes.append(p)
+        newPattern = ""
+        error = nil
+    }
+
+    private func icon(_ p: String) -> String {
+        switch ExcludeRules.kind(of: p) {
+        case .folders: "folder"
+        case .foldersAndFiles: "doc.on.doc"
+        case .path, .rootPath: "arrow.turn.down.right"
+        }
+    }
+
+    private func describe(_ p: String) -> String {
+        switch ExcludeRules.kind(of: p) {
+        case .folders: "Cartelle con questo nome, ovunque"
+        case .foldersAndFiles: "File e cartelle con questo nome, ovunque"
+        case .path: "Percorso dentro ogni cartella salvata"
+        case .rootPath: "Solo in cima a ogni cartella salvata"
+        }
+    }
+
+    // MARK: specific paths
+
+    private var pathsSection: some View {
+        Section {
+            if model.settings.excludedPaths.isEmpty {
+                Text("Nessuno. Escludi una cartella o un file preciso, per esempio una cartella di video, senza toccare gli altri con lo stesso nome.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(model.settings.excludedPaths, id: \.self) { path in
+                HStack {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 20, height: 20)
+                    VStack(alignment: .leading) {
+                        Text((path as NSString).lastPathComponent)
+                        Text((path as NSString).abbreviatingWithTildeInPath)
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        if model.settings.source(containing: path) == nil {
+                            Label("Non è dentro nessun elemento salvato: non ha effetto", systemImage: "info.circle")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    Spacer()
+                    removeButton((path as NSString).lastPathComponent) { model.settings.excludedPaths.removeAll { $0 == path } }
+                }
+                .contextMenu {
+                    Button("Mostra nel Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+                }
+            }
+            if let pathError { ErrorRow(text: pathError) }
+            Button("Escludi cartelle o file…", systemImage: "plus", action: addPaths)
+        } header: {
+            Text("Cartelle e file esclusi")
+        }
+    }
+
+    private func addPaths() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Escludi"
+        // where the user most likely wants to cut: inside what is saved
+        if let first = model.settings.sources.first { panel.directoryURL = URL(fileURLWithPath: first) }
+        guard panel.runModal() == .OK else { return }
+        pathError = nil
+        for url in panel.urls where !model.settings.excludedPaths.contains(url.path) {
+            // a saved item always wins over its own exclusion: say so instead of keeping a rule with no effect
+            if model.settings.sources.contains(url.path) {
+                pathError = "\(url.lastPathComponent) è tra gli elementi da salvare: per non salvarlo rimuovilo da Cartelle"
+                continue
+            }
+            model.settings.excludedPaths.append(url.path)
+        }
+    }
+
+    // MARK: automatic
+
+    /// Automatic exclusions inside a saved folder; one inside another listed one (Library holds CloudStorage) is left out.
+    private var automatic: [ExcludeRules.Automatic] {
+        let s = model.settings
+        let inside = ExcludeRules.automatic(destination: s.destination).filter { a in
+            s.sources.contains { a.path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
+        }
+        return inside.filter { a in !inside.contains { a.path.hasPrefix($0.path + "/") } }
+    }
+
+    private var automaticSection: some View {
+        Section {
+            let list = automatic
+            if list.isEmpty {
+                Text("Nessuna: nessun elemento salvato contiene la destinazione, la Libreria o il Cestino.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(list, id: \.self) { a in
+                HStack {
+                    Image(systemName: "lock.fill").foregroundStyle(.secondary).frame(width: 20)
+                    VStack(alignment: .leading) {
+                        Text((a.path as NSString).lastPathComponent)
+                        Text(a.reason).font(.caption).foregroundStyle(.secondary)
+                        Text((a.path as NSString).abbreviatingWithTildeInPath)
+                            .font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+            }
+        } header: {
+            Text("Escluse in automatico")
+        } footer: {
+            Text("Una cartella aggiunta in Cartelle viene sempre salvata, anche se è qui dentro: per esempio una cartella della Libreria.")
+        }
+    }
+
+    // MARK: last backup
+
+    // a default like build or target can also hit real sources: show what was actually left out, and by which rule
+    @ViewBuilder private var lastBackupSection: some View {
         if let excluded = model.lastReport?.excluded, !excluded.isEmpty {
             Section {
                 DisclosureGroup(excluded.count >= 200 ? "200 o più cartelle escluse nell'ultimo backup"
                                 : excluded.count == 1 ? "1 cartella esclusa nell'ultimo backup"
                                 : "\(excluded.count) cartelle escluse nell'ultimo backup") {
-                    ForEach(excluded, id: \.self) { Text($0).font(.callout.monospaced()).foregroundStyle(.secondary) }
+                    let rules = model.settings.excludeRules
+                    ForEach(excluded, id: \.self) { item in
+                        HStack {
+                            Text(item).font(.callout.monospaced()).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Text(reason(item, rules)).font(.caption).foregroundStyle(.tertiary)
+                        }
+                    }
                 }
             } footer: {
                 Text("Controlla che non ci siano cartelle con codice da salvare. Sono escluse anche le cartelle con un file CACHEDIR.TAG, usato dagli strumenti di build per segnare le cache.")
             }
         }
+    }
+
+    /// `item` is "<saved folder name>/<path>", as the backup reports it.
+    private func reason(_ item: String, _ rules: ExcludeRules) -> String {
+        guard let slash = item.firstIndex(of: "/") else { return "" }
+        let path = String(item[item.index(after: slash)...])
+        if let p = rules.matchingPattern(name: (path as NSString).lastPathComponent, isDirectory: true, path: path) { return p }
+        let name = String(item[..<slash])
+        let full = model.settings.sources.first { ($0 as NSString).lastPathComponent == name }.map { $0 + "/" + path }
+        return full.map { rules.paths.contains(ExcludeRules.resolved($0)) } == true ? "esclusa per percorso" : "CACHEDIR.TAG"
+    }
+
+    private func removeButton(_ name: String, action: @escaping () -> Void) -> some View {
+        Button("Rimuovi", systemImage: "minus.circle.fill", role: .destructive, action: action)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .help("Rimuovi \(name)")
     }
 }
 

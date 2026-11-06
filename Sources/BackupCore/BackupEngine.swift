@@ -54,19 +54,21 @@ public final class BackupEngine {
     private let repository: Repository
     private let cache: HashCache
     private let excludes: ExcludeRules
+    /// Absolute paths never descended into: the excludes' own plus the archives' folder, so a source holding the
+    /// destination (the whole profile, with OneDrive inside Library) never backs up its own backups.
+    private let skipped: Set<String>
 
     public init(repository: Repository, cache: HashCache, excludes: ExcludeRules) {
         self.repository = repository; self.cache = cache; self.excludes = excludes
+        skipped = excludes.paths.union([ExcludeRules.resolved(repository.root.deletingLastPathComponent().path)])
     }
 
-    /// Returns an error if a source is, contains, or is inside the archive.
+    /// Returns an error if a source is `repositoryRoot` or inside it. A source containing it is fine: it is skipped.
     public static func validate(sources: [URL], repositoryRoot: URL) -> BackupError? {
         let root = repositoryRoot.resolvingSymlinksInPath().path
         for s in sources {
             let p = s.resolvingSymlinksInPath().path
-            if p == root || root.hasPrefix(p + "/") || p.hasPrefix(root + "/") {
-                return .sourceOverlapsDestination(s.path)
-            }
+            if p == root || p.hasPrefix(root + "/") { return .sourceOverlapsDestination(s.path) }
         }
         return nil
     }
@@ -75,7 +77,8 @@ public final class BackupEngine {
     /// does not stop the others, but sets `error`: the backup is partial and must not count as a success.
     public func run(sources: [URL], now: Date = Date(), progress: (Double) -> Void = { _ in },
                     isCancelled: () -> Bool = { false }) throws -> BackupReport {
-        if let err = Self.validate(sources: sources, repositoryRoot: repository.root) { throw err }
+        // the BackupMe folder, not this Mac's archive alone: another Mac's archive is no source either
+        if let err = Self.validate(sources: sources, repositoryRoot: repository.root.deletingLastPathComponent()) { throw err }
         let start = Date()
         return try repository.withLock {
             // a run that fails or is cancelled keeps the hashes it computed: they are valid without a manifest
@@ -205,23 +208,28 @@ public final class BackupEngine {
         return sha256Hex((try? enc.encode([AnyEncodable(sources), AnyEncodable(entries)])) ?? Data())
     }
 
-    /// Returns an error message if the source itself is missing or unreadable.
+    /// Returns an error message if the source itself is missing or unreadable. A source is a folder or a single file.
     private func scanSource(_ scan: inout Scan) -> String? {
         let source = scan.source
-        // the source folder itself may be a symlink to the real folder
-        guard let st = FileStat(path: source, followSymlink: true), st.kind == .directory else {
-            return "Cartella non trovata: \(source)"
+        // the source itself may be a symlink to the real folder or file
+        guard let st = FileStat(path: source, followSymlink: true) else { return "Non trovato: \(source)" }
+        if st.kind == .file {
+            // a file the backup can't read is a missing source, not a warning: the backup would count as complete
+            guard let h = FileHandle(forReadingAtPath: source) else { return "File non leggibile: \(source)" }
+            try? h.close()
+            scan.found.append(("", st))
+            return nil
         }
         do {
             _ = try FileManager.default.contentsOfDirectory(atPath: source)
         } catch {
             return "Cartella non leggibile: \(source) (\(error.localizedDescription))"
         }
-        walk(rel: "", stat: st, into: &scan)
+        walk(rel: "", stat: st, resolved: ExcludeRules.resolved(source), into: &scan)
         return nil
     }
 
-    private func walk(rel: String, stat st: FileStat, insideGit: Bool = false, into scan: inout Scan) {
+    private func walk(rel: String, stat st: FileStat, resolved: String, insideGit: Bool = false, into scan: inout Scan) {
         let full = rel.isEmpty ? scan.source : scan.source + "/" + rel
         scan.found.append((rel, st))
         guard st.kind == .directory else { return }
@@ -236,14 +244,15 @@ public final class BackupEngine {
             let path = rel.isEmpty ? name : rel + "/" + name
             let isDir = child.kind == .directory
             // excludes never apply inside .git: a branch named "build" is a file under .git/refs/heads
-            if !insideGit, excludes.excludes(name: name, isDirectory: isDir, path: path)
+            // `resolved`: the skipped paths are compared without symlinks, as the source may be reached through one
+            if !insideGit, excludes.excludes(name: name, isDirectory: isDir, path: path) || skipped.contains(resolved + "/" + path)
                 || (isDir && isCacheDirectory(full + "/" + name)) {
                 if isDir, scan.excluded.count < Self.excludedLimit {
                     scan.excluded.append((scan.source as NSString).lastPathComponent + "/" + path)
                 }
                 continue
             }
-            walk(rel: path, stat: child, insideGit: insideGit || name == ".git", into: &scan)
+            walk(rel: path, stat: child, resolved: resolved, insideGit: insideGit || name == ".git", into: &scan)
         }
     }
 

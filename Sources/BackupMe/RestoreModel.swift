@@ -174,7 +174,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         }.value
         if gen == generation, !Task.isCancelled { statuses[key] = found }
         guard let source else { return }
-        let folder = currentPath, rules = ExcludeRules(patterns: app.settings.excludes)
+        let folder = currentPath, rules = app.settings.excludeRules
         let new = await Task.detached(priority: .utility) { Self.addedSince(rows, source: source, folder: folder, rules: rules) }.value
         if gen == generation, !Task.isCancelled { addedItems[key] = new }
     }
@@ -193,6 +193,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
             else { return nil }
             let isDir = v.isDirectory == true && v.isSymbolicLink != true
             if !inGit, rules.excludes(name: name, isDirectory: isDir, path: path) { return nil }
+            if rules.paths.contains(url.resolvingSymlinksInPath().path) { return nil }
             return Entry(source: source, path: path, kind: isDir ? .directory : v.isSymbolicLink == true ? .symlink : .file,
                          hash: nil, size: Int64(v.fileSize ?? 0), mtime: v.contentModificationDate ?? .distantPast,
                          mode: 0, linkTarget: nil)

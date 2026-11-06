@@ -2,6 +2,17 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.7.0] - 2026-11-06
+
+### Aggiunto
+- Si possono salvare anche singoli file, uno o più alla volta, oltre alle cartelle ("Aggiungi cartelle o file…"). Si ripristinano dall'app e da `RIPRISTINO.command` (kit versione 5).
+- "Aggiungi profilo completo": salva tutta la cartella Inizio, file e cartelle. Un elemento già compreso in un altro lo segnala.
+- Esclusioni automatiche: la destinazione dei backup, la Libreria (che contiene OneDrive, Dropbox e iCloud Drive con i file su richiesta, i dati delle app e le cache), le cartelle cloud e il Cestino non vengono salvati quando sono dentro un elemento salvato. Per questo un elemento che contiene la destinazione, come il profilo completo con OneDrive nella Libreria, ora è accettato invece di essere rifiutato. Un elemento aggiunto esplicitamente viene sempre salvato, anche se è dentro una di queste cartelle.
+- Esclusione di cartelle o file precisi, scelti dal Finder, senza toccare gli altri con lo stesso nome.
+
+### Cambiato
+- Pannello Esclusioni rifatto: le regole sono un elenco con cosa colpisce ciascuna (cartelle, file e cartelle, percorso), si aggiungono una alla volta o dalle suggerite e valgono subito; sono rifiutate quelle vuote, doppie o che escluderebbero tutto (`*`). L'elenco delle cartelle escluse nell'ultimo backup dice per ogni cartella quale regola l'ha esclusa.
+
 ## [0.6.4] - 2026-11-06
 
 ### Cambiato

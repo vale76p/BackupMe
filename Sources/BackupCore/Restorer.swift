@@ -69,7 +69,9 @@ public final class Restorer {
         for e in sortedByDepth {
             guard seen.insert(e.path).inserted else { throw RestoreError.invalidEntry(e.path) }
             if e.path.isEmpty {
-                guard e.kind == .directory else { throw RestoreError.invalidEntry(e.path) }
+                // a saved folder, or a single saved file
+                guard e.kind == .directory || (e.kind == .file && e.hash.map(Repository.isHash) == true)
+                else { throw RestoreError.invalidEntry(e.path) }
                 dirs.insert("")
                 continue
             }

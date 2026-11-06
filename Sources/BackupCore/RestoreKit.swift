@@ -5,7 +5,7 @@ import Foundation
 enum RestoreKit {
     /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
-    static let version = 4
+    static let version = 5
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit.
     static func install(in base: URL) {
@@ -124,7 +124,7 @@ function validate(tree) {
   tree.forEach(e => {
     var p = e.path, parts = p.split('/'), key = typeof p === 'string' ? p.normalize('NFD').toLowerCase() : ''
     var ok = typeof p === 'string' && !seen.has(p) && !folded.has(key) && ['file', 'directory', 'symlink'].indexOf(e.kind) >= 0
-      && (p === '' ? e.kind === 'directory'
+      && (p === '' ? e.kind === 'directory' || e.kind === 'file' // a saved folder or a single saved file
           : !parts.some(x => x === '' || x === '.' || x === '..') && dirs.has(parts.slice(0, -1).join('/')))
       && (e.kind !== 'file' || /^[0-9a-f]{64}$/.test(e.hash))
     if (!ok) fail('Backup non valido, niente è stato scritto. Voce rifiutata: ' + JSON.stringify(p))
@@ -196,7 +196,7 @@ function run(argv) {
     plans.push({ source: source, name: name, target: target, tree: tree,
                  files: sizes.length, bytes: sizes.reduce((a, b) => a + b, 0) })
   })
-  if (!plans.length) fail('Il backup ' + id + ' non contiene cartelle')
+  if (!plans.length) fail('Il backup ' + id + ' non contiene cartelle né file')
 
   // say what will happen, then ask twice: nothing is written before both answers
   var count = plans.reduce((a, p) => a + p.files, 0), bytes = plans.reduce((a, p) => a + p.bytes, 0)
@@ -204,10 +204,10 @@ function run(argv) {
   var when = new Date(snapshot.date * 1000).toLocaleString('it-IT', { dateStyle: 'long', timeStyle: 'medium' })
   out(version + '\n')
   out('Ripristino del computer "' + computer + '", backup del ' + when + ' (ora locale)\n')
-  out('Cartelle che verranno ricreate:')
+  out('Cartelle e file che verranno ricreati:')
   plans.forEach(p => {
     out('  ' + p.source + '\n    → ' + p.target)
-    if (p.target !== dest + '/' + p.name) out('      (esiste già "' + p.name + '": la cartella esistente non viene toccata)')
+    if (p.target !== dest + '/' + p.name) out('      (esiste già "' + p.name + '": quello esistente non viene toccato)')
     out('      ' + p.files + ' file, ' + size(p.bytes))
   })
   out('\nIn tutto: ' + count + ' file, ' + size(bytes) + '. Spazio libero nella destinazione: '
