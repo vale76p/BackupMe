@@ -2,6 +2,20 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.6.0] - 2026-11-06
+
+### Aggiunto
+- Controllo del caricamento nel cloud: se OneDrive, Dropbox o un altro client non carica i backup da più di 3 giorni, o segnala un errore, il pannello mostra un'icona e arriva una notifica (al massimo una al giorno). Se la cartella non è sincronizzata, o il client non indica lo stato, non dice nulla.
+- Ripristino senza l'app: nella destinazione, accanto all'archivio, ci sono `RIPRISTINO.command` e `LEGGIMI.txt`. Lo script usa solo strumenti presenti in macOS (niente Xcode), verifica ogni file e non sovrascrive mai.
+- Verifica a campione: una volta al giorno si rileggono fino a 100 MB dell'archivio; un file danneggiato viene riparato dalla copia attuale se esiste, altrimenti arriva un avviso. Niente viene mai cancellato.
+- Avviso se nell'archivio mancano file usati dai backup.
+- Impostazioni › Esclusioni elenca le cartelle escluse nell'ultimo backup; i pattern con "/" valgono per il percorso (es. `apps/*/dist`); le cartelle con `CACHEDIR.TAG` sono escluse.
+- Impostazioni › Conservazione mostra quanti backup terrebbero le regole scelte e quanti verrebbero eliminati.
+
+### Cambiato
+- I backup pianificati aspettano con Risparmio energetico attivo, batteria sotto il 20% o Mac troppo caldo, mai oltre 24 ore dall'ultimo backup riuscito; il pannello dice perché.
+- Un commit fatto durante il backup faceva salvare un repository git incoerente: ora la cartella viene riletta e, se cambia ancora, arriva un avviso.
+
 ## [0.5.0] - 2026-11-06
 
 ### Aggiunto

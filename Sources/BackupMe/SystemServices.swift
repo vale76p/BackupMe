@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import IOKit.ps
 import ServiceManagement
 import UserNotifications
 
@@ -34,6 +35,24 @@ enum SystemServices {
         if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    // MARK: power
+
+    /// Why a scheduled backup should wait (Low Power Mode, battery under 20% unplugged, a hot Mac), or nil.
+    static func backupDeferral() -> String? {
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { return "Risparmio energetico attivo" }
+        if ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue { return "Mac troppo caldo" }
+        guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let list = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return nil }
+        for ps in list {
+            guard let d = IOPSGetPowerSourceDescription(info, ps)?.takeUnretainedValue() as? [String: Any],
+                  d[kIOPSPowerSourceStateKey] as? String == kIOPSBatteryPowerValue,
+                  let level = d[kIOPSCurrentCapacityKey] as? Int, let max = d[kIOPSMaxCapacityKey] as? Int, max > 0,
+                  level * 100 / max < 20 else { continue }
+            return "Batteria sotto il 20%"
+        }
+        return nil
     }
 
     // MARK: windows

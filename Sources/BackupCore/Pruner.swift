@@ -7,6 +7,8 @@ public struct PruneResult: Equatable, Sendable {
     public var overCap: Bool
     /// True when object cleanup was skipped because known manifests vanished from the listing (e.g. OneDrive re-sync).
     public var gcSkipped = false
+    /// Objects that kept manifests use but the archive listing lacks (counted only when object cleanup ran).
+    public var missingObjects = 0
 }
 
 /// Applies retention, then deletes oldest snapshots while the pool exceeds `capBytes` (never the newest),
@@ -60,13 +62,16 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         }
 
         var deletedObjects = 0
+        var missingObjects = 0
         if !deleted.isEmpty || forceGC, !gcSkipped {
             for id in ids where refs[id] == nil { refs[id] = try references(of: id, in: repository, cache: refsCache) }
             let reachable = refs.values.reduce(into: Set<String>()) { $0.formUnion($1) }
-            let unreachable = try repository.allObjectHashes().subtracting(reachable)
+            let stored = try repository.allObjectHashes()
+            let unreachable = stored.subtracting(reachable)
             for h in unreachable { try repository.deleteObject(h) }
             try repository.removeTemporaryFiles()
             deletedObjects = unreachable.count
+            missingObjects = reachable.subtracting(stored).count
         }
         if let dir = refsCache {
             for id in deleted {
@@ -75,7 +80,7 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             }
         }
         return PruneResult(deletedSnapshots: deleted, deletedObjects: deletedObjects, poolSize: size,
-                           overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped)
+                           overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, missingObjects: missingObjects)
     }
 }
 

@@ -40,6 +40,7 @@ public final class Repository {
             let json = #"{"format":1,"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
             try atomicWrite(Data(json.utf8), to: info, sync: .file)
         }
+        RestoreKit.install(in: root.deletingLastPathComponent())
     }
 
     /// Picking the BackupMe folder, or an archive inside it, means the folder holding them:
@@ -154,6 +155,29 @@ public final class Repository {
         let data = url.pathExtension == "raw" || raw.isEmpty ? raw : (try? (raw as NSData).decompressed(using: .lzfse)) as Data?
         guard let data, sha256Hex(data) == hash else { throw RepositoryError.corruptObject(hash) }
         return data
+    }
+
+    /// True if the object's content matches its hash; large raw objects are hashed as a stream.
+    func verifyObject(_ hash: String) throws -> Bool {
+        guard let url = existingObjectURL(hash) else { throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: hash]) }
+        let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        if url.pathExtension == "raw", size >= Self.streamThreshold { return try streamHash(url) == hash }
+        do { _ = try readObject(hash) } catch RepositoryError.corruptObject { return false }
+        return true
+    }
+
+    /// Rewrites a corrupt object from a file with the same content, under the same name so it replaces the bad
+    /// copy atomically. Nothing changes unless `source` hashes to `hash`. True if the object now verifies.
+    func repairObject(_ hash: String, from source: URL) throws -> Bool {
+        guard let url = existingObjectURL(hash) else { return false }
+        if url.pathExtension == "raw" {
+            guard try putObjectFile(from: source, hash: hash) != nil else { return false }
+        } else {
+            let data = try Data(contentsOf: source)
+            guard sha256Hex(data) == hash else { return false }
+            try atomicWrite(try (data as NSData).compressed(using: .lzfse) as Data, to: url, sync: .file)
+        }
+        return try verifyObject(hash)
     }
 
     /// Writes an object's content to `destination` (which must not exist), verifying its hash.

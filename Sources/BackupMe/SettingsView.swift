@@ -271,6 +271,8 @@ private struct ScheduleSection: View {
 
 private struct RetentionSection: View {
     @Bindable var model: AppModel
+    /// The archive's backups, read once: the preview then follows the steppers as they move.
+    @State private var dated: [(id: String, date: Date)]?
 
     var body: some View {
         Section {
@@ -288,6 +290,28 @@ private struct RetentionSection: View {
         } footer: {
             Text("Si tengono sempre tutti i backup delle ultime 24 ore; poi l'ultimo di ogni giorno, settimana e mese per il periodo scelto.")
         }
+        .task(id: model.settings.destination) { await load() }
+        if let dated, !dated.isEmpty {
+            Section {
+                let keep = snapshotsToKeep(dated, policy: model.settings.retention, now: Date(), calendar: .backup).count
+                LabeledContent("Con queste regole") {
+                    Text(keep == dated.count ? "Si tengono tutti i \(dated.count) backup"
+                         : "Si tengono \(keep) backup su \(dated.count), \(dated.count - keep) da eliminare alla prossima pulizia")
+                        .multilineTextAlignment(.trailing)
+                }
+            } footer: {
+                Text("Senza contare il tetto allo spazio, che può eliminarne altri partendo dai più vecchi.")
+            }
+        }
+    }
+
+    private func load() async {
+        guard let dest = model.settings.destination else { dated = nil; return }
+        let archive = AppPaths.archiveName
+        dated = await Task.detached(priority: .utility) {
+            let ids = (try? Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false).snapshotIDs()) ?? []
+            return ids.compactMap { id in Snapshot.date(fromID: id).map { (id: id, date: $0) } }
+        }.value
     }
 
     private func count(_ n: Int, _ one: String, _ many: String) -> String {
@@ -316,12 +340,24 @@ private struct ExcludesSection: View {
         } header: {
             Text("Un nome di cartella per riga")
         } footer: {
-            Text("Es. node_modules. I pattern con * o che iniziano con . valgono anche per i file (es. *.log). Mai applicate dentro .git.")
+            Text("Es. node_modules. Con una / il pattern vale per il percorso dentro la cartella salvata (es. apps/*/dist). I pattern con * o che iniziano con . valgono anche per i file (es. *.log). Mai applicate dentro .git.")
         }
         .onAppear { text = model.settings.excludes.joined(separator: "\n") }
         .confirmationDialog("Sostituire le esclusioni con quelle predefinite?", isPresented: $confirmDefaults) {
             Button("Ripristina predefinite") { text = ExcludeRules.defaults.joined(separator: "\n") }
             Button("Annulla", role: .cancel) {}
+        }
+        // a default like build or target can also hit real sources: show what was actually left out
+        if let excluded = model.lastReport?.excluded, !excluded.isEmpty {
+            Section {
+                DisclosureGroup(excluded.count >= 200 ? "200 o più cartelle escluse nell'ultimo backup"
+                                : excluded.count == 1 ? "1 cartella esclusa nell'ultimo backup"
+                                : "\(excluded.count) cartelle escluse nell'ultimo backup") {
+                    ForEach(excluded, id: \.self) { Text($0).font(.callout.monospaced()).foregroundStyle(.secondary) }
+                }
+            } footer: {
+                Text("Controlla che non ci siano cartelle con codice da salvare. Sono escluse anche le cartelle con un file CACHEDIR.TAG, usato dagli strumenti di build per segnare le cache.")
+            }
         }
     }
 }

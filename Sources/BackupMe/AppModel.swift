@@ -15,9 +15,17 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         }
     }
     static let notConfigured = "Scegli cartelle e destinazione nelle Impostazioni"
+    nonisolated static let damaged = "Archivio danneggiato:"
+    nonisolated static let incomplete = "Archivio incompleto:"
     var status: BackupStatus = .idle
     var history: [BackupReport] = []
     var notificationsDenied = false
+    /// Why the scheduled backup is waiting right now (battery, heat), shown in the panel.
+    var deferral: String?
+    /// The cloud client isn't uploading the backups (paused, signed out, blocked): they exist only on this Mac.
+    var uploadProblem: String?
+    private var lastUploadCheck: Date?
+    private var lastUploadNotice: Date?
 
     // stored apart from history: 50 failed retries would otherwise push it out and silence the 3-day alert
     var lastSuccess = UserDefaults.standard.object(forKey: "lastSuccess") as? Date {
@@ -35,6 +43,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
     /// True until the backup task really ends: after a "stuck" timeout it may still hold the archive lock.
     private var workerActive = false
+    private var lastVerify = UserDefaults.standard.object(forKey: "lastVerify") as? Date {
+        didSet { UserDefaults.standard.set(lastVerify, forKey: "lastVerify") }
+    }
     var isRunning: Bool { if case .running = status { true } else { false } }
     var lastReport: BackupReport? { history.last }
 
@@ -82,6 +93,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
     func tick(now: Date = Date()) {
         Task { notificationsDenied = !(await SystemServices.notificationsAllowed()) }
+        if lastUploadCheck.map({ now.timeIntervalSince($0) > 3600 || $0 > now }) ?? true {
+            lastUploadCheck = now
+            checkUpload()
+        }
         if isRunning, now.timeIntervalSince(lastProgressAt) > Self.stuckAfter {
             // a read blocked forever (offline OneDrive file, hung volume) must not stop every later backup
             cancelBackup()
@@ -96,7 +111,14 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         }
         guard !settings.paused, settings.isConfigured, !isRunning,
               isBackupDue(lastSuccess: lastSuccess, intervalHours: settings.intervalHours, now: now),
-              lastAttempt.map({ now.timeIntervalSince($0) >= Self.retryAfterFailure || $0 > now }) ?? true else { return }
+              lastAttempt.map({ now.timeIntervalSince($0) >= Self.retryAfterFailure || $0 > now }) ?? true else {
+            deferral = nil
+            return
+        }
+        // waits for power or a cooler Mac, but never past a day without a backup; "Esegui ora" always runs
+        let overdue = lastSuccess.map { now.timeIntervalSince($0) > 86400 } ?? true
+        deferral = overdue ? nil : SystemServices.backupDeferral()
+        guard deferral == nil else { return }
         backupNow()
     }
 
@@ -114,6 +136,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         let s = settings
         let archive = AppPaths.archiveName
         let complete = lastComplete
+        let verify = lastVerify.map { Date().timeIntervalSince($0) > 86400 || $0 > Date() } ?? true
         workerActive = true
         Task.detached(priority: .utility) {
             // a long first backup must not stop at every idle sleep; also keeps App Nap away
@@ -121,7 +144,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                                                                  reason: "Backup in corso")
             defer { ProcessInfo.processInfo.endActivity(activity) }
             var lastSent = 0.0
-            let (report, overCap) = Self.perform(settings: s, archive: archive, lastComplete: complete,
+            let (report, overCap) = Self.perform(settings: s, archive: archive, lastComplete: complete, verify: verify,
                                                  isCancelled: { flag.withLock { $0 } }) { p in
                 guard p - lastSent >= 0.01 || p == 1 else { return }
                 lastSent = p
@@ -132,6 +155,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             }
             await MainActor.run {
                 self.workerActive = false
+                if verify, report.error != Self.describe(BackupError.cancelled) { self.lastVerify = Date() }
                 self.finish(report, overCap: overCap)
             }
         }
@@ -139,7 +163,45 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
     func cancelBackup() { cancelFlag.withLock { $0 = true } }
 
-    nonisolated static func perform(settings s: AppSettings, archive: String, lastComplete: String?, isCancelled: @escaping () -> Bool,
+    private func checkUpload() {
+        guard let dest = settings.destination else { uploadProblem = nil; return }
+        let archive = AppPaths.archiveName
+        Task.detached(priority: .utility) {
+            let problem = Self.uploadProblem(destination: dest, archive: archive, now: Date())
+            await MainActor.run {
+                self.uploadProblem = problem
+                if let problem, self.lastUploadNotice.map({ Date().timeIntervalSince($0) > 86400 }) ?? true {
+                    self.lastUploadNotice = Date()
+                    SystemServices.notify("Backup non caricati nel cloud", problem)
+                }
+            }
+        }
+    }
+
+    /// Reads the manifests' cloud status, newest first. nil when all is well, and also when the folder isn't
+    /// synced or its client doesn't report upload state: then there is nothing reliable to say.
+    nonisolated static func uploadProblem(destination: String, archive: String, now: Date) -> String? {
+        guard let repo = try? Repository(destination: URL(fileURLWithPath: destination), computerName: archive, create: false),
+              let ids = try? repo.snapshotIDs(), let newest = ids.last else { return nil }
+        let keys: Set<URLResourceKey> = [.isUbiquitousItemKey, .ubiquitousItemIsUploadedKey, .ubiquitousItemUploadingErrorKey]
+        let stale: TimeInterval = 3 * 86400
+        for id in ids.reversed() {
+            // archive layout (README): snapshots/<id>.json.lzfse
+            let url = repo.root.appending(path: "snapshots/\(id).json.lzfse")
+            guard let v = try? url.resourceValues(forKeys: keys), v.isUbiquitousItem == true,
+                  let uploaded = v.ubiquitousItemIsUploaded else { return nil }
+            if let err = v.ubiquitousItemUploadingError { return "Il caricamento non riesce: \(err.localizedDescription)" }
+            guard uploaded else { continue }
+            // the newest uploaded backup: a problem only when newer ones have waited for days
+            guard id != newest, let date = Snapshot.date(fromID: id), now.timeIntervalSince(date) > stale else { return nil }
+            return "L'ultimo backup caricato nel cloud è del \(date.formatted(date: .abbreviated, time: .shortened))"
+        }
+        guard let oldest = ids.first.flatMap(Snapshot.date(fromID:)), now.timeIntervalSince(oldest) > stale else { return nil }
+        return "Nessun backup è ancora stato caricato nel cloud"
+    }
+
+    nonisolated static func perform(settings s: AppSettings, archive: String, lastComplete: String?, verify: Bool,
+                                    isCancelled: @escaping () -> Bool,
                                     progress: @escaping (Double) -> Void) -> (BackupReport, Bool?) {
         let start = Date()
         func failed(_ error: Error) -> BackupReport {
@@ -153,13 +215,28 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             return (failed(error), nil)
         }
         var report: BackupReport
+        let cache = HashCache(url: AppPaths.hashCache(archive))
         do {
-            let engine = BackupEngine(repository: repo, cache: HashCache(url: AppPaths.hashCache(archive)),
-                                      excludes: ExcludeRules(patterns: s.excludes))
+            let engine = BackupEngine(repository: repo, cache: cache, excludes: ExcludeRules(patterns: s.excludes))
             report = try engine.run(sources: s.sources.map { URL(fileURLWithPath: $0) }, now: start,
                                     progress: progress, isCancelled: isCancelled)
         } catch {
             report = failed(error)
+        }
+        // once a day a sample of the archive is read back: a copy damaged by a sync conflict shows up now, not
+        // at restore time. Small budget: on OneDrive Files On-Demand every read may be a download.
+        if verify, !isCancelled() {
+            do {
+                let v = try verifySample(repository: repo, cache: cache, budgetBytes: 100_000_000)
+                if !v.repaired.isEmpty {
+                    report.warnings.append("Riparati \(v.repaired.count) file danneggiati nell'archivio usando le copie attuali")
+                }
+                if !v.corrupt.isEmpty {
+                    report.warnings.append("\(Self.damaged) \(v.corrupt.count) file non si possono leggere e manca una copia attuale per ripararli: i backup che li usano non si ripristinano per intero")
+                }
+            } catch {
+                report.warnings.append("Verifica dell'archivio non riuscita: \(describe(error))")
+            }
         }
         // a partial backup (a source unreadable, deleted or renamed) must not let retention replace complete
         // snapshots with it: the last complete one is pinned. Unknown or not in this archive: skip cleanup.
@@ -174,6 +251,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                                    refsCache: AppPaths.refsCache(archive, destination: repo.root.path), forceGC: report.snapshotID == nil,
                                    pinned: pin.map { [$0] } ?? [])
             if result.gcSkipped { report.warnings.append("Pulizia rinviata: alcuni backup sono spariti dalla destinazione, riprende da sola entro 3 giorni") }
+            if result.missingObjects > 0 {
+                report.warnings.append("\(Self.incomplete) mancano \(result.missingObjects) file usati dai backup, che non si ripristinano per intero")
+            }
             return (report, result.overCap)
         } catch {
             report.warnings.append("Pulizia non riuscita: \(describe(error))")
@@ -197,7 +277,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             notifiedErrors = []
             log.info("backup \(report.snapshotID ?? "", privacy: .public): \(report.fileCount) files, \(report.newBytes) new bytes, \(report.warnings.count) warnings")
         }
-        if let pruneWarning = report.warnings.last(where: { $0.hasPrefix("Pulizia non riuscita") }) { notifyOnce(pruneWarning) }
+        // warnings that mean a backup can't be fully restored are notified, not just listed
+        for w in report.warnings where [Self.damaged, Self.incomplete, "Pulizia non riuscita"].contains(where: w.hasPrefix) { notifyOnce(w) }
         if let overCap, overCap != overCapNotified {
             overCapNotified = overCap
             if overCap { SystemServices.notify("BackupMe", "Il tetto è troppo basso per le cartelle selezionate.") }

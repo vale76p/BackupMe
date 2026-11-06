@@ -63,6 +63,7 @@ extension AppModel {
         case .running(let p): return "Backup in corso… \(Int(p * 100))%"
         case .failed(let msg): return "Errore: \(msg)"
         case .idle:
+            if let deferral { return "Backup rinviato: \(deferral)" }
             guard let last = lastSuccess else { return "Nessun backup ancora" }
             let f = DateFormatter()
             f.locale = Locale(identifier: "it_IT")
@@ -112,6 +113,11 @@ struct MenuContent: View {
                                 .background(.orange.opacity(0.15), in: Capsule())
                         }
                         Spacer(minLength: 0)
+                        if let problem = model.uploadProblem {
+                            Image(systemName: "icloud.slash").imageScale(.small).foregroundStyle(.orange)
+                                .help(problem)
+                                .accessibilityLabel("Backup non caricati nel cloud")
+                        }
                         if model.notificationsDenied {
                             Image(systemName: "bell.slash").imageScale(.small).foregroundStyle(.secondary)
                                 .help("Notifiche disattivate: gli errori non verranno segnalati")

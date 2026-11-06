@@ -8,11 +8,13 @@ public struct BackupReport: Codable, Sendable {
     public var newBytes: Int64
     public var warnings: [String]
     public var error: String?
+    /// Folders skipped by the excludes or a CACHEDIR.TAG, as "<source folder name>/<path>"; at most 200.
+    public var excluded: [String]?
 
     public init(snapshotID: String?, date: Date, duration: TimeInterval, fileCount: Int,
-                newBytes: Int64, warnings: [String], error: String?) {
+                newBytes: Int64, warnings: [String], error: String?, excluded: [String]? = nil) {
         self.snapshotID = snapshotID; self.date = date; self.duration = duration; self.fileCount = fileCount
-        self.newBytes = newBytes; self.warnings = warnings; self.error = error
+        self.newBytes = newBytes; self.warnings = warnings; self.error = error; self.excluded = excluded
     }
 }
 
@@ -76,39 +78,49 @@ public final class BackupEngine {
         if let err = Self.validate(sources: sources, repositoryRoot: repository.root) { throw err }
         let start = Date()
         return try repository.withLock {
-            var warnings: [String] = []
             var sourceErrors: [String] = []
-            var found: [(source: String, path: String, stat: FileStat)] = []
+            var scans: [Scan] = []
             for s in sources {
-                if let err = scanSource(s.path, into: &found, warnings: &warnings) { sourceErrors.append(err) }
+                var scan = Scan(source: s.path)
+                if let err = scanSource(&scan) { sourceErrors.append(err) } else { scans.append(scan) }
             }
 
+            let total = scans.reduce(0) { $0 + $1.found.count }
+            var done = 0
+            var warnings: [String] = []
+            var excluded: [String] = []
             var entries: [Entry] = []
             var newBytes: Int64 = 0
             var fileCount = 0
-            for (i, item) in found.enumerated() {
-                if isCancelled() { throw BackupError.cancelled }
-                let full = item.path.isEmpty ? item.source : item.source + "/" + item.path
-                var st = item.stat
-                var hash: String?
-                var linkTarget: String?
-                switch st.kind {
-                case .directory: break
-                case .symlink:
-                    linkTarget = try? FileManager.default.destinationOfSymbolicLink(atPath: full)
-                case .file:
-                    guard let r = try storeFile(full, stat: st, warnings: &warnings) else { continue }
-                    hash = r.hash; st = r.stat; newBytes += r.written; fileCount += 1
+            for var scan in scans {
+                var pass = try store(scan, isCancelled: isCancelled) { done += 1; progress(Double(done) / Double(total)) }
+                newBytes += pass.newBytes
+                // a commit during the pass may have stored refs pointing to objects read before it: read it again
+                if gitChanged(scan, since: start) {
+                    let again = Date()
+                    var rescan = Scan(source: scan.source)
+                    var consistent = false
+                    if scanSource(&rescan) == nil {
+                        scan = rescan
+                        pass = try store(scan, isCancelled: isCancelled) {}
+                        newBytes += pass.newBytes
+                        consistent = !gitChanged(scan, since: again)
+                    }
+                    if !consistent {
+                        pass.warnings.append("\((scan.source as NSString).lastPathComponent): il repository git è cambiato "
+                                             + "durante il backup, ripeti il backup per averne una copia coerente")
+                    }
                 }
-                entries.append(Entry(source: item.source, path: item.path, kind: st.kind, hash: hash, size: st.size,
-                                     mtime: st.mtime, mode: st.mode, linkTarget: linkTarget))
-                progress(Double(i + 1) / Double(found.count))
+                entries += pass.entries; fileCount += pass.fileCount
+                warnings += scan.warnings + pass.warnings
+                excluded += scan.excluded
             }
             if isCancelled() { throw BackupError.cancelled }
             let error = sourceErrors.isEmpty ? nil : sourceErrors.joined(separator: "\n")
             func report(_ id: String?) -> BackupReport {
                 BackupReport(snapshotID: id, date: now, duration: Date().timeIntervalSince(start), fileCount: fileCount,
-                             newBytes: newBytes, warnings: warnings, error: id == nil ? (error ?? "Nessun file da salvare") : error)
+                             newBytes: newBytes, warnings: warnings, error: id == nil ? (error ?? "Nessun file da salvare") : error,
+                             excluded: Array(excluded.prefix(Self.excludedLimit)))
             }
             guard !entries.isEmpty else { return report(nil) }
 
@@ -128,6 +140,56 @@ public final class BackupEngine {
         }
     }
 
+    static let excludedLimit = 200
+
+    private struct Scan {
+        var source: String
+        var found: [(path: String, stat: FileStat)] = []
+        var warnings: [String] = []
+        var excluded: [String] = []
+    }
+
+    private func store(_ scan: Scan, isCancelled: () -> Bool, tick: () -> Void) throws
+        -> (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64) {
+        var r: (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64) = ([], [], 0, 0)
+        for item in scan.found {
+            if isCancelled() { throw BackupError.cancelled }
+            let full = item.path.isEmpty ? scan.source : scan.source + "/" + item.path
+            var st = item.stat
+            var hash: String?
+            var linkTarget: String?
+            switch st.kind {
+            case .directory: break
+            case .symlink:
+                linkTarget = try? FileManager.default.destinationOfSymbolicLink(atPath: full)
+            case .file:
+                guard let s = try storeFile(full, stat: st, warnings: &r.warnings) else { tick(); continue }
+                hash = s.hash; st = s.stat; r.newBytes += s.written; r.fileCount += 1
+            }
+            r.entries.append(Entry(source: scan.source, path: item.path, kind: st.kind, hash: hash, size: st.size,
+                                   mtime: st.mtime, mode: st.mode, linkTarget: linkTarget))
+            tick()
+        }
+        return r
+    }
+
+    /// True if a repository of the source has a git operation in progress (a lock file), or refs changed since `date`.
+    private func gitChanged(_ scan: Scan, since date: Date) -> Bool {
+        let fm = FileManager.default
+        for item in scan.found where item.stat.kind == .directory && (item.path == ".git" || item.path.hasSuffix("/.git")) {
+            let git = scan.source + "/" + item.path
+            let top = (try? fm.contentsOfDirectory(atPath: git)) ?? []
+            if top.contains(where: { $0.hasSuffix(".lock") }) { return true }
+            var paths = [git + "/HEAD", git + "/packed-refs", git + "/refs"]
+            paths += (fm.enumerator(atPath: git + "/refs")?.allObjects as? [String] ?? []).map { git + "/refs/" + $0 }
+            for p in paths {
+                if p.hasSuffix(".lock") { return true }
+                if let st = FileStat(path: p), st.ctime > date { return true }
+            }
+        }
+        return false
+    }
+
     private static func digest(sources: [String], entries: [Entry]) -> String {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .secondsSince1970
@@ -136,8 +198,8 @@ public final class BackupEngine {
     }
 
     /// Returns an error message if the source itself is missing or unreadable.
-    private func scanSource(_ source: String, into found: inout [(source: String, path: String, stat: FileStat)],
-                            warnings: inout [String]) -> String? {
+    private func scanSource(_ scan: inout Scan) -> String? {
+        let source = scan.source
         // the source folder itself may be a symlink to the real folder
         guard let st = FileStat(path: source, followSymlink: true), st.kind == .directory else {
             return "Cartella non trovata: \(source)"
@@ -147,26 +209,32 @@ public final class BackupEngine {
         } catch {
             return "Cartella non leggibile: \(source) (\(error.localizedDescription))"
         }
-        scan(source: source, rel: "", stat: st, into: &found, warnings: &warnings)
+        walk(rel: "", stat: st, into: &scan)
         return nil
     }
 
-    private func scan(source: String, rel: String, stat st: FileStat, insideGit: Bool = false,
-                      into found: inout [(source: String, path: String, stat: FileStat)], warnings: inout [String]) {
-        let full = rel.isEmpty ? source : source + "/" + rel
-        found.append((source, rel, st))
+    private func walk(rel: String, stat st: FileStat, insideGit: Bool = false, into scan: inout Scan) {
+        let full = rel.isEmpty ? scan.source : scan.source + "/" + rel
+        scan.found.append((rel, st))
         guard st.kind == .directory else { return }
         let names: [String]
         do { names = try FileManager.default.contentsOfDirectory(atPath: full) } catch {
-            warnings.append("\(full): \(error.localizedDescription)")
+            scan.warnings.append("\(full): \(error.localizedDescription)")
             return
         }
         for name in names.sorted() {
             guard let child = FileStat(path: full + "/" + name) else { continue }
+            let path = rel.isEmpty ? name : rel + "/" + name
+            let isDir = child.kind == .directory
             // excludes never apply inside .git: a branch named "build" is a file under .git/refs/heads
-            if !insideGit, excludes.excludes(name: name, isDirectory: child.kind == .directory) { continue }
-            scan(source: source, rel: rel.isEmpty ? name : rel + "/" + name, stat: child,
-                 insideGit: insideGit || name == ".git", into: &found, warnings: &warnings)
+            if !insideGit, excludes.excludes(name: name, isDirectory: isDir, path: path)
+                || (isDir && isCacheDirectory(full + "/" + name)) {
+                if isDir, scan.excluded.count < Self.excludedLimit {
+                    scan.excluded.append((scan.source as NSString).lastPathComponent + "/" + path)
+                }
+                continue
+            }
+            walk(rel: path, stat: child, insideGit: insideGit || name == ".git", into: &scan)
         }
     }
 

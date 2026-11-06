@@ -33,6 +33,9 @@ public final class HashCache {
         changed = true
     }
 
+    /// A file last seen with this content, if any (it may have changed since: check before trusting it).
+    public func path(for hash: String) -> String? { items.first { $0.value.hash == hash }?.key }
+
     public func save() throws {
         let unseen = items.keys.filter { !seen.contains($0) }
         for k in unseen { items[k] = nil }

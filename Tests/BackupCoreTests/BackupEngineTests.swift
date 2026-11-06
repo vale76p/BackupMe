@@ -104,4 +104,73 @@ import Testing
         #expect(throws: BackupError.cancelled) { try e.run(sources: [src], isCancelled: { true }) }
         #expect(try repo.snapshotIDs().isEmpty)
     }
+
+    @Test func excludesByRelativePath() {
+        let r = ExcludeRules(patterns: ["build/output", "apps/*/dist", "/top", "cache/"])
+        #expect(r.excludes(name: "output", isDirectory: true, path: "build/output"))
+        #expect(!r.excludes(name: "output", isDirectory: true, path: "x/build/output"))
+        #expect(r.excludes(name: "dist", isDirectory: true, path: "apps/web/dist"))
+        #expect(!r.excludes(name: "dist", isDirectory: true, path: "apps/web/src/dist"))
+        #expect(!r.excludes(name: "dist", isDirectory: false, path: "apps/web/dist"))
+        #expect(r.excludes(name: "top", isDirectory: true, path: "top"))
+        #expect(!r.excludes(name: "top", isDirectory: true, path: "a/top"))
+        #expect(r.excludes(name: "cache", isDirectory: true, path: "a/cache"))
+    }
+
+    @Test func cacheDirTagSkippedAndExcludedListed() throws {
+        write("a", to: src.appending(path: "a.txt"))
+        write("Signature: 8a477f597d28d172789f06886806bc55\n# cache", to: src.appending(path: "cache/CACHEDIR.TAG"))
+        write("x", to: src.appending(path: "cache/x.bin"))
+        write("not a tag", to: src.appending(path: "finto/CACHEDIR.TAG"))
+        write("Signature: 8a477f597d28d172789f06886806bc55", to: src.appending(path: ".git/hooks/CACHEDIR.TAG"))
+        write("x", to: src.appending(path: "node_modules/x.js"))
+        write("x", to: src.appending(path: "x.log"))
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let report = try BackupEngine(repository: repo, cache: HashCache(url: cacheURL),
+                                      excludes: ExcludeRules(patterns: ExcludeRules.defaults + ["*.log"])).run(sources: [src])
+        #expect(report.excluded == ["progetto/cache", "progetto/node_modules"])
+        let paths = Set(try repo.readSnapshot(report.snapshotID!).entries.map(\.path))
+        #expect(paths.isSuperset(of: ["finto/CACHEDIR.TAG", ".git/hooks/CACHEDIR.TAG"]))
+        #expect(paths.isDisjoint(with: ["cache", "node_modules", "x.log"]))
+    }
+
+    @Test func excludedListIsCapped() throws {
+        for i in 0..<205 { try FileManager.default.createDirectory(at: src.appending(path: "p\(i)/build"), withIntermediateDirectories: true) }
+        write("a", to: src.appending(path: "a.txt"))
+        let (e, _) = try engine()
+        #expect(try e.run(sources: [src]).excluded?.count == 200)
+    }
+
+    @Test func oldReportWithoutExcludedDecodes() throws {
+        let json = #"{"date":0,"duration":1,"fileCount":2,"newBytes":3,"warnings":[]}"#
+        let r = try JSONDecoder().decode(BackupReport.self, from: Data(json.utf8))
+        #expect(r.excluded == nil && r.fileCount == 2)
+    }
+
+    @Test func gitRefRewrittenDuringBackupIsReadAgain() throws {
+        write("a", to: src.appending(path: "a.txt"))
+        write("ref: refs/heads/main", to: src.appending(path: ".git/HEAD"))
+        let ref = src.appending(path: ".git/refs/heads/main")
+        write("vecchio", to: ref)
+        let (e, repo) = try engine()
+        var rewritten = false
+        // the commit lands after the ref was read: the first pass holds the old ref
+        let report = try e.run(sources: [src], progress: { if $0 == 1, !rewritten { rewritten = true; write("nuovo", to: ref) } })
+        #expect(rewritten)
+        #expect(!report.warnings.contains { $0.contains("git") })
+        #expect(report.fileCount == 3)
+        let s = try repo.readSnapshot(report.snapshotID!)
+        #expect(s.entries.filter { $0.path == ".git/refs/heads/main" }.map(\.hash) == [sha256Hex(Data("nuovo".utf8))])
+    }
+
+    @Test func gitStillChangingIsWarned() throws {
+        write("a", to: src.appending(path: "a.txt"))
+        write("ref: refs/heads/main", to: src.appending(path: ".git/HEAD"))
+        write("", to: src.appending(path: ".git/index.lock")) // git is in the middle of an operation
+        let (e, repo) = try engine()
+        let report = try e.run(sources: [src])
+        #expect(report.warnings.contains("progetto: il repository git è cambiato durante il backup, ripeti il backup per averne una copia coerente"))
+        #expect(report.fileCount == 3)
+        #expect(try repo.readSnapshot(report.snapshotID!).entries.filter { $0.path == "a.txt" }.count == 1)
+    }
 }

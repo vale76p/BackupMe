@@ -75,4 +75,12 @@ import Testing
         #expect(try repo.snapshotIDs() == [Snapshot.id(for: t0.addingTimeInterval(3600))])
         #expect(r.overCap)
     }
+
+    @Test func missingObjectsCounted() throws {
+        let gone = Data("sparito".utf8)
+        let repo = try backup(["a.txt": Data("a".utf8), "b.txt": gone], at: t0)
+        try FileManager.default.removeItem(at: objectFile(repo, sha256Hex(gone))!)
+        #expect(try prune(repository: repo, policy: keepAll, capBytes: nil, now: t0).missingObjects == 0) // no cleanup ran
+        #expect(try prune(repository: repo, policy: keepAll, capBytes: nil, now: t0, forceGC: true).missingObjects == 1)
+    }
 }
