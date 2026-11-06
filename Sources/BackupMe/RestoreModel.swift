@@ -109,6 +109,20 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         }
     }
 
+    /// Re-reads the list of backups only, keeping what is open: new backups, and ones cleaned up, show up
+    /// without closing the window. The one being viewed stays selected while it exists.
+    func refreshList() {
+        guard destination != nil, !isLoading else { return }
+        let gen = generation
+        Task {
+            guard let ids = try? await withRepository({ try $0.snapshotIDs() }), gen == generation else { return }
+            let list = ids.reversed().compactMap { id in Snapshot.date(fromID: id).map { (id, $0) } }
+            guard list.map(\.0) != snapshots.map(\.id) else { return }
+            snapshots = list
+            if selectedID.map({ id in !list.contains { $0.0 == id } }) ?? true { selectedID = list.first?.0 }
+        }
+    }
+
     private func load(_ id: String?) {
         guard let id, loaded[id] == nil else { fixSource(); return }
         guard loading.insert(id).inserted else { return }

@@ -58,6 +58,9 @@ struct RestoreView: View {
                 await model.refreshStatus()
             }
             .onAppear { model.reload() }
+            // after every backup, and when coming back to the app: the list may have changed meanwhile
+            .onChange(of: model.app.lastReport?.date) { model.refreshList() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshList() }
             .background {
                 Group {
                     Button("Cartella superiore", action: goUp).keyboardShortcut(.upArrow, modifiers: .command)
@@ -169,30 +172,32 @@ struct RestoreView: View {
     /// One section per day of the last week with the hours as chips, then one per month with the days.
     private var sidebar: some View {
         let info = backupInfo
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(groups, id: \.title) { group in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(group.title).font(.subheadline.weight(.semibold))
-                            Spacer()
-                            let bytes = group.items.compactMap { info[$0.id]?.newBytes }
-                            if !bytes.isEmpty {
-                                Text("+" + bytes.reduce(0, +).formatted(.byteCount(style: .file)))
-                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                                    .help("Dati nuovi salvati da questi backup")
-                            }
-                        }
-                        // a grid, not a hand-made flow layout: each chip gets a frame of its own, so every one takes clicks
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: group.byHour ? 58 : 96), spacing: 5)],
-                                  alignment: .leading, spacing: 5) {
-                            ForEach(group.items, id: \.id) { s in chip(s, label: chipLabel(s.date, in: group), info: info[s.id]) }
+        // a native sidebar list, not a ScrollView: under the toolbar a hand-made scroll view took clicks a few
+        // points away from where the chips are drawn
+        return List {
+            ForEach(groups, id: \.title) { group in
+                Section {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: group.byHour ? 58 : 96), spacing: 5)],
+                              alignment: .leading, spacing: 5) {
+                        ForEach(group.items, id: \.id) { s in chip(s, label: chipLabel(s.date, in: group), info: info[s.id]) }
+                    }
+                    .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 8, trailing: 8))
+                    .listRowSeparator(.hidden)
+                } header: {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(group.title)
+                        Spacer()
+                        let bytes = group.items.compactMap { info[$0.id]?.newBytes }
+                        if !bytes.isEmpty {
+                            Text("+" + bytes.reduce(0, +).formatted(.byteCount(style: .file)))
+                                .monospacedDigit()
+                                .help("Dati nuovi salvati da questi backup")
                         }
                     }
                 }
             }
-            .padding(12)
         }
+        .listStyle(.sidebar)
         .overlay {
             if model.isLoading, model.hasDestination { ProgressView() }
             else if model.snapshots.isEmpty, model.hasDestination {
