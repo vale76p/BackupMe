@@ -21,6 +21,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     static let notConfigured = "Scegli cartelle e destinazione nelle Impostazioni"
     nonisolated static let damaged = "Archivio danneggiato:"
     nonisolated static let incomplete = "Archivio incompleto:"
+    nonisolated static let recreated = "Archivio ricreato:"
+    static let criticalPrefixes = [damaged, incomplete, recreated, "Pulizia non riuscita"]
     var status: BackupStatus = .idle
     var history: [BackupReport] = []
     var notificationsDenied = false
@@ -55,6 +57,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     /// The last full check's outcome, in words, and whether the archive was healthy.
     var checkResult: (text: String, healthy: Bool)?
     private var checkCancel = OSAllocatedUnfairLock(initialState: false)
+    private var lastCheckProgressUptime = ProcessInfo.processInfo.systemUptime
     var isRunning: Bool { if case .running = status { true } else { false } }
     var lastReport: BackupReport? { history.last }
 
@@ -125,6 +128,19 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             lastStaleNotice = now
             SystemServices.notify("BackupMe", "Nessun backup riuscito da più di 3 giorni.")
         }
+        if checkProgress != nil {
+            if ProcessInfo.processInfo.systemUptime - lastCheckProgressUptime > Self.stuckAfter {
+                // a read blocked in the check must not stop the backups for good
+                cancelCheck()
+                checkProgress = nil
+                checkResult = ("Controllo bloccato da più di 2 ore: interrotto, i backup riprendono", false)
+                Log.backup.error("Controllo completo dell'archivio bloccato da più di 2 ore: interrotto")
+            } else {
+                // said in the panel instead of skipping the backup in silence
+                deferral = SystemServices.Deferral(reason: "Controllo dell'archivio in corso", until: "Alla fine del controllo")
+                return
+            }
+        }
         guard !settings.paused, settings.isConfigured, !isRunning,
               isBackupDue(lastSuccess: lastSuccess, intervalHours: settings.intervalHours, now: now),
               lastAttempt.map({ now.timeIntervalSince($0) >= Self.retryAfterFailure || $0 > now }) ?? true else {
@@ -177,6 +193,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 self.workerActive = false
                 if verified { self.lastVerify = Date() } // not when the archive couldn't even be opened
                 self.finish(report, overCap: overCap)
+                // the destination changed meanwhile: its own first backup was refused while this one ran
+                if self.settings.destination != s.destination { self.backupNow() }
             }
         }
     }
@@ -188,11 +206,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         guard !isRunning, !workerActive, checkProgress == nil, let dest = settings.destination else { return }
         checkProgress = 0
         checkResult = nil
+        deferral = nil
+        lastCheckProgressUptime = ProcessInfo.processInfo.systemUptime
         let flag = OSAllocatedUnfairLock(initialState: false)
         checkCancel = flag
         let archive = AppPaths.archiveName
         Log.backup.info("Controllo completo dell'archivio avviato")
         Task.detached(priority: .utility) {
+            // like a backup: hours on a cloud folder must not stop at every idle sleep
+            let activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled], reason: "Controllo dell'archivio")
+            defer { ProcessInfo.processInfo.endActivity(activity) }
             var lastSent = 0.0
             let result = Result {
                 let repo = try Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false)
@@ -200,12 +223,17 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                                         isCancelled: { flag.withLock { $0 } }) { p in
                     guard p - lastSent >= 0.01 || p == 1 else { return }
                     lastSent = p
-                    Task { @MainActor in if self.checkProgress != nil { self.checkProgress = p } }
+                    Task { @MainActor in
+                        self.lastCheckProgressUptime = ProcessInfo.processInfo.systemUptime
+                        if self.checkProgress != nil { self.checkProgress = p }
+                    }
                 }
             }
             await MainActor.run {
                 self.checkProgress = nil
+                self.deferral = nil
                 self.finishCheck(result)
+                if self.settings.destination != dest { self.backupNow() }
             }
         }
     }
@@ -322,6 +350,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 report.warnings.append("Verifica dell'archivio non riuscita: \(describe(error))")
             }
         }
+        // stopped on purpose (or by the 2-hour timeout): no cleanup, which would delete every object this run
+        // already copied and make the next attempt start over
+        if report.error == describe(BackupError.cancelled) { return (report, nil, verified) }
         // a partial backup (a source unreadable, deleted or renamed) must not let retention replace complete
         // snapshots with it: the last complete one is pinned. Unknown or not in this archive: skip cleanup.
         let partial = report.error != nil && report.snapshotID != nil
@@ -336,6 +367,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                                    // the backup just made too: with a clock gone wrong it may not look like the newest
                                    pinned: Set([pin, report.snapshotID].compactMap { $0 }))
             Log.backup.debug("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) oggetti eliminati, archivio \(result.poolSize) byte, oltre il tetto: \(result.overCap), rinviata: \(result.gcSkipped), oggetti mancanti: \(result.missingObjects)")
+            if result.archiveReplaced {
+                report.warnings.append("\(Self.recreated) nella destinazione c'è un archivio nuovo e i backup precedenti non ci sono più. Se non l'hai cancellato tu, controlla la cartella: un servizio cloud può averlo spostato o rinominato")
+            }
             if result.vanished { report.warnings.append("Pulizia rinviata: alcuni backup sono spariti dalla destinazione, riprende da sola entro 3 giorni") }
             if result.missingObjects > 0 {
                 report.warnings.append("\(Self.incomplete) mancano \(result.missingObjects) file usati dai backup, che non si ripristinano per intero")
@@ -353,20 +387,25 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         saveHistory()
 
         if report.error == nil, let id = report.snapshotID { lastComplete = id }
-        // "Interrompi" must not be followed by a new backup a minute later: retry as after a failure
-        if report.error == Self.describe(BackupError.cancelled) { lastAttempt = Date() }
-        if let err = report.error {
+        // warnings that mean a backup can't be fully restored are notified, not just listed
+        let critical = report.warnings.filter { w in Self.criticalPrefixes.contains(where: w.hasPrefix) }
+        if report.error == Self.describe(BackupError.cancelled) {
+            // stopped on purpose: not an error. Retried as after a failure, not a minute later; a "bloccato"
+            // message left by the timeout stays
+            lastAttempt = Date()
+            if isRunning { status = .idle }
+            Log.backup.info("Backup interrotto")
+        } else if let err = report.error {
             fail(err)
         } else {
             status = .idle
             lastAttempt = nil
             lastSuccess = report.date
-            notifiedErrors = []
+            // errors are solved; archive problems still there stay notified once, not at every hourly backup
+            notifiedErrors.formIntersection(critical)
             Log.backup.info("Backup \(report.snapshotID ?? "") riuscito: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(report.warnings.count) avvisi, \(Int(report.duration)) s")
         }
-        // warnings that mean a backup can't be fully restored are notified, not just listed
-        let critical = report.warnings.filter { w in [Self.damaged, Self.incomplete, "Pulizia non riuscita"].contains(where: w.hasPrefix) }
-        for w in critical { notifyOnce(w) }
+        for w in critical { notifyOnce(w, title: "Problema nell'archivio") }
         if report.error == nil, settings.notify != .errors {
             let others = report.warnings.count - critical.count
             if others > 0 {
@@ -403,9 +442,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     /// One notification per distinct problem until the next successful backup.
-    private func notifyOnce(_ message: String) {
+    private func notifyOnce(_ message: String, title: String = "Backup non riuscito") {
         guard notifiedErrors.insert(message).inserted else { return }
-        SystemServices.notify("Backup non riuscito", message)
+        SystemServices.notify(title, message)
     }
 
     nonisolated static func describe(_ error: Error) -> String {
@@ -413,12 +452,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RepositoryError.destinationMissing(let p): return "Destinazione non trovata: \(p)"
         case RepositoryError.locked: return "Un altro backup è già in corso"
         case RepositoryError.corruptObject(let h): return "Archivio danneggiato (oggetto \(h.prefix(12)))"
+        case RepositoryError.newerFormat(let f):
+            return "L'archivio è stato creato da una versione più recente di BackupMe (formato \(f)): aggiorna l'app per continuare i backup"
         case BackupError.sourceOverlapsDestination(let p): return "\((p as NSString).abbreviatingWithTildeInPath) è dentro la destinazione dei backup"
         case BackupError.cancelled: return "Backup interrotto"
         case RestoreError.notFound(let p): return "\(p.isEmpty ? "La cartella" : p) non è in questo backup"
         case RestoreError.invalidEntry(let p): return "Backup non valido o manomesso (percorso \"\(p)\"): ripristino annullato"
         case RestoreError.keptBeside(let p):
             return "Non è stato possibile sostituire: l'originale è nel Cestino e la versione ripristinata è in \(p)"
+        case RestoreError.containsArchive(let p):
+            return "«\((p as NSString).lastPathComponent)» contiene l'archivio dei backup: Sostituisci lo manderebbe nel Cestino. Usa Ripristina accanto o Ripristina in…"
         default: return error.localizedDescription
         }
     }

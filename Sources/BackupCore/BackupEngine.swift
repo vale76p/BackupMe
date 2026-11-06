@@ -13,12 +13,16 @@ public struct BackupReport: Codable, Sendable {
     public var excluded: [String]?
     /// Files left out because macOS denied reading them (`skipUnreadable`), as absolute paths; at most 200.
     public var skipped: [String]?
+    /// Files and folders only in the cloud (iCloud "Ottimizza spazio", File Provider): not downloaded, so not
+    /// in this backup unless an earlier one already had their content.
+    public var cloudOnly: Int?
 
     public init(snapshotID: String?, date: Date, duration: TimeInterval, fileCount: Int,
-                newBytes: Int64, warnings: [String], error: String?, excluded: [String]? = nil, skipped: [String]? = nil) {
+                newBytes: Int64, warnings: [String], error: String?, excluded: [String]? = nil, skipped: [String]? = nil,
+                cloudOnly: Int? = nil) {
         self.snapshotID = snapshotID; self.date = date; self.duration = duration; self.fileCount = fileCount
         self.newBytes = newBytes; self.warnings = warnings; self.error = error; self.excluded = excluded
-        self.skipped = skipped
+        self.skipped = skipped; self.cloudOnly = cloudOnly
     }
 }
 
@@ -34,6 +38,8 @@ struct FileStat {
     var mtime: Date
     var ctime: Date
     var mode: UInt16
+    /// Only in the cloud: reading it would download it.
+    var dataless: Bool
 
     init?(path: String, followSymlink: Bool = false) {
         var st = stat()
@@ -49,6 +55,7 @@ struct FileStat {
         mtime = Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec) + TimeInterval(st.st_mtimespec.tv_nsec) / 1e9)
         ctime = Date(timeIntervalSince1970: TimeInterval(st.st_ctimespec.tv_sec) + TimeInterval(st.st_ctimespec.tv_nsec) / 1e9)
         mode = UInt16(st.st_mode & 0o7777)
+        dataless = st.st_flags & 0x4000_0000 != 0 // SF_DATALESS
     }
 
     func unchanged(since o: FileStat) -> Bool { size == o.size && mtime == o.mtime && ctime == o.ctime }
@@ -61,8 +68,11 @@ public final class BackupEngine {
     /// Absolute paths never descended into: the excludes' own plus the archives' folder, so a source holding the
     /// destination (the whole profile, with OneDrive inside Library) never backs up its own backups.
     private let skipped: Set<String>
-    /// Files the user has no permission to read are listed in the report's `skipped`, not as warnings.
+    /// Files the user has no permission to read, and never saved before, are listed in the report's `skipped`,
+    /// not as warnings.
     private let skipUnreadable: Bool
+    /// Items left in the cloud by the current run.
+    private var cloudOnly = 0
 
     public init(repository: Repository, cache: HashCache, excludes: ExcludeRules, skipUnreadable: Bool = false) {
         self.repository = repository; self.cache = cache; self.excludes = excludes; self.skipUnreadable = skipUnreadable
@@ -91,6 +101,7 @@ public final class BackupEngine {
             defer { try? cache.save(dropUnseen: false) }
             var sourceErrors: [String] = []
             var scans: [Scan] = []
+            cloudOnly = 0
             for s in sources {
                 var scan = Scan(source: s.path)
                 if let err = scanSource(&scan) { sourceErrors.append(err) } else { scans.append(scan) }
@@ -134,7 +145,8 @@ public final class BackupEngine {
                 BackupReport(snapshotID: id, date: now, duration: Date().timeIntervalSince(start), fileCount: fileCount,
                              newBytes: newBytes, warnings: warnings, error: id == nil ? (error ?? "Nessun file da salvare") : error,
                              excluded: Array(excluded.prefix(Self.excludedLimit)),
-                             skipped: denied.isEmpty ? nil : Array(denied.prefix(Self.excludedLimit)))
+                             skipped: denied.isEmpty ? nil : Array(denied.prefix(Self.excludedLimit)),
+                             cloudOnly: cloudOnly == 0 ? nil : cloudOnly)
             }
             guard !entries.isEmpty else { return report(nil) }
 
@@ -170,21 +182,24 @@ public final class BackupEngine {
         var r: (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64, denied: [String]) = ([], [], 0, 0, [])
         for item in scan.found {
             if isCancelled() { throw BackupError.cancelled }
-            let full = item.path.isEmpty ? scan.source : scan.source + "/" + item.path
-            var st = item.stat
-            var hash: String?
-            var linkTarget: String?
-            switch st.kind {
-            case .directory: break
-            case .symlink:
-                linkTarget = try? FileManager.default.destinationOfSymbolicLink(atPath: full)
-            case .file:
-                guard let s = try storeFile(full, stat: st, warnings: &r.warnings, denied: &r.denied) else { tick(); continue }
-                hash = s.hash; st = s.stat; r.newBytes += s.written; r.fileCount += 1
+            // a pool per file: the compressed copies would otherwise stay in memory until the whole backup ends
+            try autoreleasepool {
+                let full = item.path.isEmpty ? scan.source : scan.source + "/" + item.path
+                var st = item.stat
+                var hash: String?
+                var linkTarget: String?
+                switch st.kind {
+                case .directory: break
+                case .symlink:
+                    linkTarget = try? FileManager.default.destinationOfSymbolicLink(atPath: full)
+                case .file:
+                    guard let s = try storeFile(full, stat: st, warnings: &r.warnings, denied: &r.denied) else { tick(); return }
+                    hash = s.hash; st = s.stat; r.newBytes += s.written; r.fileCount += 1
+                }
+                r.entries.append(Entry(source: scan.source, path: item.path, kind: st.kind, hash: hash, size: st.size,
+                                       mtime: st.mtime, mode: st.mode, linkTarget: linkTarget))
+                tick()
             }
-            r.entries.append(Entry(source: scan.source, path: item.path, kind: st.kind, hash: hash, size: st.size,
-                                   mtime: st.mtime, mode: st.mode, linkTarget: linkTarget))
-            tick()
         }
         return r
     }
@@ -261,6 +276,8 @@ public final class BackupEngine {
                 }
                 continue
             }
+            // a folder only in the cloud: listing it would download its listing, and its files are all in the cloud
+            if isDir, child.dataless { cloudOnly += 1; continue }
             walk(rel: path, stat: child, resolved: resolved, insideGit: insideGit || name == ".git", into: &scan)
         }
     }
@@ -273,6 +290,16 @@ public final class BackupEngine {
         if let h = cache.lookup(path: path, inode: initial.inode, size: initial.size, mtime: initial.mtime, ctime: initial.ctime),
            repository.hasObject(h) {
             return (h, initial, 0)
+        }
+        // never read a file that is only in the cloud: that would download it. Evicting it changes its ctime but
+        // not its content, so the hash of the same inode, size and date is still right
+        if initial.dataless {
+            if let h = cache.lookup(path: path, inode: initial.inode, size: initial.size, mtime: initial.mtime, ctime: nil),
+               repository.hasObject(h) {
+                return (h, initial, 0)
+            }
+            cloudOnly += 1
+            return nil
         }
         let url = URL(fileURLWithPath: path)
         var st = initial
@@ -288,7 +315,9 @@ public final class BackupEngine {
                     hash = sha256Hex(data)
                 }
             } catch {
-                if skipUnreadable, Self.isPermissionDenied(error) { denied.append(path) } else {
+                // only files never saved: one already in the backups that turns unreadable is a warning, or it
+                // would vanish silently and cleanup would end up deleting its last copy
+                if skipUnreadable, Self.isPermissionDenied(error), !cache.knows(path) { denied.append(path) } else {
                     warnings.append("\(path): \(error.localizedDescription)")
                 }
                 return nil

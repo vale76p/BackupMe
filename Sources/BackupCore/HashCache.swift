@@ -21,9 +21,10 @@ public final class HashCache {
         changed = false
     }
 
-    public func lookup(path: String, inode: UInt64, size: Int64, mtime: Date, ctime: Date) -> String? {
+    /// `ctime: nil` ignores it: only for a file the cloud client evicted, which changes ctime and nothing else.
+    public func lookup(path: String, inode: UInt64, size: Int64, mtime: Date, ctime: Date?) -> String? {
         seen.insert(path)
-        guard let i = items[path], i.inode == inode, i.size == size, i.mtime == mtime, i.ctime == ctime else { return nil }
+        guard let i = items[path], i.inode == inode, i.size == size, i.mtime == mtime, ctime == nil || i.ctime == ctime else { return nil }
         return i.hash
     }
 
@@ -32,6 +33,9 @@ public final class HashCache {
         items[path] = Item(inode: inode, size: size, mtime: mtime, ctime: ctime, hash: hash)
         changed = true
     }
+
+    /// True if this file was read in an earlier run: it is in the backups.
+    public func knows(_ path: String) -> Bool { items[path] != nil }
 
     /// A file last seen with this content, if any (it may have changed since: check before trusting it).
     public func path(for hash: String) -> String? { items.first { $0.value.hash == hash }?.key }

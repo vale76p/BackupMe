@@ -167,6 +167,28 @@ import Testing
         #expect(r.hasObject(sha256Hex(Data("v1".utf8))))
     }
 
+    @Test func manifestLeavingTwiceDoesNotBlockCleanupForever() throws {
+        let refs = tmp()
+        let r = try repo()
+        write("v1", to: src.appending(path: "a.txt"))
+        let first = try engine(r).run(sources: [src], now: t0)
+        write("v2", to: src.appending(path: "a.txt"))
+        _ = try engine(r).run(sources: [src], now: t0.addingTimeInterval(60))
+        var keepAll = RetentionPolicy(); keepAll.days = 1000
+        // a cap makes cleanup cache every manifest's references
+        _ = try prune(repository: r, policy: keepAll, capBytes: .max, now: t0, refsCache: refs)
+        let m = r.root.appending(path: "snapshots/\(first.snapshotID!).json.lzfse")
+        let hidden = tmp().appending(path: "m")
+        func leave(_ at: Date) throws { try fm.moveItem(at: m, to: hidden); _ = try prune(repository: r, policy: keepAll, capBytes: nil, now: at, refsCache: refs) }
+        func back(_ at: Date) throws { try fm.moveItem(at: hidden, to: m); _ = try prune(repository: r, policy: keepAll, capBytes: nil, now: at, refsCache: refs) }
+        try leave(t0.addingTimeInterval(3600))
+        try back(t0.addingTimeInterval(7200))
+        try leave(t0.addingTimeInterval(3 * 3600))
+        _ = try prune(repository: r, policy: keepAll, capBytes: nil, now: t0.addingTimeInterval(2 * 86400), refsCache: refs)
+        let later = try prune(repository: r, policy: keepAll, capBytes: nil, now: t0.addingTimeInterval(4 * 86400), refsCache: refs)
+        #expect(!later.gcSkipped && !later.vanished)
+    }
+
     @Test func recreatedArchiveWaitsWithoutWarning() throws {
         let refs = tmp()
         write("v1", to: src.appending(path: "a.txt"))
@@ -181,9 +203,10 @@ import Testing
         _ = try BackupEngine(repository: new, cache: HashCache(url: tmp().appending(path: "c.json")),
                              excludes: ExcludeRules(patterns: [])).run(sources: [src], now: t0.addingTimeInterval(3600))
         let first = try prune(repository: new, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(3600), refsCache: refs)
-        #expect(first.gcSkipped && !first.vanished)
+        // told once, in the run that notices it: the archive may also have been moved away by a cloud client
+        #expect(first.gcSkipped && !first.vanished && first.archiveReplaced)
         let again = try prune(repository: new, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(7200), refsCache: refs)
-        #expect(again.gcSkipped && !again.vanished)
+        #expect(again.gcSkipped && !again.vanished && !again.archiveReplaced)
         let later = try prune(repository: new, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(4 * 86400), refsCache: refs)
         #expect(!later.gcSkipped && !later.vanished)
     }

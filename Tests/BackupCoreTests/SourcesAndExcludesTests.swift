@@ -69,6 +69,16 @@ import Testing
         #expect(ExcludeRules.automatic(destination: nil, home: home)[1].reason == "Cartelle di Dropbox, Google Drive e OneDrive")
     }
 
+    @Test func olderClientFoldersAreExcluded() throws {
+        try fm.createDirectory(at: base.appending(path: "OneDrive - Acme"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: base.appending(path: "Library/CloudStorage/Dropbox"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: base.appending(path: "Dropbox"), withDestinationURL: base.appending(path: "Library/CloudStorage/Dropbox"))
+        let auto = ExcludeRules.automatic(destination: nil, home: base.path)
+        #expect(auto.contains { $0.path == base.appending(path: "OneDrive - Acme").path && $0.reason == "Cartella di OneDrive" })
+        #expect(!auto.contains { $0.path == base.appending(path: "Dropbox").path }, "a link into CloudStorage is not a folder of its own")
+        #expect(CloudFolder.installed(home: base.path).map(\.title) == ["Dropbox", "OneDrive (Acme)"])
+    }
+
     @Test func noCloudFoldersNoNames() {
         #expect(CloudFolder.installed(home: base.path).isEmpty)
         #expect(CloudFolder.serviceList([]) == nil)

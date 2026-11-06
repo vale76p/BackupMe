@@ -171,6 +171,30 @@ import Testing
         #expect(RestoreKit.readme.contains("Kit di ripristino versione \(RestoreKit.version)"))
     }
 
+    @Test func newerFormatIsRefused() throws {
+        let id = try backup()
+        let info = kit.appending(path: "Mac/repo.json")
+        try Data(#"{"format":2,"id":"x"}"#.utf8).write(to: info)
+        let r = try sh(["Mac", id, tmp().path, "--si"])
+        #expect(r.status != 0 && r.out.contains("formato 2"), "\(r.out)")
+        #expect(throws: RepositoryError.newerFormat(2)) { try Repository(destination: dest, computerName: "Mac") }
+        #expect(try Repository(destination: dest, computerName: "Mac", create: false).archiveID == "x", "browsing still works")
+    }
+
+    @Test func foldersDifferingOnlyInCaseBothRestored() throws {
+        let a = tmp().appending(path: "App", directoryHint: .isDirectory), b = tmp().appending(path: "app", directoryHint: .isDirectory)
+        write("uno", to: a.appending(path: "a.txt"))
+        write("due", to: b.appending(path: "b.txt"))
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let report = try BackupEngine(repository: repo, cache: HashCache(url: tmp().appending(path: "c.json")),
+                                      excludes: ExcludeRules(patterns: [])).run(sources: [a, b])
+        let out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", try #require(report.snapshotID), out.path, "--si"])
+        #expect(r.status == 0, "\(r.out)")
+        let names = try fm.contentsOfDirectory(atPath: out.path).sorted()
+        #expect(names.count == 2, "\(names)")
+    }
+
     @Test func scriptAsksTwiceBeforeRestoring() throws {
         let id = try backup(), out = tmp().appending(path: "ripristino")
         let r = try sh(["Mac", id, out.path], input: "s\nRIPRISTINA\n")

@@ -7,6 +7,8 @@ public enum RestoreError: Error, Equatable {
     /// Replace moved the current item to the Trash but couldn't put the restored copy in its place:
     /// the copy was kept beside it, at this path.
     case keptBeside(String)
+    /// Replace would move this folder to the Trash with the backup archive inside it.
+    case containsArchive(String)
 }
 
 public final class Restorer {
@@ -40,6 +42,12 @@ public final class Restorer {
         case .besideOriginal: target = original.deletingLastPathComponent().appending(path: Self.restoredName(name, date: snapshot.date))
         case .replace: target = original
         case .into(let dir): target = dir.appending(path: name)
+        }
+        // the destination may sit inside a saved folder (it is skipped by the backup): trashing that folder would
+        // take every backup with it, and the restored copy doesn't hold them
+        if mode == .replace,
+           repository.root.resolvingSymlinksInPath().path.hasPrefix(target.resolvingSymlinksInPath().path + "/") {
+            throw RestoreError.containsArchive(target.path)
         }
         let parent = target.deletingLastPathComponent()
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -86,19 +94,22 @@ public final class Restorer {
     private func build(_ entries: [Entry], prefix: String, at root: URL) throws {
         var dirs: [(URL, Entry)] = []
         for e in entries {
-            let rel = prefix.isEmpty ? e.path : (e.path == prefix ? "" : String(e.path.dropFirst(prefix.count + 1)))
-            let url = rel.isEmpty ? root : root.appending(path: rel)
-            switch e.kind {
-            case .directory:
-                try fm.createDirectory(at: url, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-                dirs.append((url, e))
-            case .file:
-                try repository.restoreObject(e.hash ?? "", to: url)
-                try fm.setAttributes([.posixPermissions: Int(e.mode)], ofItemAtPath: url.path)
-                try setModificationDate(url, e.mtime)
-            case .symlink:
-                // symlink mode/mtime are not restored: macOS ignores link permissions in practice
-                try fm.createSymbolicLink(atPath: url.path, withDestinationPath: e.linkTarget ?? "")
+            // a pool per item: decompressed copies would otherwise stay in memory until the whole restore ends
+            try autoreleasepool {
+                let rel = prefix.isEmpty ? e.path : (e.path == prefix ? "" : String(e.path.dropFirst(prefix.count + 1)))
+                let url = rel.isEmpty ? root : root.appending(path: rel)
+                switch e.kind {
+                case .directory:
+                    try fm.createDirectory(at: url, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                    dirs.append((url, e))
+                case .file:
+                    try repository.restoreObject(e.hash ?? "", to: url)
+                    try fm.setAttributes([.posixPermissions: Int(e.mode)], ofItemAtPath: url.path)
+                    try setModificationDate(url, e.mtime)
+                case .symlink:
+                    // symlink mode/mtime are not restored: macOS ignores link permissions in practice
+                    try fm.createSymbolicLink(atPath: url.path, withDestinationPath: e.linkTarget ?? "")
+                }
             }
         }
         // deepest first, so a read-only folder is locked only after its children are written

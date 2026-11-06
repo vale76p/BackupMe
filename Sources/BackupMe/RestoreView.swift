@@ -493,7 +493,11 @@ struct RestoreView: View {
         Button("Ripristina\(n) in…") { chooseFolder { model.restore(snapshotID: snapshotID, items: items, mode: .into($0)) } }
         if entries.count == 1, let e = entries.first, e.kind == .file {
             Divider()
-            Button("Mostra versioni del file") { showInspector = true }
+            Button("Mostra versioni del file") {
+                // the inspector shows the selection: a right click alone doesn't change it
+                if model.search.isEmpty { selectedIDs = [e.id] } else { hit = SearchHit(snapshotID: snapshotID, entry: e) }
+                showInspector = true
+            }
             if model.showsStatus, Restorer.status(of: e) == .modified {
                 Button("Confronta con la versione attuale") { model.compare(e) }
             }
@@ -679,8 +683,10 @@ struct RestoreView: View {
     }
 
     private func restoreTargetsInto() {
+        // fixed before the panel: a backup finishing while it is open may refresh the list and change the selection
         let t = targets
-        chooseFolder { restore(t, mode: .into($0)) }
+        guard let id = targetSnapshot else { return }
+        chooseFolder { model.restore(snapshotID: id, items: t.map { ($0.source, $0.path) }, mode: .into($0)) }
     }
 
     private func restoreAllInto() {
@@ -803,9 +809,13 @@ private struct EntryInspector: View {
         }
         .task {
             guard entry.kind == .file else { return }
-            let found = await model.versions(of: entry).map { SearchHit(snapshotID: $0.snapshotID, entry: $0.entry) }
+            // moving through files with the arrows cancels this before any manifest is read
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let found = await model.versions(of: entry, preferring: snapshotID).map { SearchHit(snapshotID: $0.snapshotID, entry: $0.entry) }
+            guard !Task.isCancelled else { return }
             versions = found
-            picked = found.first { $0.entry.hash == entry.hash } ?? found.first
+            picked = found.first { $0.snapshotID == snapshotID } ?? found.first
         }
     }
 
@@ -849,7 +859,10 @@ private struct EntryInspector: View {
             Text("Una riga per ogni contenuto diverso, dalla più recente.").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Anteprima") { preview(picked?.entry ?? entry) }
-                if status?.own == .modified { Button("Confronta con oggi") { model.compare(entry) } }
+                // the version picked, as Anteprima and Ripristina use
+                if model.showsStatus, let v = picked, Restorer.status(of: v.entry) == .modified {
+                    Button("Confronta con oggi") { model.compare(v.entry) }
+                }
                 Spacer()
                 Button("Ripristina") {
                     if let v = picked { model.restore(snapshotID: v.snapshotID, source: v.entry.source, path: v.entry.path, mode: .besideOriginal) }

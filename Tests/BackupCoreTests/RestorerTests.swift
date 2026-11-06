@@ -37,6 +37,21 @@ import Testing
         #expect(Restorer.restoredName("app-web", date: d) == "app-web (ripristinato 5 nov 10.00)")
     }
 
+    @Test func replaceRefusesFolderHoldingTheArchive() throws {
+        write("a", to: src.appending(path: "a.txt"))
+        let inside = src.appending(path: "Backup", directoryHint: .isDirectory)
+        try fm.createDirectory(at: inside, withIntermediateDirectories: true)
+        let repo = try Repository(destination: inside, computerName: "Mac")
+        let r = try BackupEngine(repository: repo, cache: HashCache(url: cacheURL),
+                                 excludes: ExcludeRules(patterns: [])).run(sources: [src])
+        let snapshot = try repo.readSnapshot(r.snapshotID!)
+        #expect(throws: RestoreError.containsArchive(src.resolvingSymlinksInPath().path)) {
+            try restorer(repo).restore(snapshot, source: src.path, path: "", mode: .replace)
+        }
+        #expect(fm.fileExists(atPath: repo.root.appending(path: "repo.json").path))
+        #expect(try fm.contentsOfDirectory(atPath: trashDir.path).isEmpty)
+    }
+
     @Test func roundTripWholeSourceInto() throws {
         write("ciao", to: src.appending(path: "spazi e àccénti 🎉.txt"))
         write("", to: src.appending(path: "vuoto.txt"))

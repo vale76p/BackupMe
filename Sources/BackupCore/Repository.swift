@@ -5,11 +5,15 @@ public enum RepositoryError: Error, Equatable {
     case destinationMissing(String)
     case locked(pid: Int32, host: String)
     case corruptObject(String)
+    /// The archive was written by a newer BackupMe, in a format this version doesn't know.
+    case newerFormat(Int)
 }
 
 /// Archive layout: <destination>/BackupMe/<archive name>/{repo.json, objects/, snapshots/, lock}
 /// Objects are stored as `<hash>.lzfse` (compressed) or `<hash>.raw` (incompressible or large files).
 public final class Repository {
+    /// The archive layout this version reads and writes (repo.json "format").
+    public static let format = 1
     public let root: URL
     private let fm = FileManager.default
     private var knownObjects: Set<String>?
@@ -30,6 +34,12 @@ public final class Repository {
         root = destination.appending(path: "BackupMe", directoryHint: .isDirectory)
             .appending(path: safeName, directoryHint: .isDirectory)
         let info = root.appending(path: "repo.json")
+        // browsing a newer archive is allowed; writing to it or cleaning it up could damage what this version
+        // doesn't understand
+        if create, let data = try? Data(contentsOf: info),
+           let found = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["format"] as? Int, found > Self.format {
+            throw RepositoryError.newerFormat(found)
+        }
         guard create else {
             guard fm.fileExists(atPath: info.path) else { throw RepositoryError.destinationMissing(root.path) }
             return
@@ -37,7 +47,7 @@ public final class Repository {
         try fm.createDirectory(at: objectsDir, withIntermediateDirectories: true)
         try fm.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
         if !fm.fileExists(atPath: info.path) {
-            let json = #"{"format":1,"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
+            let json = #"{"format":\#(Self.format),"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
             try atomicWrite(Data(json.utf8), to: info, sync: .file)
         }
         RestoreKit.install(in: root.deletingLastPathComponent())

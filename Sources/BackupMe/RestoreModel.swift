@@ -290,8 +290,27 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         }
     }
 
-    func versions(of entry: Entry) async -> [(snapshotID: String, entry: Entry)] {
-        (try? await withRepository { try Restorer(repository: $0).versions(source: entry.source, path: entry.path) }) ?? []
+    /// One entry per distinct content, newest first. One manifest at a time, so a cancelled task (another file
+    /// selected) stops reading at once instead of decoding every manifest to the end. A content that is also in
+    /// `preferring` is listed under that backup: the one being viewed.
+    func versions(of entry: Entry, preferring: String? = nil) async -> [(snapshotID: String, entry: Entry)] {
+        var result: [(snapshotID: String, entry: Entry)] = []
+        var index: [String: Int] = [:]
+        let source = entry.source, path = entry.path
+        for s in snapshots {
+            if Task.isCancelled { return result }
+            let id = s.id
+            let found: Entry?
+            if let snapshot = loaded[id] { found = snapshot.entries.first { $0.source == source && $0.path == path } }
+            else {
+                found = try? await withRepository { repo in
+                    try autoreleasepool { try repo.readSnapshot(id).entries.first { $0.source == source && $0.path == path } }
+                }
+            }
+            guard let e = found, let h = e.hash else { continue }
+            if let i = index[h] { if id == preferring { result[i] = (id, e) } } else { index[h] = result.count; result.append((id, e)) }
+        }
+        return result
     }
 
     func restore(snapshotID: String, source: String, path: String, mode: RestoreMode) {

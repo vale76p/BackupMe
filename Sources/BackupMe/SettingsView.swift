@@ -383,7 +383,7 @@ private struct ScheduleSection: View {
         } header: {
             Text("Quando rimandare")
         } footer: {
-            Text("Il backup pianificato aspetta anche con il Risparmio energetico, la batteria sotto il 20% o il Mac troppo caldo, ma mai oltre un giorno senza backup. «Esegui backup ora» parte sempre.")
+            Text("Il backup pianificato aspetta anche con il Risparmio energetico, la batteria sotto il 20% o il Mac troppo caldo, ma mai oltre un giorno senza backup. «Esegui backup ora» parte sempre, tranne durante il controllo completo dell'archivio.")
         }
         .disabled(model.settings.paused)
         Section {
@@ -717,6 +717,11 @@ private struct ExcludesSection: View {
                             }
                     }
                 }
+            }
+            if let n = model.lastReport?.cloudOnly, n > 0 {
+                Label(n == 1 ? "1 elemento solo nel cloud non è stato scaricato" : "\(n) elementi solo nel cloud non sono stati scaricati",
+                      systemImage: "icloud")
+                    .help("File e cartelle che il servizio cloud tiene solo online (per esempio iCloud con «Ottimizza spazio»): scaricarli a ogni backup costerebbe ore e gigabyte. Sono nel backup solo se un backup precedente li aveva già salvati.")
             }
             if let n = model.lastReport?.warnings.count, n > 0 {
                 HStack {

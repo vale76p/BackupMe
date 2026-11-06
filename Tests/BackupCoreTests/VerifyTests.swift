@@ -30,7 +30,8 @@ import Testing
         let id = try repo.snapshotIDs()[0]
         try Data("rotto".utf8).write(to: repo.root.appending(path: "snapshots/\(id).json.lzfse"))
         let bad = try checkArchive(repository: repo, cache: cache)
-        #expect(!bad.isHealthy && bad.unreadableSnapshots == [id] && bad.objects.checked == 1)
+        // with its only manifest unreadable, no object is known to be needed
+        #expect(!bad.isHealthy && bad.unreadableSnapshots == [id] && bad.objects.checked == 0)
     }
 
     @Test func fullCheckCountsMissingObjects() throws {

@@ -143,6 +143,22 @@ import Testing
         #expect(try e.run(sources: [src]).excluded?.count == 200)
     }
 
+    @Test func savedFileTurningUnreadableIsWarned() throws {
+        let file = src.appending(path: "a.txt")
+        write("prima", to: file)
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        func run() throws -> BackupReport {
+            try BackupEngine(repository: repo, cache: HashCache(url: cacheURL), excludes: ExcludeRules(patterns: []),
+                             skipUnreadable: true).run(sources: [src])
+        }
+        _ = try run()
+        write("dopo", to: file) // changed, so the cache can't answer for it
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
+        let r = try run()
+        #expect(r.warnings.count == 1 && r.skipped == nil)
+    }
+
     @Test func filesOverSizeLimitAreExcluded() throws {
         write("piccolo", to: src.appending(path: "a.txt"))
         write(String(repeating: "x", count: 100), to: src.appending(path: "video/grande.mov"))

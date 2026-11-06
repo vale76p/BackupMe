@@ -33,11 +33,23 @@ public struct CloudFolder: Sendable, Hashable {
         let iCloud = home + "/Library/Mobile Documents/com~apple~CloudDocs"
         if isDir(iCloud) { found.append(CloudFolder(service: "iCloud Drive", account: nil, url: URL(fileURLWithPath: iCloud))) }
         // older clients sync a folder in the home; skipped when the same service is already in CloudStorage
-        for (folder, service) in [("Dropbox", "Dropbox"), ("OneDrive", "OneDrive"), ("Google Drive", "Google Drive")]
-        where isDir(home + "/" + folder) && !found.contains(where: { $0.service == service }) {
-            found.append(CloudFolder(service: service, account: nil, url: URL(fileURLWithPath: home + "/" + folder)))
-        }
+        for f in homeFolders(home: home) where !found.contains(where: { $0.service == f.service }) { found.append(f) }
         return found
+    }
+
+    /// The folders older clients keep in the home ("Dropbox", "OneDrive", "OneDrive - Company", "Google Drive"),
+    /// real folders only: a link into CloudStorage is left out by the CloudStorage rule already.
+    public static func homeFolders(home: String = NSHomeDirectory()) -> [CloudFolder] {
+        let fm = FileManager.default
+        let names = ((try? fm.contentsOfDirectory(atPath: home)) ?? []).sorted()
+        return names.compactMap { name in
+            let service = name == "Dropbox" ? "Dropbox" : name == "Google Drive" ? "Google Drive"
+                : name == "OneDrive" || name.hasPrefix("OneDrive - ") ? "OneDrive" : nil
+            guard let service, let attrs = try? fm.attributesOfItem(atPath: home + "/" + name),
+                  attrs[.type] as? FileAttributeType == .typeDirectory else { return nil }
+            return CloudFolder(service: service, account: name.hasPrefix("OneDrive - ") ? String(name.dropFirst(11)) : nil,
+                               url: URL(fileURLWithPath: home + "/" + name))
+        }
     }
 
     /// The services present, each once, in Italian: "OneDrive, Dropbox e Google Drive". nil when there are none.

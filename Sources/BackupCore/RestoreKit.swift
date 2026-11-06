@@ -5,7 +5,7 @@ import Foundation
 enum RestoreKit {
     /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
-    static let version = 5
+    static let version = 6
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit.
     static func install(in base: URL) {
@@ -175,6 +175,11 @@ function run(argv) {
   var computer = argv[0], id = argv[1], dest = absolute(argv[2])
   if (computers.indexOf(computer) < 0) fail('Computer non trovato: ' + computer)
   var archive = base + '/' + computer
+  // an archive written by a newer BackupMe may be laid out differently: refuse instead of guessing
+  var info = $.NSData.dataWithContentsOfFile(archive + '/repo.json')
+  var format = info.isNil() ? 1 : (JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(info, utf8))).format || 1)
+  if (format > \#(Repository.format)) fail('Archivio di formato ' + format + ', più recente di questo script: '
+    + 'usa il RIPRISTINO.command scritto dalla versione di BackupMe che lo ha creato, o aggiorna BackupMe')
   if (snapshots(archive).indexOf(id) < 0) fail('Backup non trovato: ' + id)
   var raw = $.NSData.dataWithContentsOfFile(archive + '/snapshots/' + id + '.json.lzfse')
   var json = raw.isNil() ? raw : raw.decompressedDataUsingAlgorithmError(0, null) // 0 = LZFSE
@@ -182,7 +187,8 @@ function run(argv) {
   var snapshot = JSON.parse(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(json, utf8)))
 
   // check everything before writing anything
-  var plans = [], taken = new Set()
+  // names are compared as APFS does (case and Unicode form ignored): "App" and "app" are the same folder
+  var plans = [], taken = new Set(), key = s => s.normalize('NFD').toLowerCase()
   snapshot.sources.forEach(source => {
     var tree = snapshot.entries.filter(e => e.source === source).sort((a, b) => depth(a) - depth(b))
     if (!tree.length) return
@@ -190,8 +196,8 @@ function run(argv) {
     var name = source.split('/').filter(x => x).pop() || 'Backup'
     if (name === '.' || name === '..') name = 'Backup'
     var target = dest + '/' + name
-    for (var n = 2; exists(target) || taken.has(target); n++) target = dest + '/' + name + ' ' + n
-    taken.add(target)
+    for (var n = 2; exists(target) || taken.has(key(target)); n++) target = dest + '/' + name + ' ' + n
+    taken.add(key(target))
     var sizes = tree.filter(e => e.kind === 'file').map(e => e.size || 0)
     plans.push({ source: source, name: name, target: target, tree: tree,
                  files: sizes.length, bytes: sizes.reduce((a, b) => a + b, 0) })

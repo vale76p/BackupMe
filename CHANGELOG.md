@@ -2,6 +2,40 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.9.0] - 2026-11-06
+
+### Cambiato
+- Finestra Sfoglia rifatta: i backup sono nella barra laterale, raggruppati per giorno con le ore come chip (i mesi più vecchi con i giorni), con i dati nuovi salvati e gli avvisi di ciascuno; il percorso cliccabile è nella barra degli strumenti; i filtri Modificati, Eliminati e Nuovi sono pulsanti con il conteggio; lo stato di ogni elemento è un'etichetta colorata; una barra in basso dice cosa si ripristina e da quale backup. Un ispettore a destra mostra i dettagli e tutte le versioni salvate del file scelto, con Anteprima, Confronta e Ripristina.
+- Icona nella barra dei menu: freccia tonda durante il backup, badge giallo con gli avvisi, badge rosso con gli errori.
+- I servizi cloud vengono rilevati sul Mac (OneDrive, Dropbox, Google Drive, iCloud Drive, Box e gli altri client in `~/Library/CloudStorage`, più le cartelle dei client vecchi nella Inizio): come destinazione si propongono solo quelli presenti, con un account per voce, e i testi nominano solo quelli. Gli archivi lasciati da un client rimosso ("Dropbox (data) Archive") non contano.
+
+### Corretto
+- Dopo aver cancellato e ricreato l'archivio nella stessa destinazione, ogni backup per 3 giorni avvisava "Pulizia rinviata: alcuni backup sono spariti". Ora un archivio nuovo (un nuovo id in `repo.json`) viene riconosciuto: un solo avviso "Archivio ricreato", con notifica perché può anche essere un servizio cloud che ha spostato l'archivio, poi la pulizia aspetta per prudenza senza altri avvisi.
+
+Correzioni dalla terza revisione avversativa (integrità, ripristino, ciclo di vita, scala, interfaccia, rilascio):
+
+#### Dati e sicurezza
+- Interrompere un backup, a mano o per il blocco di 2 ore, faceva partire la pulizia forzata, che cancellava tutto quello che quel backup aveva già copiato: il tentativo successivo ricominciava da zero, e con un file enorme il primo backup non finiva mai. Ora un backup interrotto non fa pulizia.
+- Un file già salvato che diventava illeggibile veniva saltato in silenzio (con "salta file senza permessi"), il backup risultava completo e alla lunga la pulizia ne cancellava l'ultima copia. Ora si saltano in silenzio solo i file mai salvati prima; gli altri danno un avviso.
+- "Sostituisci" mandava nel Cestino anche l'archivio dei backup quando la destinazione stava dentro la cartella ripristinata. Ora viene rifiutato con una spiegazione.
+- Un backup che spariva dalla destinazione, tornava e spariva di nuovo bloccava la pulizia per sempre (e con il tetto la destinazione si riempiva).
+- Il backup del profilo scaricava tutti i file iCloud "solo nel cloud" di Scrivania e Documenti (ore e gigabyte). Ora non li legge: se un backup precedente li aveva già salvati restano nel backup, altrimenti vengono contati in Esclusioni come "solo nel cloud".
+- Le cartelle cloud dei client vecchi nella Inizio (`~/Dropbox`, `~/OneDrive`, `~/OneDrive - Azienda`, `~/Google Drive`) venivano nominate ma non escluse dal backup del profilo.
+- Un archivio di formato più recente (`repo.json` "format" maggiore di 1) viene rifiutato in scrittura e pulizia e resta sfogliabile; anche `RIPRISTINO.command` (kit versione 6) si ferma con un errore invece di indovinare.
+
+#### Ripristino
+- "Ripristina in…" poteva ripristinare da un backup diverso da quello scelto se, con il pannello aperto, un backup aggiornava l'elenco.
+- `RIPRISTINO.command` non ripristinava due cartelle con nomi che differiscono solo per maiuscole ("App" e "app").
+- L'ispettore rileggeva tutti gli indici a ogni file selezionato (minuti di CPU con un profilo intero): ora legge un indice alla volta, si ferma se cambi file, e mostra e ripristina la versione del backup aperto. "Confronta con oggi" usa la versione scelta; "Mostra versioni del file" seleziona il file cliccato.
+
+#### Ciclo di vita e interfaccia
+- Memoria senza limite durante backup, ripristino e controllo dell'archivio (2000 file da 1 MB = 1,1 GB di RAM): ora viene liberata a ogni file.
+- Una notifica "Backup non riuscito" a ogni backup orario per avvisi gravi su backup riusciti: ora una sola notifica, con titolo "Problema nell'archivio".
+- Il controllo completo bloccava i backup in silenzio e senza limite: ora rilegge solo i file usati dai backup, il pannello dice "Controllo dell'archivio…" e il backup risulta rinviato, e dopo 2 ore senza avanzare viene interrotto. Non va più in stop per inattività.
+- Dopo "Interrompi" l'icona diventava rossa di errore per 15 minuti.
+- Cambiare destinazione durante un backup o un controllo non faceva mai partire il backup sulla nuova.
+- Una versione nuova aperta mentre quella vecchia girava come servizio di login si chiudeva da sola, e l'avvio al login restava sulla copia in `~/Applications` anche installando l'app in `/Applications`.
+
 ## [0.8.0] - 2026-11-06
 
 ### Aggiunto
@@ -11,14 +45,6 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la n
 - Notifiche a scelta: solo problemi, anche i backup con avvisi, o ogni backup completato.
 - Pannello Registro: il registro di BackupMe salvato su file (sopravvive a riavvii e crash), con filtro "Solo errori", copia e svuota.
 - Controllo completo dell'archivio da Avanzate: rilegge ogni indice e ogni file, segnala backup illeggibili, file mancanti e danneggiati, ripara quelli che hanno ancora la copia attuale. I backup aspettano la fine del controllo.
-
-### Cambiato
-- Finestra Sfoglia rifatta: i backup sono nella barra laterale, raggruppati per giorno con le ore come chip (i mesi più vecchi con i giorni), con i dati nuovi salvati e gli avvisi di ciascuno; il percorso cliccabile è nella barra degli strumenti; i filtri Modificati, Eliminati e Nuovi sono pulsanti con il conteggio; lo stato di ogni elemento è un'etichetta colorata; una barra in basso dice cosa si ripristina e da quale backup. Un ispettore a destra mostra i dettagli e tutte le versioni salvate del file scelto, con Anteprima, Confronta e Ripristina.
-- Icona nella barra dei menu: freccia tonda durante il backup, badge giallo con gli avvisi, badge rosso con gli errori.
-- I servizi cloud vengono rilevati sul Mac (OneDrive, Dropbox, Google Drive, iCloud Drive, Box e gli altri client in `~/Library/CloudStorage`, più le cartelle dei client vecchi nella Inizio): come destinazione si propongono solo quelli presenti, con un account per voce, e i testi nominano solo quelli. Gli archivi lasciati da un client rimosso ("Dropbox (data) Archive") non contano.
-
-### Corretto
-- Dopo aver cancellato e ricreato l'archivio nella stessa destinazione, ogni backup per 3 giorni avvisava "Pulizia rinviata: alcuni backup sono spariti". Ora un archivio nuovo (un nuovo id in `repo.json`) viene riconosciuto: la pulizia aspetta comunque per prudenza, ma senza avviso.
 
 ## [0.7.0] - 2026-11-06
 

@@ -195,6 +195,8 @@ struct MenuContent: View {
             .glassButton(prominent: true)
             .controlSize(.extraLarge)
             .keyboardShortcut(.defaultAction)
+            // a backup can't start while the full check holds the archive
+            .disabled(model.checkProgress != nil && !model.isRunning && model.settings.isConfigured)
 
             GlassGroup(spacing: 8) {
                 HStack(spacing: 8) {
@@ -214,7 +216,8 @@ struct MenuContent: View {
     }
 
     private var primaryTitle: String {
-        !model.settings.isConfigured ? "Configura BackupMe…" : model.isRunning ? "Interrompi backup" : "Esegui backup ora"
+        !model.settings.isConfigured ? "Configura BackupMe…" : model.isRunning ? "Interrompi backup"
+            : model.checkProgress != nil ? "Controllo dell'archivio…" : "Esegui backup ora"
     }
 
     private var primaryIcon: String {

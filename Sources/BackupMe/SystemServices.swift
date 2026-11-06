@@ -114,14 +114,16 @@ enum SystemServices {
 
     // MARK: single instance
 
-    /// A login agent and a manual open can start two copies: the newer one quits.
+    /// A login agent and a manual open can start two copies: the newer one quits. Unless it is a newer
+    /// version (an update opened while the old one runs at login): then the old one is asked to quit instead.
     static func quitIfAlreadyRunning() {
         guard let id = Bundle.main.bundleIdentifier else { return }
         let me = NSRunningApplication.current
-        if NSRunningApplication.runningApplications(withBundleIdentifier: id).contains(where: {
-            $0 != me && ($0.launchDate ?? .distantPast) <= (me.launchDate ?? .distantFuture)
-        }) {
-            exit(0)
+        func build(_ bundle: Bundle?) -> Int { Int(bundle?.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0 }
+        let mine = build(Bundle.main)
+        for other in NSRunningApplication.runningApplications(withBundleIdentifier: id) where other != me {
+            if build(other.bundleURL.flatMap(Bundle.init(url:))) < mine { other.terminate(); continue }
+            if (other.launchDate ?? .distantPast) <= (me.launchDate ?? .distantFuture) { exit(0) }
         }
     }
 
@@ -134,7 +136,11 @@ enum SystemServices {
 
     static var launchAtLogin: Bool { FileManager.default.fileExists(atPath: agentPlist.path) }
 
+    /// This copy when it is installed in an Applications folder (an update put in /Applications must not leave the
+    /// login agent on an old copy in ~/Applications); otherwise the installed one, so a run from the build folder
+    /// doesn't take over the login.
     private static var agentExecutable: String? {
+        if Bundle.main.bundleURL.pathComponents.contains("Applications") { return Bundle.main.executablePath }
         let installed = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Applications/BackupMe.app/Contents/MacOS/BackupMe")
         return FileManager.default.fileExists(atPath: installed.path) ? installed.path : Bundle.main.executablePath
     }

@@ -10,6 +10,9 @@ public struct PruneResult: Equatable, Sendable {
     /// Manifests of this same archive vanished from the listing: worth telling the user. False when the only missing
     /// ones belonged to an earlier archive at this destination, deleted and made again from nothing.
     public var vanished = false
+    /// This run found a different archive id in repo.json: the archive was made again from nothing, and the
+    /// backups of the earlier one are gone from the destination. Told once, in the run that notices it.
+    public var archiveReplaced = false
     /// Objects that kept manifests use but the archive listing lacks (counted only when object cleanup ran).
     public var missingObjects = 0
 }
@@ -86,7 +89,8 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             }
         }
         return PruneResult(deletedSnapshots: deleted, deletedObjects: deletedObjects, poolSize: size,
-                           overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, vanished: tracked?.warn ?? false, missingObjects: missingObjects)
+                           overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, vanished: tracked?.warn ?? false,
+                           archiveReplaced: tracked?.replaced ?? false, missingObjects: missingObjects)
     }
 }
 
@@ -95,18 +99,22 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
 /// `wait` while any manifest has been missing for less than 3 days: object cleanup must wait. `warn` only when
 /// they are of the same archive: those of an archive made again from nothing (a new id in repo.json) become
 /// `<id>.previous`, still waited for (a re-sync could rewrite repo.json too) but expected to stay away.
-private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, now: Date) -> (wait: Bool, warn: Bool) {
+private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, now: Date) -> (wait: Bool, warn: Bool, replaced: Bool) {
     let fm = FileManager.default
     let markers = [".seen", ".gone", ".previous"]
     func id(of name: String) -> String { markers.first(where: name.hasSuffix).map { String(name.dropLast($0.count)) } ?? name }
     func mark(_ url: URL, as name: String) {
         let to = dir.appending(path: name)
+        // already marked (a manifest that left before): keep its date, or the 3 days would restart at every run
+        if fm.fileExists(atPath: to.path) { try? fm.removeItem(at: url); return }
         try? fm.moveItem(at: url, to: to)
         try? fm.setAttributes([.modificationDate: now], ofItemAtPath: to.path)
     }
     try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
     let idFile = dir.appending(path: "archive")
+    var replaced = false
     if let archive, let known = try? String(contentsOf: idFile, encoding: .utf8), known != archive {
+        replaced = true
         for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name != "archive" && !ids.contains(id(of: name)) {
             mark(dir.appending(path: name), as: id(of: name) + ".previous")
         }
@@ -115,7 +123,10 @@ private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, n
     if let archive { try? archive.write(to: idFile, atomically: true, encoding: .utf8) }
 
     let names = Set((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
-    for id in ids where !names.contains(id) && !names.contains(id + ".seen") {
+    // a manifest marked gone or previous that is listed again is restored below, not seen anew: both a marker
+    // and a ".seen" would make the same id leave twice later
+    for id in ids where !names.contains(id) && !names.contains(id + ".seen") && !names.contains(id + ".gone")
+        && !names.contains(id + ".previous") {
         fm.createFile(atPath: dir.appending(path: id + ".seen").path, contents: nil)
     }
     var wait = false, warn = false
@@ -132,7 +143,7 @@ private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, n
             wait = true; warn = true
         }
     }
-    return (wait, warn)
+    return (wait, warn, replaced)
 }
 
 /// Object hashes used by one manifest. A manifest that can't be read throws, which aborts pruning before any delete.

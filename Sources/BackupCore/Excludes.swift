@@ -83,6 +83,9 @@ public struct ExcludeRules: Sendable {
             Automatic(path: home + "/Library/Mobile Documents", reason: "iCloud Drive"),
             Automatic(path: home + "/.Trash", reason: "Cestino"),
         ]
+        // the folders of older cloud clients, outside the Library: with the whole profile saved they would be
+        // downloaded and backed up too
+        list += CloudFolder.homeFolders(home: home).map { Automatic(path: $0.url.path, reason: "Cartella di \($0.service)") }
         return list
     }
 }

@@ -25,7 +25,8 @@ private func verify(_ objects: [(key: String, value: Int64)], in repository: Rep
         r.checked += 1
         r.bytes += size
         progress(Double(i + 1) / Double(objects.count))
-        if try repository.verifyObject(hash) { continue }
+        // a pool per object: every read would otherwise stay in memory until the whole check ends
+        if try autoreleasepool(invoking: { try repository.verifyObject(hash) }) { continue }
         if let p = cache.path(for: hash), (try? repository.repairObject(hash, from: URL(fileURLWithPath: p))) == true {
             r.repaired.append(hash)
         } else {
@@ -46,7 +47,7 @@ public struct ArchiveCheck: Sendable {
     public var isHealthy: Bool { unreadableSnapshots.isEmpty && missingObjects == 0 && objects.corrupt.isEmpty }
 }
 
-/// Reads every manifest and every object back: what the daily sample does, for the whole archive. Corrupt objects
+/// Reads every manifest and every object they use back: what the daily sample does, for the whole archive. Corrupt objects
 /// are repaired from the source files when possible, as in `verifySample`.
 public func checkArchive(repository: Repository, cache: HashCache, isCancelled: () -> Bool = { false },
                          progress: (Double) -> Void = { _ in }) throws -> ArchiveCheck {
@@ -56,12 +57,15 @@ public func checkArchive(repository: Repository, cache: HashCache, isCancelled: 
         var needed = Set<String>()
         for id in ids {
             if isCancelled() { throw BackupError.cancelled }
-            do { needed.formUnion(try repository.readSnapshot(id).entries.compactMap(\.hash)) } catch { unreadable.append(id) }
+            do { try autoreleasepool { needed.formUnion(try repository.readSnapshot(id).entries.compactMap(\.hash)) } }
+            catch { unreadable.append(id) }
         }
         let sizes = try repository.objectSizes()
         let missing = needed.subtracting(sizes.keys).count
-        let objects = try verify(Array(sizes), in: repository, cache: cache, budgetBytes: .max,
-                                 isCancelled: isCancelled, progress: progress)
+        // only what a backup uses: objects no manifest needs go at the next cleanup, reading them is a waste
+        // (on a cloud folder, a download)
+        let objects = try verify(sizes.filter { needed.contains($0.key) }.map { ($0.key, $0.value) }, in: repository, cache: cache,
+                                 budgetBytes: .max, isCancelled: isCancelled, progress: progress)
         return ArchiveCheck(snapshots: ids.count, unreadableSnapshots: unreadable, missingObjects: missing, objects: objects)
     }
 }
