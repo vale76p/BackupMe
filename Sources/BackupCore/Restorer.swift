@@ -36,14 +36,22 @@ public final class Restorer {
         // a source that is a symlink was backed up through the link: restore into the real folder
         let sourceRoot = URL(fileURLWithPath: source).resolvingSymlinksInPath()
         let original = path.isEmpty ? sourceRoot : sourceRoot.appending(path: path)
-        let last = path.isEmpty ? URL(fileURLWithPath: source).lastPathComponent : original.lastPathComponent
+        // names from strings, not URLs: a URL holds them decomposed, and the restored item would get another name
+        let last = ((path.isEmpty ? source : path) as NSString).lastPathComponent
         // a source "/" (or a tampered name) would otherwise land next to the chosen folder, not inside it
         let name = ["", "/", ".", ".."].contains(last) ? "Backup" : last
         let target: URL
+        let targetName: String
         switch mode {
-        case .besideOriginal: target = original.deletingLastPathComponent().appending(path: Self.restoredName(name, date: snapshot.date))
-        case .replace: target = original
-        case .into(let dir): target = dir.appending(path: name)
+        case .besideOriginal:
+            targetName = Self.restoredName(name, date: snapshot.date)
+            target = original.deletingLastPathComponent().appending(path: targetName)
+        case .replace:
+            target = original
+            targetName = path.isEmpty ? ((source as NSString).resolvingSymlinksInPath as NSString).lastPathComponent : last
+        case .into(let dir):
+            target = dir.appending(path: name)
+            targetName = name
         }
         // the destination may sit inside a saved folder (it is skipped by the backup): trashing that folder would
         // take every backup with it, and the restored copy doesn't hold them
@@ -66,10 +74,10 @@ public final class Restorer {
         do {
             try build(entries, prefix: path, at: staging)
             if mode == .replace, (try? fm.attributesOfItem(atPath: target.path)) != nil { try trash(target); trashed = true }
-            return try place(staging, at: target, renameIfTaken: mode != .replace)
+            return try place(staging, in: parent, name: targetName, renameIfTaken: mode != .replace)
         } catch {
             // the current item is already in the Trash: the rebuilt copy is now the only one outside it, keep it
-            if trashed, let kept = try? place(staging, at: parent.appending(path: Self.restoredName(name, date: snapshot.date)),
+            if trashed, let kept = try? place(staging, in: parent, name: Self.restoredName(name, date: snapshot.date),
                                               renameIfTaken: true) {
                 throw RestoreError.keptBeside(kept.path)
             }
@@ -120,6 +128,7 @@ public final class Restorer {
                     // symlink mode/mtime are not restored: macOS ignores link permissions in practice
                     try fm.createSymbolicLink(atPath: url.path, withDestinationPath: e.linkTarget ?? "")
                 }
+                if !rel.isEmpty { Self.keepSavedName(url, (rel as NSString).lastPathComponent) }
             }
         }
         // deepest first, so a read-only folder is locked only after its children are written
@@ -127,6 +136,15 @@ public final class Restorer {
             try fm.setAttributes([.posixPermissions: Int(e.mode)], ofItemAtPath: url.path)
             try setModificationDate(url, e.mtime)
         }
+    }
+
+    /// Foundation writes names decomposed ("u" + "¨"): the saved name was most likely composed ("ü"). The same
+    /// name for the Finder, another one for git, rsync or a Linux server. rename(2) keeps the bytes it is given.
+    static func keepSavedName(_ url: URL, _ name: String) {
+        let decomposed = name.decomposedStringWithCanonicalMapping
+        guard !name.utf8.elementsEqual(decomposed.utf8) else { return }
+        let dir = url.deletingLastPathComponent().path
+        _ = rename(dir + "/" + decomposed, dir + "/" + name)
     }
 
     /// Full nanosecond precision (FileManager keeps only microseconds, which made restored files look "modificato").
@@ -142,13 +160,14 @@ public final class Restorer {
 
     /// Moves `staging` to `target` without ever replacing an existing item. With `renameIfTaken`,
     /// picks "name 2", "name 3"… atomically, so two restores at once can't collide.
-    private func place(_ staging: URL, at target: URL, renameIfTaken: Bool) throws -> URL {
-        let ext = target.pathExtension
-        let stem = ext.isEmpty ? target.lastPathComponent : String(target.lastPathComponent.dropLast(ext.count + 1))
+    private func place(_ staging: URL, in dir: URL, name target: String, renameIfTaken: Bool) throws -> URL {
+        let ext = (target as NSString).pathExtension
+        let stem = ext.isEmpty ? target : String(target.dropLast(ext.count + 1))
         for n in 1...100 {
-            let name = n == 1 ? target.lastPathComponent : (ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
-            let candidate = target.deletingLastPathComponent().appending(path: name)
-            if renamex_np(staging.path, candidate.path, UInt32(RENAME_EXCL)) == 0 { return candidate }
+            let name = n == 1 ? target : (ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
+            // a String path: rename(2) keeps the bytes of the name as given
+            let candidate = dir.path + "/" + name
+            if renamex_np(staging.path, candidate, UInt32(RENAME_EXCL)) == 0 { return URL(fileURLWithPath: candidate) }
             guard errno == EEXIST, renameIfTaken else { break }
         }
         throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EEXIST)

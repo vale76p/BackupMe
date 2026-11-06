@@ -123,8 +123,10 @@ private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, n
     let idFile = dir.appending(path: "archive")
     var replaced = false
     if let archive, let known = try? String(contentsOf: idFile, encoding: .utf8), known != archive {
-        replaced = true
-        for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name != "archive" && !ids.contains(id(of: name)) {
+        let cached = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0 != "archive" }
+        // repo.json written again over the same backups (lost, or damaged and repaired) is the same archive
+        replaced = !cached.isEmpty && !cached.contains { ids.contains(id(of: $0)) }
+        for name in cached where replaced && !ids.contains(id(of: name)) {
             mark(dir.appending(path: name), as: id(of: name) + ".previous")
         }
     }

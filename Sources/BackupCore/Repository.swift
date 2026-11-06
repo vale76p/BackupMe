@@ -7,6 +7,8 @@ public enum RepositoryError: Error, Equatable {
     case corruptObject(String)
     /// The archive was written by a newer BackupMe, in a format this version doesn't know.
     case newerFormat(Int)
+    /// A manifest whose checksum or hashes don't match: that backup can't be trusted, so it isn't read.
+    case damagedSnapshot(String)
 }
 
 /// Archive layout: <destination>/BackupMe/<archive name>/{repo.json, objects/, snapshots/, lock}
@@ -24,6 +26,9 @@ public final class Repository {
     private var lockURL: URL { root.appending(path: "lock") }
 
     /// `create: false` opens an existing archive only (browsing must never write to the destination).
+    /// repo.json was there but unreadable and has been written again (same layout, a new id).
+    public private(set) var repairedInfo = false
+
     public init(destination: URL, computerName: String, create: Bool = true) throws {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDir), isDir.boolValue else {
@@ -46,7 +51,11 @@ public final class Repository {
         }
         try fm.createDirectory(at: objectsDir, withIntermediateDirectories: true)
         try fm.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
-        if !fm.fileExists(atPath: info.path) {
+        // read but not JSON with an id: damaged, written again. Not when the read fails (an offline cloud file):
+        // that one is probably fine
+        let damaged = (try? Data(contentsOf: info)).map { Self.id(in: $0) == nil } ?? false
+        if damaged || !fm.fileExists(atPath: info.path) {
+            repairedInfo = damaged
             let json = #"{"format":\#(Self.format),"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
             try atomicWrite(Data(json.utf8), to: info, sync: .file)
         }
@@ -55,9 +64,11 @@ public final class Repository {
 
     /// The archive's identity, from repo.json: a different one means the archive was made again from nothing.
     public var archiveID: String? {
-        guard let data = try? Data(contentsOf: root.appending(path: "repo.json")),
-              let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return info["id"] as? String
+        (try? Data(contentsOf: root.appending(path: "repo.json"))).flatMap(Self.id(in:))
+    }
+
+    private static func id(in data: Data) -> String? {
+        ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["id"] as? String
     }
 
     /// Picking the BackupMe folder, or an archive inside it, means the folder holding them:
@@ -178,7 +189,11 @@ public final class Repository {
         // one silent call: allow it the time a slow disk or network share needs (5 MB/s)
         let size = (try? fm.attributesOfItem(atPath: source.path)[.size] as? Int64) ?? 0
         Activity.beat(grace: Double(size) / 5_000_000)
-        try fm.copyItem(at: source, to: tmp)
+        do { try fm.copyItem(at: source, to: tmp) } catch {
+            // a copy cut short by a full disk would keep the space the next files need
+            try? fm.removeItem(at: tmp)
+            throw error
+        }
         guard try streamHash(tmp) == hash else {
             try? fm.removeItem(at: tmp)
             return nil
@@ -284,15 +299,48 @@ public final class Repository {
         enc.dateEncodingStrategy = .secondsSince1970
         enc.outputFormatting = .sortedKeys
         let json = try enc.encode(s)
+        // a checksum as the first key: one byte flipped in the compressed file can still decode, into other hashes
+        // and names. Readers that don't know it (RIPRISTINO.command, older versions) skip an unknown key
+        let body = json.dropFirst() // without "{"
+        let sealed = Data(Self.checkPrefix.utf8) + Data(sha256Hex(Data(body)).utf8) + Data("\",".utf8) + body
         // full flush: the manifest makes the backup exist, so everything before it must be on disk
-        try atomicWrite(try (json as NSData).compressed(using: .lzfse) as Data, to: snapshotURL(s.id), sync: .device, exclusive: true)
+        try atomicWrite(try (sealed as NSData).compressed(using: .lzfse) as Data, to: snapshotURL(s.id), sync: .device, exclusive: true)
     }
 
+    private static let checkPrefix = #"{"check":""#
+
     public func readSnapshot(_ id: String) throws -> Snapshot {
-        let raw = try Data(contentsOf: snapshotURL(id))
+        let json = try sealedJSON(id)
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .secondsSince1970
-        return try dec.decode(Snapshot.self, from: try (raw as NSData).decompressed(using: .lzfse) as Data)
+        let s = try dec.decode(Snapshot.self, from: json)
+        // manifests from before the checksum: a hash that isn't one is the trace of a damaged file
+        guard json.starts(with: Data(Self.checkPrefix.utf8)) || s.entries.allSatisfy({ $0.hash.map(Self.isHash) ?? true }) else {
+            throw RepositoryError.damagedSnapshot(id)
+        }
+        return s
+    }
+
+    /// Whether a manifest can be read: its checksum, without decoding it, when it has one.
+    public func snapshotIsIntact(_ id: String) -> Bool {
+        autoreleasepool {
+            guard let json = try? sealedJSON(id) else { return false }
+            return json.starts(with: Data(Self.checkPrefix.utf8)) || (try? readSnapshot(id)) != nil
+        }
+    }
+
+    /// The manifest's JSON, its checksum verified when it has one.
+    private func sealedJSON(_ id: String) throws -> Data {
+        let raw = try Data(contentsOf: snapshotURL(id))
+        guard let json = try? (raw as NSData).decompressed(using: .lzfse) as Data else { throw RepositoryError.damagedSnapshot(id) }
+        let prefix = Data(Self.checkPrefix.utf8)
+        guard json.starts(with: prefix) else { return json }
+        let start = json.startIndex + prefix.count
+        guard json.count > prefix.count + 66, json[start + 64] == UInt8(ascii: "\""), json[start + 65] == UInt8(ascii: ","),
+              String(decoding: json[start ..< start + 64], as: UTF8.self) == sha256Hex(Data(json[(start + 66)...])) else {
+            throw RepositoryError.damagedSnapshot(id)
+        }
+        return json
     }
 
     public func deleteSnapshot(_ id: String) throws { try fm.removeItem(at: snapshotURL(id)) }

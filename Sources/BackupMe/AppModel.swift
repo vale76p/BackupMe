@@ -19,7 +19,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         }
     }
     static let notConfigured = "Scegli cartelle e destinazione nelle Impostazioni"
-    nonisolated static let damaged = "Archivio danneggiato:"
+    nonisolated static let damaged = BackupEngine.damagedPrefix
     nonisolated static let incomplete = "Archivio incompleto:"
     nonisolated static let recreated = "Archivio ricreato:"
     static let criticalPrefixes = [damaged, incomplete, recreated, "Pulizia non riuscita"]
@@ -347,7 +347,14 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                                     progress: progress, isCancelled: isCancelled)
         } catch {
             report = failed(error)
+            // a write that fails names an archive folder ("in “2e”") or nothing at all: say where and why
+            if !(error is RepositoryError || error is BackupError) {
+                let gone = !FileManager.default.fileExists(atPath: repo.root.path)
+                report.error = gone ? describe(RepositoryError.destinationMissing(s.destination ?? ""))
+                    : "Impossibile scrivere nella destinazione \(((s.destination ?? "") as NSString).abbreviatingWithTildeInPath): \(describeWrite(error))"
+            }
         }
+        if repo.repairedInfo { report.warnings.append("Riparato repo.json, il file che identifica l'archivio: era illeggibile") }
         Log.backup.debug("Scansione: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(report.excluded?.count ?? 0) cartelle escluse, manifest \(report.snapshotID ?? "nessuno")\(report.warnings.isEmpty ? "" : "; avvisi: " + report.warnings.joined(separator: " | "))")
         // once a day a sample of the archive is read back: a copy damaged by a sync conflict shows up now, not
         // at restore time. Small budget: on OneDrive Files On-Demand every read may be a download.
@@ -360,6 +367,12 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 if !v.repaired.isEmpty {
                     report.warnings.append(v.repaired.count == 1 ? "Riparato 1 file danneggiato nell'archivio usando la copia attuale"
                                            : "Riparati \(v.repaired.count) file danneggiati nell'archivio usando le copie attuali")
+                }
+                // manifests too, the newest and one at random: one damaged loses its whole backup, and nothing else
+                // reads them before a restore
+                let ids = (try? repo.snapshotIDs()) ?? []
+                for id in Set([ids.last, ids.randomElement()].compactMap { $0 }) where !repo.snapshotIsIntact(id) {
+                    report.warnings.append("\(Self.damaged) il backup del \(Snapshot.date(fromID: id)?.formatted(date: .abbreviated, time: .shortened) ?? id) non si legge e non si può ripristinare")
                 }
                 if !v.corrupt.isEmpty {
                     report.warnings.append("\(Self.damaged) \(v.corrupt.count) file non si possono leggere e manca una copia attuale per ripararli: i backup che li usano non si ripristinano per intero")
@@ -398,7 +411,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             }
             return (report, result.overCap, verified)
         } catch {
-            report.warnings.append("Pulizia non riuscita: \(describe(error))")
+            // the destination unplugged: the backup's own error says it, the archive isn't damaged
+            if FileManager.default.fileExists(atPath: repo.root.path) {
+                report.warnings.append("Pulizia non riuscita: \(describe(error))")
+            }
             return (report, nil, verified)
         }
     }
@@ -478,6 +494,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RepositoryError.destinationMissing(let p): return "Destinazione non trovata: \(p)"
         case RepositoryError.locked: return "Un altro backup è già in corso"
         case RepositoryError.corruptObject(let h): return "Archivio danneggiato (oggetto \(h.prefix(12)))"
+        case RepositoryError.damagedSnapshot(let id):
+            return "\(damaged) il backup del \(Snapshot.date(fromID: id)?.formatted(date: .abbreviated, time: .shortened) ?? id) non si legge"
         case RepositoryError.newerFormat(let f):
             return "L'archivio è stato creato da una versione più recente di BackupMe (formato \(f)): aggiorna l'app per continuare i backup"
         case BackupError.sourceOverlapsDestination(let p): return "\((p as NSString).abbreviatingWithTildeInPath) è dentro la destinazione dei backup"
@@ -491,6 +509,17 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RestoreError.containsArchive(let p):
             return "«\((p as NSString).lastPathComponent)» contiene l'archivio dei backup: Sostituisci lo manderebbe nel Cestino. Usa Ripristina accanto o Ripristina in…"
         default: return error.localizedDescription
+        }
+    }
+
+    /// Why a write failed, without Foundation's file names (a fan-out folder of the archive means nothing to anyone).
+    nonisolated static func describeWrite(_ error: Error) -> String {
+        switch BackupEngine.posixCode(error) {
+        case ENOSPC: "spazio esaurito"
+        case EACCES, EPERM: "permesso negato"
+        case EROFS: "il disco è in sola lettura"
+        case ENOENT: "cartella dell'archivio non trovata"
+        default: error.localizedDescription
         }
     }
 }

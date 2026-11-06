@@ -2,6 +2,24 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.9.2] - 2026-11-06
+
+Difetti trovati da uno stress test sull'app installata: backup interrotti con `kill -9`, destinazione espulsa a metà copia, disco pieno, oggetti, indici e `repo.json` corrotti o cancellati.
+
+### Cambiato
+- Impostazioni › Pianificazione e Registro stanno nella finestra senza scorrere.
+- Durante un backup l'icona nella barra dei menu resta il disco, con la freccia circolare blu dell'icona dell'app come badge.
+- Il pannello della barra dei menu mostra la destinazione: nome, spazio libero e occupato dai backup, prossimo backup.
+
+### Corretto
+- Gli indici dei backup (manifest) non avevano un checksum: un solo byte cambiato nel file compresso cambiava 14 hash e l'indice veniva comunque letto come valido. Ora ogni manifest nuovo ha un checksum come primo campo (`"check"`, ignorato da `RIPRISTINO.command` e dalle versioni precedenti), e in quelli vecchi un hash non valido rende il manifest danneggiato.
+- Se non era cambiato niente, un backup "riuscito" poteva riusare come ultimo backup un indice illeggibile. Ora lo rilegge: se è danneggiato salva un backup nuovo e lo segnala. La verifica giornaliera a campione controlla anche l'indice più recente e uno a caso.
+- Staccare il disco durante un backup dava "Impossibile copiare … in “2e”" e un falso "Problema nell'archivio" ("Pulizia non riuscita") che restava fino a "Controlla ora". Ora dice "Destinazione non trovata" e nessun problema dell'archivio.
+- Con `repo.json` cancellato l'app avvisava "Archivio ricreato: … i backup precedenti non ci sono più" con tutti i backup ancora lì. Un `repo.json` illeggibile veniva ignorato in silenzio: ora viene riscritto, con un avviso.
+- Con il disco pieno ogni tentativo copiava fino a riempirlo, falliva e la pulizia cancellava tutto: nessun backup, mai. Ora i file che non ci stanno restano fuori e il backup salva il resto, segnalato come parziale ("Spazio esaurito nella destinazione: 1 file (1,57 GB) non salvato"); l'ultimo backup completo resta protetto dalla pulizia. Una copia interrotta dal disco pieno non lascia più il file temporaneo.
+- Il ripristino scriveva i nomi con accenti in forma decomposta (NFD, "u" + "¨"): uguali nel Finder, diversi per git, rsync o un server Linux. Ora hanno la forma con cui sono stati salvati, byte per byte.
+- Gli errori di scrittura nella destinazione dicono dove e perché ("permesso negato", "spazio esaurito", "il disco è in sola lettura") invece di nominare una cartella interna dell'archivio.
+
 ## [0.9.1] - 2026-11-06
 
 Difetti medi e bassi della terza revisione avversativa.

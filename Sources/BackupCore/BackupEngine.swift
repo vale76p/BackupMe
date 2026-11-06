@@ -74,6 +74,12 @@ public final class BackupEngine {
     private let skipUnreadable: Bool
     /// Items left in the cloud by the current run.
     private var cloudOnly = 0
+    /// Files of the current run that didn't fit in the destination, and the smallest of them: anything at least
+    /// as big is skipped without copying it until the disk is full again.
+    private var noRoom = (count: 0, bytes: Int64(0), from: Int64.max)
+
+    /// Warnings starting with this mean a backup can't be restored in full: the app notifies them.
+    public static let damagedPrefix = "Archivio danneggiato:"
 
     public init(repository: Repository, cache: HashCache, excludes: ExcludeRules, skipUnreadable: Bool = false) {
         self.repository = repository; self.cache = cache; self.excludes = excludes; self.skipUnreadable = skipUnreadable
@@ -103,6 +109,7 @@ public final class BackupEngine {
             var sourceErrors: [String] = []
             var scans: [Scan] = []
             cloudOnly = 0
+            noRoom = (0, 0, .max)
             for s in sources {
                 var scan = Scan(source: s.path)
                 if let err = scanSource(&scan) { sourceErrors.append(err) } else { scans.append(scan) }
@@ -141,6 +148,12 @@ public final class BackupEngine {
                 excluded += scan.excluded
             }
             if isCancelled() { throw BackupError.cancelled }
+            // a partial backup rather than none: failing would make cleanup delete everything copied, and the next
+            // attempt would fill the disk again with the same files
+            if noRoom.count > 0 {
+                let size = ByteCountFormatter.string(fromByteCount: noRoom.bytes, countStyle: .file)
+                sourceErrors.append("Spazio esaurito nella destinazione: \(noRoom.count) file (\(size)) non \(noRoom.count == 1 ? "salvato" : "salvati") in questo backup")
+            }
             let error = sourceErrors.isEmpty ? nil : sourceErrors.joined(separator: "\n")
             // bounded like the excluded list: 400k cloud files offline would mean MBs in every report and manifest
             if warnings.count > Self.excludedLimit {
@@ -159,8 +172,12 @@ public final class BackupEngine {
             // identical to the last manifest: don't upload another copy of it
             let digest = Self.digest(sources: sources.map(\.path), entries: entries)
             if let last = cache.lastManifest, last.digest == digest, repository.snapshotExists(last.id) {
-                try? cache.save()
-                return report(last.id)
+                // the newest backup must be restorable: a damaged one is written again below
+                if repository.snapshotIsIntact(last.id) {
+                    try? cache.save()
+                    return report(last.id)
+                }
+                warnings.append("\(Self.damagedPrefix) il backup del \(Snapshot.date(fromID: last.id)?.formatted(date: .abbreviated, time: .shortened) ?? last.id) non si legge più e non si può ripristinare: i file sono stati salvati in un backup nuovo")
             }
             var date = now
             while repository.snapshotExists(Snapshot.id(for: date)) { date += 1 } // one manifest per second, never overwritten
@@ -336,11 +353,18 @@ public final class BackupEngine {
             var stable = FileStat(path: path).map { $0.unchanged(since: st) } ?? false
             var written: Int64 = 0
             if stable, !repository.hasObject(hash) {
-                if big {
-                    // nil: the file changed between hashing and copying, and nothing was stored
-                    if let w = try repository.putObjectFile(from: url, hash: hash) { written = w } else { stable = false }
-                } else {
-                    written = try repository.putObject(data, hash: hash)
+                guard st.size < noRoom.from else { noRoom.count += 1; noRoom.bytes += st.size; return nil }
+                do {
+                    if big {
+                        // nil: the file changed between hashing and copying, and nothing was stored
+                        if let w = try repository.putObjectFile(from: url, hash: hash) { written = w } else { stable = false }
+                    } else {
+                        written = try repository.putObject(data, hash: hash)
+                    }
+                } catch where Self.posixCode(error) == ENOSPC {
+                    // shortcut: the manifest still needs room; a disk filled to the last byte fails the backup as before
+                    noRoom = (noRoom.count + 1, noRoom.bytes + st.size, min(noRoom.from, st.size))
+                    return nil
                 }
             }
             guard stable else {
@@ -352,6 +376,21 @@ public final class BackupEngine {
             return (hash, st, written)
         }
         return nil
+    }
+
+    /// The POSIX error under a Foundation one (ENOSPC, EACCES…), wherever Foundation put it.
+    public static func posixCode(_ error: Error) -> Int32? {
+        let e = error as NSError
+        if e.domain == NSCocoaErrorDomain {
+            switch e.code {
+            case NSFileWriteOutOfSpaceError: return ENOSPC
+            case NSFileWriteNoPermissionError, NSFileReadNoPermissionError: return EACCES
+            case NSFileWriteVolumeReadOnlyError: return EROFS
+            default: break
+            }
+        }
+        let posix = e.domain == NSPOSIXErrorDomain ? e : e.userInfo[NSUnderlyingErrorKey] as? NSError
+        return posix.flatMap { $0.domain == NSPOSIXErrorDomain ? Int32($0.code) : nil }
     }
 
     static func isPermissionDenied(_ error: Error) -> Bool {
