@@ -163,8 +163,29 @@ import Testing
         try fm.moveItem(at: m, to: hidden)
         var keepNewest = RetentionPolicy(); keepNewest.days = 0; keepNewest.weeks = 0; keepNewest.months = 0
         let result = try prune(repository: r, policy: keepNewest, capBytes: nil, now: t0.addingTimeInterval(9 * 86400), refsCache: refs)
-        #expect(result.gcSkipped)
+        #expect(result.gcSkipped && result.vanished)
         #expect(r.hasObject(sha256Hex(Data("v1".utf8))))
+    }
+
+    @Test func recreatedArchiveWaitsWithoutWarning() throws {
+        let refs = tmp()
+        write("v1", to: src.appending(path: "a.txt"))
+        let old = try repo()
+        _ = try engine(old).run(sources: [src], now: t0)
+        _ = try prune(repository: old, policy: RetentionPolicy(), capBytes: nil, now: t0, refsCache: refs)
+        // the user deletes the archive folder; the next backup makes a new one, with a new id
+        try fm.removeItem(at: dest.appending(path: "BackupMe"))
+        write("v2", to: src.appending(path: "a.txt"))
+        let new = try repo()
+        #expect(new.archiveID != nil)
+        _ = try BackupEngine(repository: new, cache: HashCache(url: tmp().appending(path: "c.json")),
+                             excludes: ExcludeRules(patterns: [])).run(sources: [src], now: t0.addingTimeInterval(3600))
+        let first = try prune(repository: new, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(3600), refsCache: refs)
+        #expect(first.gcSkipped && !first.vanished)
+        let again = try prune(repository: new, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(7200), refsCache: refs)
+        #expect(again.gcSkipped && !again.vanished)
+        let later = try prune(repository: new, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(4 * 86400), refsCache: refs)
+        #expect(!later.gcSkipped && !later.vanished)
     }
 
     // MARK: retention & schedule

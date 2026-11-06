@@ -7,6 +7,9 @@ public struct PruneResult: Equatable, Sendable {
     public var overCap: Bool
     /// True when object cleanup was skipped because known manifests vanished from the listing (e.g. OneDrive re-sync).
     public var gcSkipped = false
+    /// Manifests of this same archive vanished from the listing: worth telling the user. False when the only missing
+    /// ones belonged to an earlier archive at this destination, deleted and made again from nothing.
+    public var vanished = false
     /// Objects that kept manifests use but the archive listing lacks (counted only when object cleanup ran).
     public var missingObjects = 0
 }
@@ -26,7 +29,8 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
                   pinned: Set<String> = []) throws -> PruneResult {
     try repository.withLock {
         var ids = try repository.snapshotIDs()
-        let gcSkipped = refsCache.map { trackVanished(ids: Set(ids), cache: $0, now: now) } ?? false
+        let tracked = refsCache.map { trackVanished(ids: Set(ids), archive: repository.archiveID, cache: $0, now: now) }
+        let gcSkipped = tracked?.wait ?? false
 
         // ids that don't parse as dates are not ours to judge: keep them
         let dated = ids.compactMap { id in Snapshot.date(fromID: id).map { (id: id, date: $0) } }
@@ -82,37 +86,53 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             }
         }
         return PruneResult(deletedSnapshots: deleted, deletedObjects: deletedObjects, poolSize: size,
-                           overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, missingObjects: missingObjects)
+                           overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, vanished: tracked?.warn ?? false, missingObjects: missingObjects)
     }
 }
 
 /// Remembers every manifest seen (`<id>.seen`, or `<id>` once its references are cached). Marks the ones
 /// missing from the listing as `<id>.gone`, and restores them if they come back.
-/// Returns true while any manifest has been gone for less than 3 days: object cleanup must wait.
-private func trackVanished(ids: Set<String>, cache dir: URL, now: Date) -> Bool {
+/// `wait` while any manifest has been missing for less than 3 days: object cleanup must wait. `warn` only when
+/// they are of the same archive: those of an archive made again from nothing (a new id in repo.json) become
+/// `<id>.previous`, still waited for (a re-sync could rewrite repo.json too) but expected to stay away.
+private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, now: Date) -> (wait: Bool, warn: Bool) {
     let fm = FileManager.default
+    let markers = [".seen", ".gone", ".previous"]
+    func id(of name: String) -> String { markers.first(where: name.hasSuffix).map { String(name.dropLast($0.count)) } ?? name }
+    func mark(_ url: URL, as name: String) {
+        let to = dir.appending(path: name)
+        try? fm.moveItem(at: url, to: to)
+        try? fm.setAttributes([.modificationDate: now], ofItemAtPath: to.path)
+    }
     try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    let idFile = dir.appending(path: "archive")
+    if let archive, let known = try? String(contentsOf: idFile, encoding: .utf8), known != archive {
+        for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name != "archive" && !ids.contains(id(of: name)) {
+            mark(dir.appending(path: name), as: id(of: name) + ".previous")
+        }
+    }
+    // a cache from before this file existed takes the current archive as its own
+    if let archive { try? archive.write(to: idFile, atomically: true, encoding: .utf8) }
+
     let names = Set((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
     for id in ids where !names.contains(id) && !names.contains(id + ".seen") {
         fm.createFile(atPath: dir.appending(path: id + ".seen").path, contents: nil)
     }
-    var waiting = false
-    for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] {
+    var wait = false, warn = false
+    for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name != "archive" {
         let url = dir.appending(path: name)
-        if name.hasSuffix(".gone") {
-            let id = String(name.dropLast(5))
+        let id = id(of: name)
+        if name.hasSuffix(".gone") || name.hasSuffix(".previous") {
             if ids.contains(id) { try? fm.moveItem(at: url, to: dir.appending(path: id)); continue }
             let since = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? now
-            if now.timeIntervalSince(since) < 3 * 86400 { waiting = true } else { try? fm.removeItem(at: url) }
-        } else if !ids.contains(name.hasSuffix(".seen") ? String(name.dropLast(5)) : name) {
-            let id = name.hasSuffix(".seen") ? String(name.dropLast(5)) : name
-            let gone = dir.appending(path: id + ".gone")
-            try? fm.moveItem(at: url, to: gone)
-            try? fm.setAttributes([.modificationDate: now], ofItemAtPath: gone.path)
-            waiting = true
+            if now.timeIntervalSince(since) < 3 * 86400 { wait = true; warn = warn || name.hasSuffix(".gone") }
+            else { try? fm.removeItem(at: url) }
+        } else if !ids.contains(id) {
+            mark(url, as: id + ".gone")
+            wait = true; warn = true
         }
     }
-    return waiting
+    return (wait, warn)
 }
 
 /// Object hashes used by one manifest. A manifest that can't be read throws, which aborts pruning before any delete.

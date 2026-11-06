@@ -39,7 +39,7 @@ private struct MenuBarLabel: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        Image(nsImage: Self.icon(model.iconName))
+        Image(nsImage: Self.icon(model.iconName, colors: model.iconColors))
             .accessibilityLabel("BackupMe")
             .accessibilityValue(model.statusText)
             .task {
@@ -57,27 +57,43 @@ private struct MenuBarLabel: View {
     }
 
     /// A symbol at the menu bar's default 13 pt looks small next to Apple's items, and its badge shrinks the
-    /// drive further: 15 pt matches them, medium weight so its thin strokes read as well as theirs. Template (it follows the menu bar's light/dark), except when all is
-    /// well: then the check badge is green and the drive keeps the menu bar's text color.
-    private static func icon(_ name: String) -> NSImage {
+    /// drive further: 15 pt matches them, medium weight so its thin strokes read as well as theirs. Template (it follows
+    /// the menu bar's light/dark), except for the states whose badge has a color: green check when all is well,
+    /// yellow triangle for warnings, red triangle for errors.
+    private static func icon(_ name: String, colors: [NSColor]?) -> NSImage {
         var config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
-        let ok = name == "externaldrive.badge.checkmark"
-        // palette order for this symbol: badge first, then the drive
-        if ok { config = config.applying(.init(paletteColors: [.systemGreen, .labelColor])) }
+        if let colors { config = config.applying(.init(paletteColors: colors)) }
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "BackupMe")?.withSymbolConfiguration(config) ?? NSImage()
-        image.isTemplate = !ok
+        image.isTemplate = colors == nil
         return image
     }
 }
 
 extension AppModel {
+    /// Warnings of the last backup (until "Cancella avvisi") or backups not reaching the cloud.
+    private var hasWarnings: Bool { lastReport?.warnings.isEmpty == false || uploadProblem != nil }
+
     var iconName: String {
         switch status {
-        case .running: "externaldrive.badge.timemachine"
-        case .failed: "externaldrive.badge.exclamationmark"
+        case .running: "arrow.triangle.2.circlepath"
+        case .failed: "externaldrive.trianglebadge.exclamationmark"
         case .idle:
             !settings.isConfigured ? "externaldrive.badge.xmark"
-                : settings.paused ? "externaldrive.badge.minus" : "externaldrive.badge.checkmark"
+                : settings.paused ? "externaldrive.badge.minus"
+                : hasWarnings ? "externaldrive.trianglebadge.exclamationmark" : "externaldrive.badge.checkmark"
+        }
+    }
+
+    /// nil keeps the icon a template, in the menu bar's own color.
+    var iconColors: [NSColor]? {
+        switch status {
+        case .running: nil
+        // palette order for these symbols: badge first, then the drive (the drive keeps the menu bar's text color)
+        case .failed: [.systemRed, .labelColor]
+        case .idle:
+            !settings.isConfigured || settings.paused ? nil
+                : hasWarnings ? [.systemYellow, .labelColor]
+                : [.systemGreen, .labelColor]
         }
     }
 

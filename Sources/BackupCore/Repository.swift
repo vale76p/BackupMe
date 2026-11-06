@@ -43,6 +43,13 @@ public final class Repository {
         RestoreKit.install(in: root.deletingLastPathComponent())
     }
 
+    /// The archive's identity, from repo.json: a different one means the archive was made again from nothing.
+    public var archiveID: String? {
+        guard let data = try? Data(contentsOf: root.appending(path: "repo.json")),
+              let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return info["id"] as? String
+    }
+
     /// Picking the BackupMe folder, or an archive inside it, means the folder holding them:
     /// taken literally, a new archive would be nested inside the old one and its backups would vanish from view.
     public static func destination(for picked: URL) -> URL {

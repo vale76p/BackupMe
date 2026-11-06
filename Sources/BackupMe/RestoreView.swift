@@ -9,7 +9,8 @@ struct RestoreView: View {
     @State private var selectedIDs = Set<Entry.ID>()
     @State private var hit: SearchHit?
     @State private var check: Restorer.ReplaceCheck?
-    @State private var versionsOf: Entry?
+    /// The right-hand panel: details and saved versions of the selected item.
+    @AppStorage("restoreInspector") private var showInspector = true
     @State private var previewURL: URL?
     /// Bumped on every preview request: a slow extraction finishing late must not replace a newer preview.
     @State private var previewToken = 0
@@ -33,7 +34,6 @@ struct RestoreView: View {
                 Text("Tutti").tag(false)
                 if model.showsStatus { Text("Solo eliminati").tag(true) }
             }))
-            .frame(minWidth: 860, minHeight: 500)
             .quickLookPreview($previewURL)
     }
 
@@ -58,11 +58,10 @@ struct RestoreView: View {
                 await model.refreshStatus()
             }
             .onAppear { model.reload() }
-            // Back / Forward have no toolbar buttons (the toolbar stays short): keyboard only, as ⌘[ ⌘] in the Finder
             .background {
                 Group {
-                    Button("Indietro", action: goBack).keyboardShortcut("[").disabled(back.isEmpty)
-                    Button("Avanti", action: goForward).keyboardShortcut("]").disabled(forward.isEmpty)
+                    Button("Cartella superiore", action: goUp).keyboardShortcut(.upArrow, modifiers: .command)
+                        .disabled(model.source == nil || !model.search.isEmpty)
                     // here, not on the toolbar pull-down: a Menu's shortcuts don't fire while it is closed
                     Button("Ripristina") { if wholeBackup { restoreAllInto() } else { restoreTargets() } }
                         .keyboardShortcut("r").disabled(restoreDisabled)
@@ -97,109 +96,277 @@ struct RestoreView: View {
         } message: {
             Text("Per mostrarlo va estratto dall'archivio in una cartella temporanea (\(ByteCountFormatter.string(fromByteCount: bigPreview?.size ?? 0, countStyle: .file))); se l'archivio è su OneDrive può dover essere scaricato.")
         }
-        .sheet(item: $versionsOf) { VersionsSheet(model: model, entry: $0) }
         .alert(model.error?.title ?? "", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") {}
         } message: { Text(model.error?.message ?? "") }
     }
 
     private var window: some View {
-        // a standard window, no sidebar: the backup is chosen from a pop-up in the toolbar
-        Group {
-            if !model.hasDestination {
-                ContentUnavailableView {
-                    Label("Nessuna destinazione", systemImage: "externaldrive.badge.xmark")
-                } description: {
-                    Text("Scegli dove salvare i backup per poterli sfogliare e ripristinare.")
-                } actions: {
-                    SettingsLink { Text("Apri Impostazioni…") }
+        // backups in the sidebar, where they are always visible; details and versions in the inspector
+        NavigationSplitView {
+            sidebar.navigationSplitViewColumnWidth(min: 170, ideal: 210, max: 280)
+        } detail: {
+            Group {
+                if !model.hasDestination {
+                    ContentUnavailableView {
+                        Label("Nessuna destinazione", systemImage: "externaldrive.badge.xmark")
+                    } description: {
+                        Text("Scegli dove salvare i backup per poterli sfogliare e ripristinare.")
+                    } actions: {
+                        SettingsLink { Text("Apri Impostazioni…") }
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        if model.search.isEmpty, model.selected != nil, model.showsStatus {
+                            filterBar
+                            Divider()
+                        }
+                        Group { if model.search.isEmpty { browser } else { results } }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        Divider()
+                        actionBar
+                    }
                 }
-            } else if model.search.isEmpty { browser } else { results }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // native window chrome only: title = folder being viewed, its menu = the path, subtitle = date or progress
-        .navigationTitle(title)
-        .navigationSubtitle(subtitle)
-        .toolbarTitleMenu {
-            if model.search.isEmpty, model.source != nil {
-                let parts = model.currentPath.split(separator: "/").map(String.init)
-                ForEach(parts.indices.reversed(), id: \.self) { i in
-                    if i < parts.count - 1 { Button(parts[i], systemImage: "folder") { open(parts[...i].joined(separator: "/")) } }
-                }
-                if !parts.isEmpty { Button(rootName, systemImage: "folder") { open("") } }
-                Button("Tutte le cartelle", systemImage: "externaldrive") { go(Place(source: nil, path: "")) }
+            }
+            // minimums on the columns, not on the window: a window-wide minimum makes the sidebar jump when it
+            // collapses, as the window is re-constrained on every frame of the animation
+            .frame(minWidth: 460, minHeight: 420)
+            .inspector(isPresented: $showInspector) {
+                inspector.inspectorColumnWidth(min: 230, ideal: 270, max: 360)
             }
         }
+        .navigationTitle(title)
+        .navigationSubtitle(subtitle)
         .toolbar { toolbarItems }
+        .hidingToolbarTitle() // the path in the toolbar says where you are; the title stays for the Window menu
     }
 
     @ToolbarContentBuilder private var toolbarItems: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            Button("Indietro", systemImage: "chevron.left", action: goBack)
+                .keyboardShortcut("[").disabled(back.isEmpty || !model.search.isEmpty).help("Indietro")
+            Button("Avanti", systemImage: "chevron.right", action: goForward)
+                .keyboardShortcut("]").disabled(forward.isEmpty || !model.search.isEmpty).help("Avanti")
+        }
+        if model.search.isEmpty, model.selected != nil {
+            ToolbarItem(placement: .navigation) { breadcrumb }
+        }
+        if model.computers.count > 1 {
             ToolbarItem(placement: .navigation) {
-                Button("Cartella superiore", systemImage: "chevron.up") {
-                    if model.currentPath.isEmpty { go(Place(source: nil, path: "")) }
-                    else { open((model.currentPath as NSString).deletingLastPathComponent) }
-                }
-                .keyboardShortcut(.upArrow, modifiers: .command)
-                .disabled(model.source == nil || !model.search.isEmpty)
-                .help("Cartella superiore")
+                Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
+                    .pickerStyle(.menu)
+                    .help("Computer di origine")
             }
-            ToolbarItem(placement: .navigation) {
-                Picker("Backup", selection: $model.selectedID) {
-                    ForEach(groups, id: \.title) { group in
-                        Section(group.title) {
-                            ForEach(group.items, id: \.id) { s in Text(label(s.date, in: group.title)).tag(Optional(s.id)) }
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button(showInspector ? "Nascondi dettagli" : "Mostra dettagli", systemImage: "sidebar.trailing") { showInspector.toggle() }
+                .help(showInspector ? "Nascondi dettagli e versioni" : "Mostra dettagli e versioni")
+        }
+    }
+
+    // MARK: sidebar
+
+    /// One section per day of the last week with the hours as chips, then one per month with the days.
+    private var sidebar: some View {
+        let info = backupInfo
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(groups, id: \.title) { group in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(group.title).font(.subheadline.weight(.semibold))
+                            Spacer()
+                            let bytes = group.items.compactMap { info[$0.id]?.newBytes }
+                            if !bytes.isEmpty {
+                                Text("+" + bytes.reduce(0, +).formatted(.byteCount(style: .file)))
+                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                                    .help("Dati nuovi salvati da questi backup")
+                            }
+                        }
+                        // a grid, not a hand-made flow layout: each chip gets a frame of its own, so every one takes clicks
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: group.byHour ? 58 : 96), spacing: 5)],
+                                  alignment: .leading, spacing: 5) {
+                            ForEach(group.items, id: \.id) { s in chip(s, label: chipLabel(s.date, in: group), info: info[s.id]) }
                         }
                     }
                 }
-                .pickerStyle(.menu)
-                .disabled(model.snapshots.isEmpty || !model.search.isEmpty)
-                .help("Backup da sfogliare")
             }
-            if model.computers.count > 1 {
-                ToolbarItem(placement: .navigation) {
-                    Picker("Computer", selection: $model.computer) { ForEach(model.computers, id: \.self) { Text($0) } }
-                        .pickerStyle(.menu)
-                        .help("Computer di origine")
-                }
+            .padding(12)
+        }
+        .overlay {
+            if model.isLoading, model.hasDestination { ProgressView() }
+            else if model.snapshots.isEmpty, model.hasDestination {
+                ContentUnavailableView("Nessun backup", systemImage: "externaldrive.badge.questionmark",
+                                       description: Text("Compariranno qui dopo il primo salvataggio."))
             }
-            if model.showsStatus, model.search.isEmpty {
-                ToolbarItem {
-                    // compare with today: only what changed or disappeared since this backup
-                    Menu {
-                        Picker("Mostra", selection: $filter) {
-                            Text("Tutti gli elementi").tag(ChangeFilter.all)
-                            Text("Modificati da allora").tag(ChangeFilter.modified)
-                            Text("Eliminati da allora").tag(ChangeFilter.missing)
-                            Text("Aggiunti da allora").tag(ChangeFilter.added)
+        }
+    }
+
+    private func chip(_ s: (id: String, date: Date), label: String, info: (newBytes: Int64, warnings: Int)?) -> some View {
+        let selected = model.selectedID == s.id
+        let warned = (info?.warnings ?? 0) > 0
+        var tip = s.date.formatted(date: .complete, time: .shortened)
+        if let info { tip += " · \(info.newBytes.formatted(.byteCount(style: .file))) nuovi" }
+        if warned { tip += " · \(info!.warnings == 1 ? "1 avviso" : "\(info!.warnings) avvisi")" }
+        return Button {
+            model.search = "" // a backup picked while searching: show it
+            model.selectedID = s.id
+        } label: {
+            Text(label).font(.callout).monospacedDigit().lineLimit(1)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .frame(maxWidth: .infinity)
+                .foregroundStyle(selected ? Color.white : warned ? Color.orange : Color.primary)
+                .background(selected ? Color.accentColor : Color.clear, in: Capsule())
+                .overlay(Capsule().strokeBorder(selected ? Color.clear : warned ? Color.orange.opacity(0.7) : Color.secondary.opacity(0.35),
+                                                lineWidth: 1))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(tip)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    /// New bytes and warnings of the backups this Mac made, from the app's history (its last 50 runs). Runs with
+    /// no changes reused an older backup: only the run that wrote it counts.
+    private var backupInfo: [String: (newBytes: Int64, warnings: Int)] {
+        guard model.showsStatus else { return [:] }
+        var info: [String: (newBytes: Int64, warnings: Int)] = [:]
+        for r in model.app.history {
+            guard let id = r.snapshotID, let made = Snapshot.date(fromID: id), abs(made.timeIntervalSince(r.date)) < 2 else { continue }
+            info[id] = (r.newBytes, r.warnings.count)
+        }
+        return info
+    }
+
+    // MARK: path and filter
+
+    /// Every level is clickable; deep paths fold the middle levels into a "…" menu.
+    private var breadcrumb: some View {
+        HStack(spacing: 2) {
+            crumb("Tutte le cartelle", icon: "externaldrive", current: model.source == nil) { go(Place(source: nil, path: "")) }
+            if let source = model.source {
+                let parts = model.currentPath.split(separator: "/").map(String.init)
+                let folded = max(0, parts.count - 2)
+                separator
+                crumb((source as NSString).lastPathComponent, icon: "folder", current: parts.isEmpty) { open("") }
+                if folded > 0 {
+                    separator
+                    Menu("…") {
+                        ForEach(Array((0..<folded).reversed()), id: \.self) { i in
+                            Button(parts[i], systemImage: "folder") { open(parts[...i].joined(separator: "/")) }
                         }
-                        .pickerStyle(.inline)
-                    } label: {
-                        Label("Filtro", systemImage: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
                     }
-                    .help("Confronta con oggi: mostra solo ciò che è cambiato o sparito dopo questo backup")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                }
+                ForEach(Array(folded..<parts.count), id: \.self) { i in
+                    separator
+                    crumb(parts[i], icon: nil, current: i == parts.count - 1) { open(parts[...i].joined(separator: "/")) }
                 }
             }
-            ToolbarItem(placement: .primaryAction) {
-                // one native pull-down: click restores beside the original, the arrow offers the rest
-                Menu {
-                    if wholeBackup {
-                        Button("Ripristina tutto il backup in…", systemImage: "folder.badge.plus", action: restoreAllInto)
-                    } else {
-                        Button("Ripristina in…", systemImage: "folder.badge.plus", action: restoreTargetsInto)
-                    }
-                    Button("Anteprima", systemImage: "eye") { singleFile.map(preview) }
-                        .disabled(singleFile == nil)
-                    Button("Mostra versioni del file", systemImage: "clock.arrow.circlepath") { versionsOf = singleFile }
-                        .disabled(singleFile == nil)
-                } label: {
-                    Label("Ripristina", systemImage: "arrow.uturn.backward")
-                } primaryAction: {
-                    if wholeBackup { restoreAllInto() } else { restoreTargets() }
-                }
-                .labelStyle(.titleAndIcon)
-                .disabled(restoreDisabled)
-                .help(restoreHelp)
+        }
+        .padding(.horizontal, 6)
+    }
+
+    private var filterBar: some View {
+        HStack {
+            Picker("Mostra", selection: $filter) {
+                Text("Tutto").tag(ChangeFilter.all)
+                Text(counted("Modificati", .modified)).tag(ChangeFilter.modified)
+                Text(counted("Eliminati", .missing)).tag(ChangeFilter.missing)
+                Text(counted("Nuovi", .added)).tag(ChangeFilter.added)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            Spacer(minLength: 12)
+            Text("Confronto con oggi").font(.caption).foregroundStyle(.secondary)
+        }
+        .help("Mostra solo ciò che è cambiato, sparito o comparso dopo questo backup")
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+    }
+
+    private var separator: some View {
+        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary).accessibilityHidden(true)
+    }
+
+    private func crumb(_ name: String, icon: String?, current: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label { Text(name).lineLimit(1).truncationMode(.middle) } icon: { if let icon { Image(systemName: icon) } }
+                .fontWeight(current ? .semibold : .regular)
+                .foregroundStyle(current ? .primary : .secondary)
+        }
+        .buttonStyle(.borderless)
+        .disabled(current)
+    }
+
+    private func counted(_ name: String, _ f: ChangeFilter) -> String {
+        guard model.statusReady else { return name }
+        let n = f == .added ? model.added().count : model.children().filter { matches($0, f) }.count
+        return n == 0 ? name : "\(name) \(n)"
+    }
+
+    // MARK: action bar
+
+    private var actionBar: some View {
+        HStack(spacing: 10) {
+            Text(selectionSummary).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 12)
+            // short names, big targets: what each one does exactly is in the tooltip
+            if !wholeBackup {
+                Button("Ripristina in…", systemImage: "folder", action: restoreTargetsInto)
+                    .disabled(restoreDisabled)
+                    .help("Scegli una cartella dove ripristinare: gli originali non vengono toccati")
+            }
+            Button(wholeBackup ? "Ripristina tutto…" : "Ripristina", systemImage: "arrow.uturn.backward") {
+                if wholeBackup { restoreAllInto() } else { restoreTargets() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(restoreDisabled)
+            .help(restoreHelp)
+        }
+        .controlSize(.extraLarge)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    private var selectionSummary: String {
+        if model.restoring { return "Ripristino in corso…" }
+        let from = targetSnapshot.flatMap(Snapshot.date(fromID:)).map(Self.fromBackup) ?? ""
+        if wholeBackup { return "Tutte le cartelle · " + from }
+        let t = targets
+        if t.isEmpty { return model.search.isEmpty ? "Niente da ripristinare qui" : "Seleziona un risultato" }
+        if t.count == 1 { return "«\(t[0].entry?.name ?? title)»" + (t[0].entry == nil ? " intera" : "") + " · " + from }
+        let size = t.compactMap(\.entry).filter { $0.kind == .file }.reduce(Int64(0)) { $0 + $1.size }
+        return "\(t.count) elementi" + (size > 0 ? " · " + ByteCountFormatter.string(fromByteCount: size, countStyle: .file) : "") + " · " + from
+    }
+
+    private static func fromBackup(_ d: Date) -> String {
+        let time = d.formatted(date: .omitted, time: .shortened)
+        if Calendar.current.isDateInToday(d) { return "dal backup di oggi alle " + time }
+        if Calendar.current.isDateInYesterday(d) { return "dal backup di ieri alle " + time }
+        return "dal backup del " + d.formatted(date: .abbreviated, time: .omitted) + " alle " + time
+    }
+
+    // MARK: inspector
+
+    @ViewBuilder private var inspector: some View {
+        let t = targets
+        if t.count == 1, let e = t[0].entry, let id = targetSnapshot {
+            EntryInspector(model: model, entry: e, snapshotID: id,
+                           status: model.search.isEmpty ? model.status(of: e) : model.resultStatus[SearchHit(snapshotID: id, entry: e)].map { RowStatus(own: $0) },
+                           preview: preview)
+                .id(id + "\u{0}" + e.id)
+        } else if t.count > 1 {
+            ContentUnavailableView("\(t.count) elementi selezionati", systemImage: "square.stack.3d.up",
+                                   description: Text("Le versioni si vedono selezionando un solo file."))
+        } else {
+            ContentUnavailableView("Nessuna selezione", systemImage: "info.circle",
+                                   description: Text("Seleziona un file per vederne i dettagli e le versioni salvate."))
+        }
     }
 
     // MARK: browser
@@ -212,7 +379,7 @@ struct RestoreView: View {
                                    description: Text("I backup di questo Mac compariranno qui dopo il primo salvataggio."))
         } else if model.selectedID == nil {
             ContentUnavailableView("Scegli un backup", systemImage: "clock.arrow.circlepath",
-                                   description: Text("Scegline uno dal menu Backup nella barra degli strumenti."))
+                                   description: Text("Scegline uno nella barra laterale."))
         } else if model.selected == nil {
             ProgressView() // the chosen backup's index is still loading
         } else {
@@ -220,10 +387,8 @@ struct RestoreView: View {
                 TableColumn("Nome", value: \.name) { e in
                     HStack(spacing: 6) { icon(e); Text(e.name).lineLimit(1).truncationMode(.middle) }
                 }
-                TableColumn("Stato") { e in
-                    if model.isAdded(e) { statusSymbol("plus.circle", "aggiunto dopo questo backup") } else { statusIcon(model.status(of: e)) }
-                }
-                    .width(min: 36, ideal: 44, max: 60)
+                TableColumn("Rispetto a oggi") { e in statusPill(model.status(of: e), added: model.isAdded(e)) }
+                    .width(min: 90, ideal: 130, max: 170)
                     .customizationID("stato")
                 TableColumn("Dimensione", value: \.size) { e in
                     Text(e.kind == .file ? ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file) : "—")
@@ -273,8 +438,8 @@ struct RestoreView: View {
             TableColumn("Nome") { h in
                 HStack(spacing: 6) { icon(h.entry); Text(h.entry.name).lineLimit(1) }
             }
-            TableColumn("Stato") { h in statusIcon(model.resultStatus[h].map { RowStatus(own: $0) }) }
-                .width(min: 36, ideal: 44, max: 60)
+            TableColumn("Rispetto a oggi") { h in statusPill(model.resultStatus[h].map { RowStatus(own: $0) }) }
+                .width(min: 90, ideal: 130, max: 170)
             TableColumn("Percorso") { h in
                 Text(((h.entry.source as NSString).lastPathComponent as NSString).appendingPathComponent(h.entry.path))
                     .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -323,7 +488,7 @@ struct RestoreView: View {
         Button("Ripristina\(n) in…") { chooseFolder { model.restore(snapshotID: snapshotID, items: items, mode: .into($0)) } }
         if entries.count == 1, let e = entries.first, e.kind == .file {
             Divider()
-            Button("Mostra versioni del file") { versionsOf = e }
+            Button("Mostra versioni del file") { showInspector = true }
             if model.showsStatus, Restorer.status(of: e) == .modified {
                 Button("Confronta con la versione attuale") { model.compare(e) }
             }
@@ -335,28 +500,30 @@ struct RestoreView: View {
         var list = model.children()
         switch filter {
         case .all: break
-        case .modified: list = list.filter { model.status(of: $0).map { $0.own == .modified || $0.modifiedInside } ?? false }
-        case .missing: list = list.filter { model.status(of: $0).map { $0.own == .missing || $0.missingInside } ?? false }
+        case .modified, .missing: list = list.filter { matches($0, filter) }
         case .added: list = model.added()
         }
         return sortOrder.isEmpty ? list : list.sorted(using: sortOrder)
+    }
+
+    private func matches(_ e: Entry, _ f: ChangeFilter) -> Bool {
+        guard let s = model.status(of: e) else { return false }
+        return f == .modified ? s.own == .modified || s.modifiedInside : s.own == .missing || s.missingInside
     }
 
     private func icon(_ e: Entry) -> some View {
         Image(nsImage: FileIcon.image(for: e)).resizable().frame(width: 16, height: 16)
     }
 
-    @ViewBuilder private func statusIcon(_ s: RowStatus?) -> some View {
-        if let s {
-            if s.own == .missing { statusSymbol("minus.circle", "non più presente oggi") }
-            else if s.own == .modified { statusSymbol("pencil.circle", "modificato") }
-            else if s.modifiedInside { statusSymbol("pencil.circle", "contiene file modificati") }
-            else if s.missingInside { statusSymbol("minus.circle", "contiene file non più presenti oggi") }
+    /// Words in a coloured capsule: the change since this backup reads without hovering.
+    @ViewBuilder private func statusPill(_ s: RowStatus?, added: Bool = false) -> some View {
+        if added { StatusPill(text: "Nuovo", color: .green) }
+        else if let s {
+            if s.own == .missing { StatusPill(text: "Eliminato", color: .red) }
+            else if s.own == .modified { StatusPill(text: "Modificato", color: .orange) }
+            else if s.modifiedInside { StatusPill(text: "Contiene modifiche", color: .orange) }
+            else if s.missingInside { StatusPill(text: "Contiene eliminati", color: .red) }
         }
-    }
-
-    private func statusSymbol(_ name: String, _ text: String) -> some View {
-        Image(systemName: name).foregroundStyle(.secondary).help(text).accessibilityLabel(text)
     }
 
     struct Place: Equatable { var source: String?; var path: String }
@@ -364,6 +531,9 @@ struct RestoreView: View {
     private var here: Place { Place(source: model.source, path: model.currentPath) }
 
     private func open(_ path: String) { go(Place(source: model.source, path: path)) }
+    private func goUp() {
+        if model.currentPath.isEmpty { go(Place(source: nil, path: "")) } else { open((model.currentPath as NSString).deletingLastPathComponent) }
+    }
 
     /// Works at the top level too, where the rows are the saved folders.
     private func enter(_ e: Entry) { go(Place(source: e.source, path: e.path)) }
@@ -424,11 +594,8 @@ struct RestoreView: View {
             let n = shownResults.count
             return (n == 1 ? "1 risultato" : "\(n) risultati") + (model.resultsTruncated ? " (i primi 500)" : "")
         }
-        if selectedIDs.count > 1 { return "\(selectedIDs.count) elementi selezionati" }
-        // the date is in the backup pop-up: here the full path of the folder being viewed
-        guard let source = model.source else { return "" }
-        let folder = (source as NSString).lastPathComponent
-        return model.currentPath.isEmpty ? folder : folder + "/" + model.currentPath
+        // the path is in the path bar: here the backup being viewed
+        return model.selected.map { "Backup del " + $0.date.formatted(date: .complete, time: .shortened) } ?? ""
     }
 
     // MARK: actions
@@ -539,27 +706,37 @@ struct RestoreView: View {
         }
     }
 
-    // MARK: backup pop-up grouping
+    // MARK: sidebar grouping
 
-    private var groups: [(title: String, items: [(id: String, date: Date)])] {
-        let cal = Calendar.current
-        let weekAgo = Date().addingTimeInterval(-7 * 86400)
-        let order = ["Oggi", "Ieri", "Ultimi 7 giorni", "Più vecchi"]
-        let grouped = Dictionary(grouping: model.snapshots) { s -> String in
-            if cal.isDateInToday(s.date) { return "Oggi" }
-            if cal.isDateInYesterday(s.date) { return "Ieri" }
-            return s.date > weekAgo ? "Ultimi 7 giorni" : "Più vecchi"
-        }
-        return order.compactMap { t in grouped[t].map { (t, $0) } }
+    private struct BackupGroup {
+        var title: String
+        /// Days of the last week list hours; months list days.
+        var byHour: Bool
+        var items: [(id: String, date: Date)]
     }
 
-    /// The pop-up shows only the chosen item, without its section: today and yesterday say so.
-    private func label(_ date: Date, in group: String) -> String {
-        switch group {
-        case "Oggi": "Oggi, " + date.formatted(date: .omitted, time: .shortened)
-        case "Ieri": "Ieri, " + date.formatted(date: .omitted, time: .shortened)
-        default: date.formatted(date: .abbreviated, time: .shortened)
+    /// Newest first: today, yesterday and each other day of the last week, then one section per month.
+    private var groups: [BackupGroup] {
+        let cal = Calendar.current
+        let weekAgo = cal.startOfDay(for: Date()).addingTimeInterval(-6 * 86400)
+        var result: [BackupGroup] = []
+        for s in model.snapshots {
+            let byHour = s.date >= weekAgo
+            let t = cal.isDateInToday(s.date) ? "Oggi" : cal.isDateInYesterday(s.date) ? "Ieri"
+                : byHour ? s.date.formatted(.dateTime.weekday(.wide).day()).capitalized
+                : s.date.formatted(.dateTime.month(.wide).year()).capitalized
+            if result.last?.title == t { result[result.count - 1].items.append(s) } else { result.append(BackupGroup(title: t, byHour: byHour, items: [s])) }
         }
+        return result
+    }
+
+    /// An hour, or a day; a day with more than one backup in its month also gets the hour.
+    private func chipLabel(_ date: Date, in group: BackupGroup) -> String {
+        if group.byHour { return date.formatted(date: .omitted, time: .shortened) }
+        let cal = Calendar.current
+        let day = date.formatted(.dateTime.weekday(.abbreviated).day())
+        return group.items.filter { cal.isDate($0.date, inSameDayAs: date) }.count > 1
+            ? day + " " + date.formatted(date: .omitted, time: .shortened) : day
     }
 }
 
@@ -577,56 +754,114 @@ struct RestoreView: View {
     }
 }
 
-private struct VersionsSheet: View {
+private struct StatusPill: View {
+    let text: String
+    let color: Color
+    var body: some View {
+        Text(text).font(.caption).lineLimit(1)
+            .padding(.horizontal, 7).padding(.vertical, 1)
+            .foregroundStyle(color)
+            .background(color.opacity(0.15), in: Capsule())
+    }
+}
+
+/// The selected item: what it is, how it differs from today and, for a file, every saved version.
+private struct EntryInspector: View {
     let model: RestoreModel
     let entry: Entry
+    let snapshotID: String
+    let status: RowStatus?
+    let preview: (Entry) -> Void
     @State private var versions: [SearchHit]? // nil while loading
-    @State private var selection: SearchHit?
-    @Environment(\.dismiss) private var dismiss
+    @State private var picked: SearchHit?
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let versions {
-                    Table(versions, selection: $selection) {
-                        TableColumn("Data") { v in
-                            Text(Snapshot.date(fromID: v.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? v.snapshotID)
-                                .monospacedDigit()
-                        }
-                        TableColumn("Dimensione") { v in
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 48, height: 48)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.name).font(.headline).lineLimit(2).textSelection(.enabled)
+                        badge
+                    }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    if entry.kind == .file { row("Dimensione", ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file)) }
+                    row("Modificato", entry.mtime.formatted(date: .abbreviated, time: .shortened))
+                    row("Posizione", ((entry.source as NSString).abbreviatingWithTildeInPath as NSString)
+                        .appendingPathComponent((entry.path as NSString).deletingLastPathComponent))
+                }
+                if entry.kind == .file { versionsList }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .task {
+            guard entry.kind == .file else { return }
+            let found = await model.versions(of: entry).map { SearchHit(snapshotID: $0.snapshotID, entry: $0.entry) }
+            versions = found
+            picked = found.first { $0.entry.hash == entry.hash } ?? found.first
+        }
+    }
+
+    @ViewBuilder private var badge: some View {
+        if let status, status.own == .missing { StatusPill(text: "Eliminato da allora", color: .red) }
+        else if let status, status.own == .modified { StatusPill(text: "Modificato da allora", color: .orange) }
+        else if let status, status.modifiedInside { StatusPill(text: "Contiene modifiche", color: .orange) }
+        else if let status, status.missingInside { StatusPill(text: "Contiene eliminati", color: .red) }
+        else if model.showsStatus, status != nil { StatusPill(text: "Uguale a oggi", color: .secondary) }
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        LabeledContent(label) { Text(value).lineLimit(2).truncationMode(.middle).textSelection(.enabled) }.font(.callout)
+    }
+
+    @ViewBuilder private var versionsList: some View {
+        Divider()
+        Text("Versioni salvate").font(.subheadline.weight(.semibold))
+        if let versions {
+            if versions.isEmpty { Text("Nessuna versione leggibile").foregroundStyle(.secondary) }
+            VStack(spacing: 2) {
+                ForEach(versions) { v in
+                    Button { picked = v } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(Snapshot.date(fromID: v.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? v.snapshotID)
+                                    .monospacedDigit()
+                                if v.entry.hash == entry.hash { Text("in questo backup").font(.caption2).foregroundStyle(.secondary) }
+                            }
+                            Spacer()
                             Text(ByteCountFormatter.string(fromByteCount: v.entry.size, countStyle: .file))
                                 .foregroundStyle(.secondary).monospacedDigit()
                         }
-                        .width(min: 70, ideal: 90, max: 120)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                        .background(picked == v ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 6))
                     }
-                    .contextMenu(forSelectionType: SearchHit.self) { _ in } primaryAction: { hits in hits.first.map(restore) }
-                    .overlay {
-                        if versions.isEmpty {
-                            ContentUnavailableView("Nessuna versione", systemImage: "clock.arrow.circlepath",
-                                                   description: Text("Questo file non compare in nessun backup."))
-                        }
-                    }
-                } else {
-                    ProgressView()
+                    .buttonStyle(.plain)
                 }
             }
-            .navigationTitle("Versioni di \(entry.name)")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Chiudi") { dismiss() }.keyboardShortcut(.cancelAction) }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Ripristina") { selection.map(restore) }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(selection == nil || model.restoring)
+            Text("Una riga per ogni contenuto diverso, dalla più recente.").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("Anteprima") { preview(picked?.entry ?? entry) }
+                if status?.own == .modified { Button("Confronta con oggi") { model.compare(entry) } }
+                Spacer()
+                Button("Ripristina") {
+                    if let v = picked { model.restore(snapshotID: v.snapshotID, source: v.entry.source, path: v.entry.path, mode: .besideOriginal) }
                 }
+                .buttonStyle(.borderedProminent)
+                .disabled(picked == nil || model.restoring)
+                .help("Ripristina la versione scelta accanto all'originale, senza sovrascrivere")
             }
+        } else {
+            ProgressView().frame(maxWidth: .infinity)
         }
-        .frame(minWidth: 480, minHeight: 320)
-        .task { versions = await model.versions(of: entry).map { SearchHit(snapshotID: $0.snapshotID, entry: $0.entry) } }
     }
+}
 
-    private func restore(_ v: SearchHit) {
-        model.restore(snapshotID: v.snapshotID, source: v.entry.source, path: v.entry.path, mode: .besideOriginal)
-        dismiss()
+extension View {
+    @ViewBuilder fileprivate func hidingToolbarTitle() -> some View {
+        if #available(macOS 15, *) { toolbar(removing: .title) } else { self }
     }
 }
 

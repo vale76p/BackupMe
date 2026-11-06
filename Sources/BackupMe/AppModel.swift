@@ -336,7 +336,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                                    // the backup just made too: with a clock gone wrong it may not look like the newest
                                    pinned: Set([pin, report.snapshotID].compactMap { $0 }))
             Log.backup.debug("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) oggetti eliminati, archivio \(result.poolSize) byte, oltre il tetto: \(result.overCap), rinviata: \(result.gcSkipped), oggetti mancanti: \(result.missingObjects)")
-            if result.gcSkipped { report.warnings.append("Pulizia rinviata: alcuni backup sono spariti dalla destinazione, riprende da sola entro 3 giorni") }
+            if result.vanished { report.warnings.append("Pulizia rinviata: alcuni backup sono spariti dalla destinazione, riprende da sola entro 3 giorni") }
             if result.missingObjects > 0 {
                 report.warnings.append("\(Self.incomplete) mancano \(result.missingObjects) file usati dai backup, che non si ripristinano per intero")
             }
