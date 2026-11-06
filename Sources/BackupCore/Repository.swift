@@ -1,3 +1,4 @@
+import Darwin
 import CryptoKit
 import Foundation
 
@@ -20,6 +21,9 @@ public final class Repository {
     private let fm = FileManager.default
     private var knownObjects: Set<String>?
     private let computer: String
+    private var destinationFD: Int32 = -1
+
+    deinit { if destinationFD >= 0 { close(destinationFD) } }
 
     private var objectsDir: URL { root.appending(path: "objects", directoryHint: .isDirectory) }
     private var snapshotsDir: URL { root.appending(path: "snapshots", directoryHint: .isDirectory) }
@@ -35,9 +39,13 @@ public final class Repository {
             throw RepositoryError.destinationMissing(destination.path)
         }
         let safeName = computerName.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        try Self.checkComponent(safeName)
         computer = safeName
         root = destination.appending(path: "BackupMe", directoryHint: .isDirectory)
             .appending(path: safeName, directoryHint: .isDirectory)
+        // The user-selected destination may itself be an alias; archive components below it may not.
+        destinationFD = open(destination.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard destinationFD >= 0 else { throw Self.posixError() }
         let info = root.appending(path: "repo.json")
         // browsing a newer archive is allowed; writing to it or cleaning it up could damage what this version
         // doesn't understand
@@ -49,8 +57,12 @@ public final class Repository {
             guard fm.fileExists(atPath: info.path) else { throw RepositoryError.destinationMissing(root.path) }
             return
         }
-        try fm.createDirectory(at: objectsDir, withIntermediateDirectories: true)
-        try fm.createDirectory(at: snapshotsDir, withIntermediateDirectories: true)
+        let archive = try archiveDirectory(create: true)
+        defer { close(archive) }
+        for name in ["objects", "snapshots"] {
+            let fd = try Self.childDirectory(name, in: archive, create: true)
+            close(fd)
+        }
         // read but not JSON with an id: damaged, written again. Not when the read fails (an offline cloud file):
         // that one is probably fine
         let damaged = (try? Data(contentsOf: info)).map { Self.id(in: $0) == nil } ?? false
@@ -161,9 +173,12 @@ public final class Repository {
     }
 
     private func prepareFanout(_ url: URL) throws {
-        let fanout = url.deletingLastPathComponent()
-        // no intermediate folders: if the destination vanished mid-run this fails instead of recreating it locally
-        if !fm.fileExists(atPath: fanout.path) { try fm.createDirectory(at: fanout, withIntermediateDirectories: false) }
+        let archive = try archiveDirectory()
+        defer { close(archive) }
+        let objects = try Self.childDirectory("objects", in: archive)
+        defer { close(objects) }
+        let fanout = try Self.childDirectory(url.deletingLastPathComponent().lastPathComponent, in: objects, create: true)
+        close(fanout)
     }
 
     /// Stores in-memory content; kept raw when compression saves less than 5%. Returns the bytes written.
@@ -184,28 +199,26 @@ public final class Repository {
     public func putObjectFile(from source: URL, hash: String) throws -> Int64? {
         let url = objectURL(hash, "raw")
         try prepareFanout(url)
-        let tmp = url.appendingPathExtension("tmp")
-        try? fm.removeItem(at: tmp)
+        let sourceFD = open(source.path, O_RDONLY | O_CLOEXEC)
+        guard sourceFD >= 0 else { throw Self.posixError() }
+        defer { close(sourceFD) }
+        var info = stat()
+        guard fstat(sourceFD, &info) == 0 else { throw Self.posixError() }
         // one silent call: allow it the time a slow disk or network share needs (5 MB/s)
-        let size = (try? fm.attributesOfItem(atPath: source.path)[.size] as? Int64) ?? 0
-        Activity.beat(grace: Double(size) / 5_000_000)
-        do { try fm.copyItem(at: source, to: tmp) } catch {
-            // a copy cut short by a full disk would keep the space the next files need
-            try? fm.removeItem(at: tmp)
-            throw error
+        Activity.beat(grace: Double(info.st_size) / 5_000_000)
+        var size: Int64 = 0
+        let stored = try publish(to: url, sync: .file, mode: info.st_mode & 0o777, cloning: sourceFD) { fd, cloned in
+            if !cloned, fcopyfile(sourceFD, fd, nil, copyfile_flags_t(COPYFILE_ALL)) != 0 { throw Self.posixError() }
+            guard lseek(fd, 0, SEEK_SET) >= 0 else { throw Self.posixError() }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+            guard try streamHash(handle) == hash else { return false }
+            guard fstat(fd, &info) == 0 else { throw Self.posixError() }
+            size = Int64(info.st_size)
+            return true
         }
-        guard try streamHash(tmp) == hash else {
-            try? fm.removeItem(at: tmp)
-            return nil
-        }
-        let fd = open(tmp.path, O_RDONLY)
-        if fd >= 0 { fsync(fd); close(fd) }
-        guard rename(tmp.path, url.path) == 0 else {
-            try? fm.removeItem(at: tmp)
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
+        guard stored else { return nil }
         knownObjects?.insert(hash)
-        return (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+        return size
     }
 
     /// Reads and verifies an object. A mismatch throws but never deletes: the copy may still be syncing,
@@ -376,32 +389,99 @@ public final class Repository {
 
     enum Sync { case file, device }
 
-    /// Write to <name>.tmp, flush, then rename, so a crash never leaves a half-written file under its final name.
-    /// `.device` uses F_FULLFSYNC, which also flushes the drive cache holding earlier writes.
-    /// `exclusive` refuses to replace an existing file.
-    private func atomicWrite(_ data: Data, to url: URL, sync: Sync, exclusive: Bool = false) throws {
-        let tmp = url.appendingPathExtension("tmp")
-        let fd = open(tmp.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
-        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        var failure: Int32 = 0
-        data.withUnsafeBytes { buf in
-            var offset = 0
-            while offset < buf.count {
-                // write(2) rejects counts above INT_MAX with EINVAL: write in 1 GB chunks
-                let n = write(fd, buf.baseAddress! + offset, min(buf.count - offset, 1 << 30))
-                if n < 0 { failure = errno; return }
-                offset += n
-            }
+    private static func posixError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    private static func checkComponent(_ name: String) throws {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.utf8.contains(0) else {
+            throw POSIXError(.EINVAL)
         }
-        // some filesystems (exFAT, network) reject F_FULLFSYNC: fall back to fsync
-        if failure == 0, !(sync == .device && fcntl(fd, F_FULLFSYNC) == 0), fsync(fd) != 0 { failure = errno }
-        close(fd)
-        let moved = failure == 0
-            && (exclusive ? renamex_np(tmp.path, url.path, UInt32(RENAME_EXCL)) : rename(tmp.path, url.path)) == 0
-        guard moved else {
-            let code = failure != 0 ? failure : errno
-            try? fm.removeItem(at: tmp)
-            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+    }
+
+    private static func childDirectory(_ name: String, in parent: Int32, create: Bool = false) throws -> Int32 {
+        try checkComponent(name)
+        if create, mkdirat(parent, name, 0o755) != 0, errno != EEXIST { throw posixError() }
+        let fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw posixError() }
+        return fd
+    }
+
+    private func archiveDirectory(create: Bool = false) throws -> Int32 {
+        guard destinationFD >= 0 else { throw POSIXError(.EBADF) }
+        let base = try Self.childDirectory("BackupMe", in: destinationFD, create: create)
+        defer { close(base) }
+        return try Self.childDirectory(computer, in: base, create: create)
+    }
+
+    private func parentDirectory(of url: URL) throws -> Int32 {
+        let prefix = root.path + "/"
+        guard url.path.hasPrefix(prefix) else { throw POSIXError(.EINVAL) }
+        let parts = String(url.path.dropFirst(prefix.count)).split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        for part in parts { try Self.checkComponent(part) }
+        var fd = try archiveDirectory()
+        do {
+            for part in parts.dropLast() {
+                let next = try Self.childDirectory(part, in: fd)
+                close(fd)
+                fd = next
+            }
+            return fd
+        } catch { close(fd); throw error }
+    }
+
+    /// Own a fresh inode beneath no-follow directory descriptors through flush and atomic publication.
+    /// `.device` flushes the drive cache; `exclusive` preserves immutable manifests.
+    /// `cloning`: the temporary file starts as an APFS clone of that descriptor's file when the volume allows it;
+    /// `body` is told whether it did, and must fill the file itself when it didn't.
+    @discardableResult
+    private func publish(to url: URL, sync: Sync, exclusive: Bool = false, mode: mode_t = 0o644, cloning source: Int32? = nil,
+                         body: (_ fd: Int32, _ cloned: Bool) throws -> Bool) throws -> Bool {
+        let parent = try parentDirectory(of: url)
+        defer { close(parent) }
+        let name = url.lastPathComponent
+        let tmp = name + ".tmp"
+        // a leftover of an interrupted run (its space comes back now) or a planted link: removed, never followed
+        guard unlinkat(parent, tmp, 0) == 0 || errno == ENOENT else { throw Self.posixError() }
+        // other volumes, or a clone that fails, get a plain copy
+        let cloned = source.map { fclonefileat($0, parent, tmp, 0) == 0 } ?? false
+        let fd = cloned
+            ? openat(parent, tmp, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            : openat(parent, tmp, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw Self.posixError() }
+        var published = false
+        defer { close(fd); if !published { unlinkat(parent, tmp, 0) } }
+        // a clone is reopened by name: something swapped in meanwhile (a hard link to another file) is refused
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { throw Self.posixError() }
+        guard st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 else { throw POSIXError(.EPERM) }
+        guard fchmod(fd, 0o600) == 0 else { throw Self.posixError() }
+        guard try body(fd, cloned) else { return false }
+        // Preserve published-file readability for portable/shared archives.
+        guard fchmod(fd, mode) == 0 else { throw Self.posixError() }
+        // Some filesystems reject F_FULLFSYNC: fall back to fsync.
+        if !(sync == .device && fcntl(fd, F_FULLFSYNC) == 0), fsync(fd) != 0 { throw Self.posixError() }
+        let moved = exclusive
+            ? renameatx_np(parent, tmp, parent, name, UInt32(RENAME_EXCL))
+            : renameat(parent, tmp, parent, name)
+        guard moved == 0 else { throw Self.posixError() }
+        published = true
+        return true
+    }
+
+    private func atomicWrite(_ data: Data, to url: URL, sync: Sync, exclusive: Bool = false) throws {
+        try publish(to: url, sync: sync, exclusive: exclusive) { fd, _ in
+            try data.withUnsafeBytes { buf in
+                var offset = 0
+                while offset < buf.count {
+                    // write(2) rejects counts above INT_MAX with EINVAL: write in 1 GB chunks
+                    let n = write(fd, buf.baseAddress! + offset, min(buf.count - offset, 1 << 30))
+                    if n < 0, errno == EINTR { continue }
+                    guard n > 0 else { throw n == 0 ? POSIXError(.EIO) : Self.posixError() }
+                    offset += n
+                }
+            }
+            return true
         }
     }
 }
@@ -410,6 +490,10 @@ public final class Repository {
 func streamHash(_ url: URL) throws -> String {
     let h = try FileHandle(forReadingFrom: url)
     defer { try? h.close() }
+    return try streamHash(h)
+}
+
+private func streamHash(_ h: FileHandle) throws -> String {
     var hasher = SHA256()
     // a pool per chunk: without it every 4 MB read stays alive until the whole backup ends (a 2 GB file = 2 GB)
     var done = false
