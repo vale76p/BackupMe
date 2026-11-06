@@ -463,10 +463,15 @@ public final class Repository {
         guard unlinkat(parent, tmp, 0) == 0 || errno == ENOENT else { throw Self.posixError() }
         // other volumes, or a clone that fails, get a plain copy
         let cloned = source.map { fclonefileat($0, parent, tmp, 0) == 0 } ?? false
+        // a clone keeps its source's mode (git packs are read-only) and is only read back: never opened for writing
         let fd = cloned
-            ? openat(parent, tmp, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+            ? openat(parent, tmp, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             : openat(parent, tmp, O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_CREAT | O_EXCL, 0o600)
-        guard fd >= 0 else { throw Self.posixError() }
+        guard fd >= 0 else {
+            let error = Self.posixError()
+            if cloned { unlinkat(parent, tmp, 0) }
+            throw error
+        }
         var published = false
         defer { close(fd); if !published { unlinkat(parent, tmp, 0) } }
         // a clone is reopened by name: something swapped in meanwhile (a hard link to another file) is refused

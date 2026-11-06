@@ -197,6 +197,21 @@ import Testing
         #expect(try r.readObject(hash) == data)
     }
 
+    /// Git writes its packs read-only: a clone keeps that mode and can't be opened for writing.
+    @Test func readOnlyLargeObjectIsStored() throws {
+        let r = try Repository(destination: tmp(), computerName: "Mac")
+        let source = tmp().appending(path: "pack-1.pack")
+        let data = Data((0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        try data.write(to: source)
+        try fm.setAttributes([.posixPermissions: 0o444], ofItemAtPath: source.path)
+        let hash = sha256Hex(data)
+        #expect(try r.putObjectFile(from: source, hash: hash) == Int64(data.count))
+        let object = r.root.appending(path: "objects/\(hash.prefix(2))/\(hash).raw")
+        #expect(try firstBlock(object) == firstBlock(source))
+        #expect(try r.readObject(hash) == data)
+        #expect(try fm.contentsOfDirectory(atPath: object.deletingLastPathComponent().path) == [object.lastPathComponent])
+    }
+
     @Test(arguments: [false, true]) func interruptedCopyLeavesNoSpaceBehind(streamed: Bool) throws {
         let r = try Repository(destination: tmp(), computerName: "Mac")
         // incompressible: stored raw by both writers
