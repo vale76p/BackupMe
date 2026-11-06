@@ -65,6 +65,9 @@ struct RestoreView: View {
                 Group {
                     Button("Cartella superiore", action: goUp).keyboardShortcut(.upArrow, modifiers: .command)
                         .disabled(model.source == nil || !model.search.isEmpty)
+                    // the chips take no keyboard focus: newer and older backup from the keyboard
+                    Button("Backup più recente") { stepBackup(-1) }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                    Button("Backup più vecchio") { stepBackup(1) }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
                     // here, not on the toolbar pull-down: a Menu's shortcuts don't fire while it is closed
                     Button("Ripristina") { if wholeBackup { restoreAllInto() } else { restoreTargets() } }
                         .keyboardShortcut("r").disabled(restoreDisabled)
@@ -228,6 +231,7 @@ struct RestoreView: View {
         }
         .buttonStyle(.plain)
         .help(tip)
+        .accessibilityLabel(tip) // the label alone is only an hour or a day
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -540,6 +544,14 @@ struct RestoreView: View {
     private var here: Place { Place(source: model.source, path: model.currentPath) }
 
     private func open(_ path: String) { go(Place(source: model.source, path: path)) }
+    /// -1 newer, +1 older, in the sidebar's order.
+    private func stepBackup(_ by: Int) {
+        guard let i = model.snapshots.firstIndex(where: { $0.id == model.selectedID }),
+              model.snapshots.indices.contains(i + by) else { return }
+        model.search = ""
+        model.selectedID = model.snapshots[i + by].id
+    }
+
     private func goUp() {
         if model.currentPath.isEmpty { go(Place(source: nil, path: "")) } else { open((model.currentPath as NSString).deletingLastPathComponent) }
     }
@@ -689,10 +701,25 @@ struct RestoreView: View {
         chooseFolder { model.restore(snapshotID: id, items: t.map { ($0.source, $0.path) }, mode: .into($0)) }
     }
 
+    /// Every saved folder this backup has: at the top level the rows are their roots. Folders with the same name
+    /// go into a subfolder named after their parent ("Lavoro/src", "Personale/src"), not "src" and "src 2".
     private func restoreAllInto() {
         guard let id = model.selectedID else { return }
-        let items = model.sources.map { (source: $0, path: "") }
-        chooseFolder { model.restore(snapshotID: id, items: items, mode: .into($0)) }
+        let present = model.children().map(\.source)
+        let missing = model.sources.filter { !present.contains($0) }
+        let names = present.map { ($0 as NSString).lastPathComponent }
+        var subfolders: [String: String] = [:]
+        for s in present where names.filter({ $0 == (s as NSString).lastPathComponent }).count > 1 {
+            subfolders[s] = ((s as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        }
+        chooseFolder { dir in
+            model.restore(snapshotID: id, items: present.map { (source: $0, path: "") }, mode: .into(dir), subfolders: subfolders)
+            // a partial backup lists a folder it couldn't read: say so instead of a nameless error
+            if !missing.isEmpty {
+                model.error = ("Non tutto è in questo backup", "Non sono in questo backup, che è parziale: "
+                               + missing.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: ", "))
+            }
+        }
     }
 
     private func chooseFolder(_ then: (URL) -> Void) {

@@ -260,9 +260,10 @@ private struct DestinationCard: View {
     private var title: String {
         let url = URL(fileURLWithPath: path)
         let parts = url.pathComponents
-        var place = (try? url.resourceValues(forKeys: [.volumeLocalizedNameKey]))?.volumeLocalizedName ?? ""
-        if let i = parts.firstIndex(of: "CloudStorage"), i + 1 < parts.count {
-            // "OneDrive-Personal", "GoogleDrive-name@example.com": the service, then the account
+        // the cloud service as "Usa una cartella cloud" names it, iCloud Drive and older clients included
+        let cloud = CloudFolder.installed().first { path == $0.url.path || path.hasPrefix($0.url.path + "/") }
+        var place = cloud?.title ?? (try? url.resourceValues(forKeys: [.volumeLocalizedNameKey]))?.volumeLocalizedName ?? ""
+        if cloud == nil, let i = parts.firstIndex(of: "CloudStorage"), i + 1 < parts.count {
             place = parts[i + 1].replacingOccurrences(of: "-", with: " ")
         }
         return place.isEmpty ? url.lastPathComponent : "\(url.lastPathComponent) – \(place)"
@@ -377,13 +378,13 @@ private struct ScheduleSection: View {
             if let loginError { ErrorRow(text: loginError) }
         }
         Section {
-            Toggle("Solo con l'alimentatore collegato", isOn: $model.settings.onlyOnPower)
+            Toggle("Rimanda quando il Mac è a batteria", isOn: $model.settings.onlyOnPower)
             Toggle("Rimanda sulle reti a consumo", isOn: $model.settings.deferOnMetered)
-                .help("Hotspot dell'iPhone o reti Wi-Fi segnate come «a consumo» in Impostazioni di Sistema")
+                .help("Hotspot dell'iPhone, reti cellulari, o Wi-Fi con «Modalità dati ridotti» attiva")
         } header: {
             Text("Quando rimandare")
         } footer: {
-            Text("Il backup pianificato aspetta anche con il Risparmio energetico, la batteria sotto il 20% o il Mac troppo caldo, ma mai oltre un giorno senza backup. «Esegui backup ora» parte sempre, tranne durante il controllo completo dell'archivio.")
+            Text("Il backup pianificato aspetta anche con il Risparmio energetico, la batteria sotto il 20% o il Mac troppo caldo. Ogni rinvio, compresi questi due, dura al massimo un giorno senza backup. «Esegui backup ora» parte sempre, tranne durante il controllo completo dell'archivio.")
         }
         .disabled(model.settings.paused)
         Section {
@@ -427,7 +428,8 @@ private struct RetentionSection: View {
         } footer: {
             Text("Si tengono sempre tutti i backup delle ultime 24 ore; poi l'ultimo di ogni giorno, settimana e mese per il periodo scelto.")
         }
-        .task(id: model.settings.destination) { await load() }
+        // after every backup too: the counts change with it
+        .task(id: "\(model.settings.destination ?? "")\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)") { await load() }
         if let dated, !dated.isEmpty {
             Section {
                 let keep = snapshotsToKeep(dated, policy: model.settings.retention, now: Date(), calendar: .backup).count
@@ -781,7 +783,8 @@ private struct LogViewSection: View {
         .task { reload() }
     }
 
-    private func reload() { lines = Log.lines() }
+    /// Off the main thread: up to 2 MB of log to read, behind any write still queued.
+    private func reload() { Task { lines = await Task.detached(priority: .userInitiated) { Log.lines() }.value } }
 }
 
 private struct ArchiveCheckSection: View {

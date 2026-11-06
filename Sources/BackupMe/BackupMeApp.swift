@@ -70,8 +70,15 @@ private struct MenuBarLabel: View {
 }
 
 extension AppModel {
-    /// Warnings of the last backup (until "Cancella avvisi") or backups not reaching the cloud.
-    private var hasWarnings: Bool { lastReport?.warnings.isEmpty == false || uploadProblem != nil }
+    /// Warnings of the last backup (until "Cancella avvisi"), an archive problem not yet checked clean, or backups
+    /// not reaching the cloud: the menu bar badge and the panel say the same.
+    var hasWarnings: Bool { lastReport?.warnings.isEmpty == false || uploadProblem != nil || archiveProblem != nil }
+
+    /// What the panel's warnings menu lists: the archive problem first when the last backup no longer says it.
+    var shownWarnings: [String] {
+        let w = lastReport?.warnings ?? []
+        return (archiveProblem.map { w.contains($0) ? [] : [$0] } ?? []) + w
+    }
 
     var iconName: String {
         switch status {
@@ -173,7 +180,7 @@ struct MenuContent: View {
                                 .help("Notifiche disattivate: gli errori non verranno segnalati")
                                 .accessibilityLabel("Notifiche disattivate")
                         }
-                        if let r = model.lastReport, !r.warnings.isEmpty { warningsMenu(r.warnings) }
+                        if !model.shownWarnings.isEmpty { warningsMenu(model.shownWarnings) }
                         moreMenu
                     }
                     .frame(height: 20)
@@ -226,7 +233,7 @@ struct MenuContent: View {
 
     private var statusColor: Color {
         switch model.status {
-        case .idle: model.settings.paused || !model.settings.isConfigured ? .gray : .green
+        case .idle: model.settings.paused || !model.settings.isConfigured ? .gray : model.hasWarnings ? .orange : .green
         case .running: .accentColor
         case .failed: .red
         }
@@ -236,7 +243,8 @@ struct MenuContent: View {
         switch model.status {
         case .failed: "exclamationmark"
         case .running: "arrow.triangle.2.circlepath"
-        case .idle: !model.settings.isConfigured ? "gearshape" : model.settings.paused ? "pause.fill" : "checkmark"
+        case .idle: !model.settings.isConfigured ? "gearshape" : model.settings.paused ? "pause.fill"
+            : model.hasWarnings ? "exclamationmark.triangle" : "checkmark"
         }
     }
 
@@ -267,6 +275,10 @@ struct MenuContent: View {
             Button("Copia tutti gli avvisi") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(warnings.joined(separator: "\n"), forType: .string)
+            }
+            Button("Cancella avvisi") { model.clearWarnings() }
+            if model.archiveProblem != nil {
+                Text("Un problema dell'archivio resta finché Impostazioni › Avanzate › Controlla ora non lo trova integro")
             }
         } label: {
             Label("\(warnings.count)", systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)

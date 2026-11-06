@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct BackupReport: Codable, Sendable {
@@ -141,6 +142,11 @@ public final class BackupEngine {
             }
             if isCancelled() { throw BackupError.cancelled }
             let error = sourceErrors.isEmpty ? nil : sourceErrors.joined(separator: "\n")
+            // bounded like the excluded list: 400k cloud files offline would mean MBs in every report and manifest
+            if warnings.count > Self.excludedLimit {
+                let more = warnings.count - Self.excludedLimit
+                warnings = Array(warnings.prefix(Self.excludedLimit)) + ["… e altri \(more) avvisi"]
+            }
             func report(_ id: String?) -> BackupReport {
                 BackupReport(snapshotID: id, date: now, duration: Date().timeIntervalSince(start), fileCount: fileCount,
                              newBytes: newBytes, warnings: warnings, error: id == nil ? (error ?? "Nessun file da salvare") : error,
@@ -224,11 +230,15 @@ public final class BackupEngine {
         return false
     }
 
+    /// Hashed entry by entry: one JSON of a million entries would hold hundreds of MB at every hourly backup.
     private static func digest(sources: [String], entries: [Entry]) -> String {
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .secondsSince1970
         enc.outputFormatting = .sortedKeys
-        return sha256Hex((try? enc.encode([AnyEncodable(sources), AnyEncodable(entries)])) ?? Data())
+        var hasher = SHA256()
+        hasher.update(data: (try? enc.encode(sources)) ?? Data())
+        for e in entries { autoreleasepool { hasher.update(data: (try? enc.encode(e)) ?? Data()) } }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// Returns an error message if the source itself is missing or unreadable. A source is a folder or a single file.
@@ -262,6 +272,7 @@ public final class BackupEngine {
             scan.unreadable.append("Cartella non leggibile, il suo contenuto manca da questo backup: \(full) (\(error.localizedDescription))")
             return
         }
+        Activity.beat() // a scan of a million files gives no progress until it ends
         for name in names.sorted() {
             guard let child = FileStat(path: full + "/" + name) else { continue }
             let path = rel.isEmpty ? name : rel + "/" + name

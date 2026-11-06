@@ -49,11 +49,18 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
     /// True until the backup task really ends: after a "stuck" timeout it may still hold the archive lock.
     private var workerActive = false
+    /// The last archive problem (damaged, incomplete, recreated, cleanup failed): it stays in the badge until a
+    /// full check finds the archive healthy, not only for the one backup that noticed it.
+    var archiveProblem = UserDefaults.standard.string(forKey: "archiveProblem") {
+        didSet { UserDefaults.standard.set(archiveProblem, forKey: "archiveProblem") }
+    }
     private var lastVerify = UserDefaults.standard.object(forKey: "lastVerify") as? Date {
         didSet { UserDefaults.standard.set(lastVerify, forKey: "lastVerify") }
     }
     /// Progress of the full archive check, nil when none is running; backups wait until it ends.
     var checkProgress: Double?
+    /// Kept here, not in the Sfoglia window: closing the window must not allow a second restore at the same time.
+    var restoring = false
     /// The last full check's outcome, in words, and whether the archive was healthy.
     var checkResult: (text: String, healthy: Bool)?
     private var checkCancel = OSAllocatedUnfairLock(initialState: false)
@@ -68,6 +75,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     private var lastStaleNotice: Date?
     private var notifiedErrors = Set<String>()
     private var timer: Timer?
+    /// Uptime of the last wake: scheduled backups wait a minute after it.
+    private var wokeAt: TimeInterval = -.infinity
+    private var uploadCheckRunning = false
 
     static let retryAfterFailure: TimeInterval = 15 * 60
     static let staleAfter: TimeInterval = 3 * 86400
@@ -98,7 +108,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
-            // give network and OneDrive a minute after wake
+            // give network and OneDrive a minute after wake: the 60 s timer may fire seconds after it
+            MainActor.assumeIsolated { self.wokeAt = ProcessInfo.processInfo.systemUptime }
             DispatchQueue.main.asyncAfter(deadline: .now() + 60) { MainActor.assumeIsolated { self.tick() } }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { MainActor.assumeIsolated { self.tick() } }
@@ -116,7 +127,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             lastUploadCheck = now
             checkUpload()
         }
-        if isRunning, ProcessInfo.processInfo.systemUptime - lastProgressUptime > Self.stuckAfter {
+        // stuck only when neither progress nor the engine's own heartbeat (big copies, scan, cleanup) moved
+        if isRunning, min(ProcessInfo.processInfo.systemUptime - lastProgressUptime, Activity.silence) > Self.stuckAfter {
             // a read blocked forever (offline OneDrive file, hung volume) must not stop every later backup
             cancelBackup()
             fail("Backup bloccato da più di 2 ore: riparte appena si sblocca, o riavvia BackupMe")
@@ -129,7 +141,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             SystemServices.notify("BackupMe", "Nessun backup riuscito da più di 3 giorni.")
         }
         if checkProgress != nil {
-            if ProcessInfo.processInfo.systemUptime - lastCheckProgressUptime > Self.stuckAfter {
+            if min(ProcessInfo.processInfo.systemUptime - lastCheckProgressUptime, Activity.silence) > Self.stuckAfter {
                 // a read blocked in the check must not stop the backups for good
                 cancelCheck()
                 checkProgress = nil
@@ -147,6 +159,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             deferral = nil
             return
         }
+        guard ProcessInfo.processInfo.systemUptime - wokeAt >= 60 else { return }
         // waits for power or a cooler Mac, but never past a day without a backup; "Esegui ora" always runs
         let overdue = lastSuccess.map { now.timeIntervalSince($0) > 86400 } ?? true
         let reason = overdue ? nil : SystemServices.backupDeferral(onlyOnPower: settings.onlyOnPower, avoidMetered: settings.deferOnMetered)
@@ -258,6 +271,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             if !c.objects.corrupt.isEmpty { problems.append("\(c.objects.corrupt.count) file danneggiati senza una copia attuale per ripararli") }
             let repaired = c.objects.repaired.isEmpty ? "" : "; \(c.objects.repaired.count) file danneggiati riparati"
             if problems.isEmpty {
+                archiveProblem = nil
                 checkResult = ("Archivio integro: \(c.snapshots) backup, \(c.objects.checked) file controllati (\(size))\(repaired)", true)
                 Log.backup.info(checkResult!.text)
             } else {
@@ -270,11 +284,15 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
     private func checkUpload() {
         guard let dest = settings.destination else { uploadProblem = nil; return }
+        // one at a time: on a hung destination every hourly check would block a thread until none is left
+        guard !uploadCheckRunning else { return }
+        uploadCheckRunning = true
         let archive = AppPaths.archiveName
         Task.detached(priority: .utility) {
             let problem = Self.uploadProblem(destination: dest, archive: archive, now: Date())
             Log.backup.debug("Controllo caricamento nel cloud: \(problem ?? "nessun problema")")
             await MainActor.run {
+                self.uploadCheckRunning = false
                 self.uploadProblem = problem
                 if let problem, self.lastUploadNotice.map({ Date().timeIntervalSince($0) > 86400 }) ?? true {
                     self.lastUploadNotice = Date()
@@ -361,11 +379,15 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         do {
             // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
             let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
+            // objects of the backups that leave are collected once a day, not at every hourly backup
+            let lastGC = UserDefaults.standard.object(forKey: "lastGC") as? Date
+            let gcDue = lastGC.map { Date().timeIntervalSince($0) > 86400 || $0 > Date() } ?? true
             // a failed run may have left orphan objects: collect them (this also frees space when the disk is full)
             let result = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
                                    refsCache: AppPaths.refsCache(archive, destination: repo.root.path), forceGC: report.snapshotID == nil,
                                    // the backup just made too: with a clock gone wrong it may not look like the newest
-                                   pinned: Set([pin, report.snapshotID].compactMap { $0 }))
+                                   pinned: Set([pin, report.snapshotID].compactMap { $0 }), gcDue: gcDue)
+            if result.collected { UserDefaults.standard.set(Date(), forKey: "lastGC") }
             Log.backup.debug("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) oggetti eliminati, archivio \(result.poolSize) byte, oltre il tetto: \(result.overCap), rinviata: \(result.gcSkipped), oggetti mancanti: \(result.missingObjects)")
             if result.archiveReplaced {
                 report.warnings.append("\(Self.recreated) nella destinazione c'è un archivio nuovo e i backup precedenti non ci sono più. Se non l'hai cancellato tu, controlla la cartella: un servizio cloud può averlo spostato o rinominato")
@@ -406,9 +428,12 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             Log.backup.info("Backup \(report.snapshotID ?? "") riuscito: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(report.warnings.count) avvisi, \(Int(report.duration)) s")
         }
         for w in critical { notifyOnce(w, title: "Problema nell'archivio") }
+        if let last = critical.last { archiveProblem = last }
         if report.error == nil, settings.notify != .errors {
             let others = report.warnings.count - critical.count
-            if others > 0 {
+            // the same warnings as the backup before (a database always open, a cleanup that waits): told once
+            let before = history.dropLast().last?.warnings ?? []
+            if others > 0, Set(report.warnings) != Set(before) {
                 SystemServices.notify("Backup completato con avvisi",
                                       others == 1 ? "1 avviso: lo trovi nel pannello di BackupMe" : "\(others) avvisi: li trovi nel pannello di BackupMe",
                                       problem: false)
@@ -429,9 +454,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     /// Empties the last backup's warnings, from Impostazioni: the backup itself is untouched.
+    /// Empties the last backup's warnings, except the archive problems: those go only when a full check is clean.
     func clearWarnings() {
         guard !history.isEmpty else { return }
-        history[history.count - 1].warnings = []
+        history[history.count - 1].warnings.removeAll { w in !Self.criticalPrefixes.contains(where: w.hasPrefix) }
         saveHistory()
     }
 
@@ -460,6 +486,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RestoreError.invalidEntry(let p): return "Backup non valido o manomesso (percorso \"\(p)\"): ripristino annullato"
         case RestoreError.keptBeside(let p):
             return "Non è stato possibile sostituire: l'originale è nel Cestino e la versione ripristinata è in \(p)"
+        case RestoreError.linkInPath(let p):
+            return "«\((p as NSString).lastPathComponent)» oggi è un collegamento a un'altra cartella: usa Ripristina in…"
         case RestoreError.containsArchive(let p):
             return "«\((p as NSString).lastPathComponent)» contiene l'archivio dei backup: Sostituisci lo manderebbe nel Cestino. Usa Ripristina accanto o Ripristina in…"
         default: return error.localizedDescription

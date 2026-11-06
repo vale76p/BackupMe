@@ -38,7 +38,10 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     private var loading = Set<String>()
     /// Search progress only; a restore has its own flag so neither can cancel or block the other.
     var busy: String?
-    var restoring = false
+    var restoring: Bool {
+        get { app.restoring }
+        set { app.restoring = newValue }
+    }
     var error: (title: String, message: String)?
     /// True until the snapshot list arrives: "no backups" must not flash while it loads.
     var isLoading = true
@@ -318,7 +321,9 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     }
 
     /// Restores several items from one backup in a row; one failing doesn't stop the others.
-    func restore(snapshotID: String, items: [(source: String, path: String)], mode: RestoreMode) {
+    /// `subfolders`: with `.into`, saved folders that go into a subfolder of the chosen one (two named alike).
+    func restore(snapshotID: String, items: [(source: String, path: String)], mode: RestoreMode,
+                 subfolders: [String: String] = [:]) {
         guard !restoring else { error = ("Ripristino non riuscito", "Un ripristino è già in corso: attendi che finisca"); return }
         guard !items.isEmpty else { return }
         restoring = true
@@ -329,8 +334,12 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
                 let restorer = Restorer(repository: repo)
                 var done: [URL] = [], failed: [String] = []
                 for item in items {
-                    do { done.append(try restorer.restore(snapshot, source: item.source, path: item.path, mode: mode)) }
-                    catch { failed.append(AppModel.describe(error)) }
+                    var m = mode
+                    if case .into(let dir) = mode, let sub = subfolders[item.source] { m = .into(dir.appending(path: sub)) }
+                    // named: with several items "La cartella non è in questo backup" alone doesn't say which
+                    let name = ((item.path.isEmpty ? item.source : item.path) as NSString).lastPathComponent
+                    do { done.append(try restorer.restore(snapshot, source: item.source, path: item.path, mode: m)) }
+                    catch { failed.append("\(name): \(AppModel.describe(error))") }
                 }
                 return (done, failed)
             }) ?? ([], ["Impossibile aprire il backup"])
@@ -344,6 +353,8 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
                 let others = outcome.1.count - 1
                 let more = others == 0 ? "" : others == 1 ? " (e un altro errore)" : " (e altri \(others) errori)"
                 error = ("Ripristino non riuscito", first + more)
+                // the window may be closed by now: the alert would go unseen
+                SystemServices.notify("Ripristino non riuscito", first + more, problem: false)
             }
             restoring = false
         }

@@ -14,7 +14,10 @@ Novità per versione: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Requisiti
 
-macOS 14 o successivo, con Xcode o i Command Line Tools (`xcode-select --install`; su un Mac gestito può servire l'IT per installarli). BackupMe non chiede mai permessi di amministratore.
+- **Per usarla:** macOS 14 o successivo, su Mac Apple Silicon o Intel (l'app è universale).
+- **Per compilarla:** Xcode 26 o i suoi Command Line Tools (`xcode-select --install`), che richiedono macOS 15.6 o successivo: il codice usa le API di Liquid Glass, protette da `#available` per chi la usa su macOS 14. Su un Mac gestito può servire l'IT per installarli.
+
+BackupMe non chiede mai permessi di amministratore.
 
 ## Compilare e installare
 
@@ -74,16 +77,30 @@ sh "<destinazione>/BackupMe/RIPRISTINO.command"
 
 Senza argomenti elenca computer e backup; con `<computer> <id del backup> <cartella>` ricrea le cartelle salvate dentro `<cartella>`, verificando ogni file e senza sovrascrivere niente.
 
+## Se qualcosa va storto
+
+- **Impostazioni › Registro** mostra avvii, esiti, rinvii ed errori, anche dopo un riavvio. Il file è `~/Library/Application Support/BackupMe/BackupMe.log` (più il precedente, `BackupMe.log.1`).
+- **Impostazioni › Avanzate › Controlla ora** rilegge l'archivio e dice se è integro.
+- Se l'app si chiude da sola, macOS salva il rapporto in `~/Library/Logs/DiagnosticReports/BackupMe-*.ips`.
+- Lo stesso registro, con i dettagli di Debug, è nel registro di sistema:
+
+```bash
+log show --predicate 'subsystem == "com.vale76p.BackupMe"' --info --debug --last 1d
+```
+
+**Privacy:** registro e cronologia contengono i percorsi delle cartelle salvate, della destinazione e dei file che danno avvisi o vengono ripristinati. Restano su questo Mac, ma sono anche nel registro di sistema: su un Mac gestito l'IT può raccoglierlo. Il contenuto dei file non viene mai scritto nei registri.
+
 ## Disinstallare
 
 Esci dall'app, poi:
 
 ```bash
+launchctl bootout gui/$(id -u)/com.vale76p.BackupMe 2>/dev/null
 rm -rf ~/Applications/BackupMe.app ~/Library/Application\ Support/BackupMe ~/Library/LaunchAgents/com.vale76p.BackupMe.plist
 defaults delete com.vale76p.BackupMe
 ```
 
-I backup nella destinazione restano dove sono.
+I backup nella destinazione restano dove sono, insieme a `RIPRISTINO.command` e `LEGGIMI.txt` per ripristinarli senza l'app.
 
 ## Sviluppo
 

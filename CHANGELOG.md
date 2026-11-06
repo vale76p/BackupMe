@@ -2,6 +2,41 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [0.9.1] - 2026-11-06
+
+Difetti medi e bassi della terza revisione avversativa.
+
+### Cambiato
+- L'app è universale: gira su Mac Apple Silicon e Intel.
+- "Rimanda quando il Mac è a batteria" sostituisce "Solo con l'alimentatore collegato", e il testo dice che ogni rinvio dura al massimo un giorno. Il suggerimento sulla rete a consumo nomina quello che macOS ha davvero: hotspot, reti cellulari, Wi-Fi con "Modalità dati ridotti".
+- README: requisiti veri (si usa da macOS 14, si compila con Xcode 26 su macOS 15.6 o successivo), "Se qualcosa va storto", privacy dei registri, disinstallazione con `launchctl bootout`.
+
+### Corretto
+#### Interfaccia
+- Barra dei menu e pannello si contraddicevano sugli avvisi (triangolo giallo contro spunta verde): ora il pannello mostra il triangolo arancione, e "Cancella avvisi" è anche nel menu degli avvisi.
+- Un problema dell'archivio (danneggiato, incompleto, ricreato) spariva al backup successivo: ora resta nel badge finché "Controlla ora" non trova l'archivio integro, e "Cancella avvisi" non lo toglie.
+- In Sfoglia il backup si cambia anche da tastiera (⌥⌘↑ più recente, ⌥⌘↓ più vecchio) e VoiceOver legge la data completa di ogni chip.
+- La scheda Destinazione nomina il servizio cloud come il menu "Usa una cartella cloud", iCloud Drive compreso.
+- L'anteprima di Conservazione si aggiorna dopo ogni backup.
+
+#### Ciclo di vita
+- Un file enorme copiato su un disco lento faceva scattare il falso "Backup bloccato da più di 2 ore": il motore ora segnala da solo che sta lavorando (copie, scansione, pulizia, controllo).
+- Con le notifiche "Anche gli avvisi" arrivava una notifica a ogni backup per gli stessi avvisi: ora solo quando cambiano.
+- Dopo il risveglio il backup partiva subito, con la rete non ancora pronta: ora aspetta un minuto.
+- Con una destinazione bloccata i controlli del caricamento nel cloud si accumulavano fino a bloccare i backup: ora ne gira uno alla volta.
+
+#### Ripristino
+- Chiudendo Sfoglia durante un ripristino gli errori si perdevano e se ne poteva avviare un secondo: ora un ripristino alla volta per tutta l'app, e gli errori arrivano anche come notifica.
+- Gli errori dei ripristini multipli dicono quale elemento è fallito; "Ripristina tutto…" dice quali cartelle mancano da un backup parziale.
+- "Ripristina tutto…" con due cartelle dallo stesso nome le mette in sottocartelle con il nome della cartella madre ("Lavoro/src", "Personale/src") invece di "src" e "src 2".
+- Un ripristino accanto all'originale non segue più un collegamento simbolico creato dopo il backup.
+
+#### Scala
+- Ogni backup orario con un milione di file teneva centinaia di MB in memoria per confrontarsi con il precedente: ora il confronto si calcola voce per voce. Il primo backup dopo l'aggiornamento scrive un indice nuovo anche senza modifiche.
+- La pulizia degli oggetti dei backup scaduti avviene una volta al giorno invece che a ogni backup orario (subito se c'è un tetto di spazio).
+- La verifica giornaliera a campione non elenca più tutto l'archivio.
+- Gli avvisi di un backup sono al massimo 200 più il conteggio degli altri; le righe lunghissime del registro vengono troncate e il Registro si legge fuori dal thread principale.
+
 ## [0.9.0] - 2026-11-06
 
 ### Cambiato

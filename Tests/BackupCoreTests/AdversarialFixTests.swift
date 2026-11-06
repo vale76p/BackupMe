@@ -167,6 +167,22 @@ import Testing
         #expect(r.hasObject(sha256Hex(Data("v1".utf8))))
     }
 
+    @Test func orphansWaitUntilCollectionIsDue() throws {
+        let r = try repo()
+        write("v1", to: src.appending(path: "a.txt"))
+        _ = try engine(r).run(sources: [src], now: t0)
+        write("v2", to: src.appending(path: "a.txt"))
+        _ = try engine(r).run(sources: [src], now: t0.addingTimeInterval(86400))
+        var keepNewest = RetentionPolicy(); keepNewest.days = 0; keepNewest.weeks = 0; keepNewest.months = 0
+        let later = t0.addingTimeInterval(3 * 86400)
+        let waiting = try prune(repository: r, policy: keepNewest, capBytes: nil, now: later, gcDue: false)
+        #expect(waiting.deletedSnapshots.count == 1 && !waiting.collected && r.hasObject(sha256Hex(Data("v1".utf8))))
+        let due = try prune(repository: r, policy: keepNewest, capBytes: nil, now: later, gcDue: true)
+        #expect(due.deletedSnapshots.isEmpty)
+        let forced = try prune(repository: r, policy: keepNewest, capBytes: nil, now: later, forceGC: true)
+        #expect(forced.collected && !r.hasObject(sha256Hex(Data("v1".utf8))))
+    }
+
     @Test func manifestLeavingTwiceDoesNotBlockCleanupForever() throws {
         let refs = tmp()
         let r = try repo()

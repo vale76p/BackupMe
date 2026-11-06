@@ -19,6 +19,8 @@ enum Log {
     private static let rotateAt = 1_000_000
 
     fileprivate static func append(_ level: String, _ category: String, _ message: String) {
+        // one line stays readable in Impostazioni › Registro
+        let message = message.count > 4000 ? message.prefix(4000) + "… (troncato)" : message
         let line = "\(Date().formatted(date: .numeric, time: .standard)) \(level) [\(category)] \(message)\n"
         queue.async {
             let fm = FileManager.default

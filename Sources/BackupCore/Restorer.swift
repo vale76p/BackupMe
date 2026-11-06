@@ -9,6 +9,8 @@ public enum RestoreError: Error, Equatable {
     case keptBeside(String)
     /// Replace would move this folder to the Trash with the backup archive inside it.
     case containsArchive(String)
+    /// A folder on the way to the original is a symbolic link today: writing there would land somewhere else.
+    case linkInPath(String)
 }
 
 public final class Restorer {
@@ -48,6 +50,14 @@ public final class Restorer {
         if mode == .replace,
            repository.root.resolvingSymlinksInPath().path.hasPrefix(target.resolvingSymlinksInPath().path + "/") {
             throw RestoreError.containsArchive(target.path)
+        }
+        // beside or in place of the original: no folder on the way may have become a link since the backup
+        if mode == .besideOriginal || mode == .replace {
+            var dir = sourceRoot
+            for part in path.split(separator: "/").dropLast() {
+                dir = dir.appending(path: String(part))
+                if (try? fm.destinationOfSymbolicLink(atPath: dir.path)) != nil { throw RestoreError.linkInPath(dir.path) }
+            }
         }
         let parent = target.deletingLastPathComponent()
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)

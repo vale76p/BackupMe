@@ -14,9 +14,10 @@ strip_detritus() {
     done || true # never a reason to stop: codesign right after says if something that matters is left
 }
 
-swift build -c release --product BackupMe
+# universal: the same app runs on Apple Silicon and Intel Macs
+swift build -c release --product BackupMe --arch arm64 --arch x86_64
 swift build -c release --product KitUpdater
-BIN="$(swift build -c release --show-bin-path)/BackupMe"
+BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/BackupMe"
 # assembled and signed outside the repo: in a synced folder (Documents in iCloud) the sync daemon tags the bundle
 # again between the cleanup and codesign. build/ gets the signed copy
 STAGE="$(mktemp -d -t backupme-build)"

@@ -11,7 +11,8 @@ public struct VerifyReport: Equatable, Sendable {
 /// rewritten from the source file the hash cache knows, if that file still has the same content; it is never deleted.
 public func verifySample(repository: Repository, cache: HashCache, budgetBytes: Int64) throws -> VerifyReport {
     try repository.withLock {
-        try verify(try repository.objectSizes().shuffled(), in: repository, cache: cache, budgetBytes: budgetBytes)
+        // a few folders at random: listing a million objects to read 100 MB of them took longer than the reads
+        try verify(try repository.objectSizes(sampleDirs: 4).shuffled(), in: repository, cache: cache, budgetBytes: budgetBytes)
     }
 }
 
@@ -20,6 +21,7 @@ private func verify(_ objects: [(key: String, value: Int64)], in repository: Rep
     var r = VerifyReport(checked: 0, bytes: 0, corrupt: [], repaired: [])
     for (i, (hash, size)) in objects.enumerated() where r.bytes < budgetBytes {
         if isCancelled() { throw BackupError.cancelled }
+        Activity.beat()
         // an object bigger than what's left would overshoot the budget (on Files On-Demand, a download of GBs)
         guard size <= budgetBytes - r.bytes else { continue }
         r.checked += 1
@@ -57,6 +59,7 @@ public func checkArchive(repository: Repository, cache: HashCache, isCancelled: 
         var needed = Set<String>()
         for id in ids {
             if isCancelled() { throw BackupError.cancelled }
+            Activity.beat()
             do { try autoreleasepool { needed.formUnion(try repository.readSnapshot(id).entries.compactMap(\.hash)) } }
             catch { unreadable.append(id) }
         }

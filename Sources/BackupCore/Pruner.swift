@@ -13,6 +13,8 @@ public struct PruneResult: Equatable, Sendable {
     /// This run found a different archive id in repo.json: the archive was made again from nothing, and the
     /// backups of the earlier one are gone from the destination. Told once, in the run that notices it.
     public var archiveReplaced = false
+    /// Unreferenced objects were looked for (and deleted): the full listing ran.
+    public var collected = false
     /// Objects that kept manifests use but the archive listing lacks (counted only when object cleanup ran).
     public var missingObjects = 0
 }
@@ -29,7 +31,7 @@ public struct PruneResult: Equatable, Sendable {
 /// while newer ones are partial).
 public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int64?, now: Date,
                   calendar: Calendar = .backup, refsCache: URL? = nil, forceGC: Bool = false,
-                  pinned: Set<String> = []) throws -> PruneResult {
+                  pinned: Set<String> = [], gcDue: Bool = true) throws -> PruneResult {
     try repository.withLock {
         var ids = try repository.snapshotIDs()
         let tracked = refsCache.map { trackVanished(ids: Set(ids), archive: repository.archiveID, cache: $0, now: now) }
@@ -51,7 +53,10 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         var users: [String: Int]?
         if let cap = capBytes {
             var counts: [String: Int] = [:]
-            for id in ids { for h in try references(of: id, in: repository, cache: refsCache) { counts[h, default: 0] += 1 } }
+            for id in ids {
+                Activity.beat()
+                for h in try references(of: id, in: repository, cache: refsCache) { counts[h, default: 0] += 1 }
+            }
             let objectSizes = try repository.objectSizes()
             var manifestSizes = try repository.snapshotSizes()
             size = counts.keys.reduce(0) { $0 + (objectSizes[$1] ?? 0) } + manifestSizes.values.reduce(0, +)
@@ -72,12 +77,15 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
 
         var deletedObjects = 0
         var missingObjects = 0
-        if !deleted.isEmpty || forceGC, !gcSkipped {
+        // with hourly backups one leaves the last 24 hours every hour: collecting their objects each time reads every
+        // manifest's references. `gcDue` (once a day) lets the orphans wait; a cap needs the space now
+        let collect = (!deleted.isEmpty && (gcDue || capBytes != nil)) || forceGC
+        if collect, !gcSkipped {
             var reachable = users.map { Set($0.keys) } ?? []
             if users == nil { for id in ids { reachable.formUnion(try references(of: id, in: repository, cache: refsCache)) } }
             let stored = try repository.allObjectHashes()
             let unreachable = stored.subtracting(reachable)
-            for h in unreachable { try repository.deleteObject(h) }
+            for h in unreachable { Activity.beat(); try repository.deleteObject(h) }
             try repository.removeTemporaryFiles()
             deletedObjects = unreachable.count
             missingObjects = reachable.subtracting(stored).count
@@ -90,7 +98,8 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         }
         return PruneResult(deletedSnapshots: deleted, deletedObjects: deletedObjects, poolSize: size,
                            overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, vanished: tracked?.warn ?? false,
-                           archiveReplaced: tracked?.replaced ?? false, missingObjects: missingObjects)
+                           archiveReplaced: tracked?.replaced ?? false, collected: collect && !gcSkipped,
+                           missingObjects: missingObjects)
     }
 }
 

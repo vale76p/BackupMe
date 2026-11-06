@@ -117,9 +117,13 @@ public final class Repository {
     public static func isHash(_ s: String) -> Bool { s.utf8.count == 64 && s.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }
 
     /// Every stored object with its size on disk, from one listing of the archive.
-    public func objectSizes() throws -> [String: Int64] {
+    /// `sampleDirs`: only that many of the 256 fan-out folders, picked at random (a sample, without listing the
+    /// whole archive).
+    public func objectSizes(sampleDirs: Int? = nil) throws -> [String: Int64] {
         var result: [String: Int64] = [:]
-        for dir in try fm.contentsOfDirectory(atPath: objectsDir.path) {
+        var dirs = try fm.contentsOfDirectory(atPath: objectsDir.path)
+        if let n = sampleDirs { dirs = Array(dirs.shuffled().prefix(n)) }
+        for dir in dirs {
             let d = objectsDir.appending(path: dir)
             for f in (try? fm.contentsOfDirectory(atPath: d.path)) ?? [] where Self.extensions.contains((f as NSString).pathExtension) {
                 let size = (try? fm.attributesOfItem(atPath: d.appending(path: f).path)[.size] as? Int64) ?? 0
@@ -171,6 +175,9 @@ public final class Repository {
         try prepareFanout(url)
         let tmp = url.appendingPathExtension("tmp")
         try? fm.removeItem(at: tmp)
+        // one silent call: allow it the time a slow disk or network share needs (5 MB/s)
+        let size = (try? fm.attributesOfItem(atPath: source.path)[.size] as? Int64) ?? 0
+        Activity.beat(grace: Double(size) / 5_000_000)
         try fm.copyItem(at: source, to: tmp)
         guard try streamHash(tmp) == hash else {
             try? fm.removeItem(at: tmp)
@@ -355,7 +362,7 @@ func streamHash(_ url: URL) throws -> String {
     var done = false
     while !done {
         try autoreleasepool {
-            if let chunk = try h.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk) } else { done = true }
+            if let chunk = try h.read(upToCount: 4 << 20), !chunk.isEmpty { hasher.update(data: chunk); Activity.beat() } else { done = true }
         }
     }
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()

@@ -52,6 +52,18 @@ import Testing
         #expect(try fm.contentsOfDirectory(atPath: trashDir.path).isEmpty)
     }
 
+    @Test func linkCreatedAfterBackupIsNotFollowed() throws {
+        write("a", to: src.appending(path: "sub/a.txt"))
+        let (repo, snapshot) = try backup()
+        let elsewhere = tmp()
+        try fm.removeItem(at: src.appending(path: "sub"))
+        try fm.createSymbolicLink(at: src.appending(path: "sub"), withDestinationURL: elsewhere)
+        #expect(throws: RestoreError.self) {
+            try restorer(repo).restore(snapshot, source: src.path, path: "sub/a.txt", mode: .besideOriginal)
+        }
+        #expect(try fm.contentsOfDirectory(atPath: elsewhere.path).isEmpty)
+    }
+
     @Test func roundTripWholeSourceInto() throws {
         write("ciao", to: src.appending(path: "spazi e àccénti 🎉.txt"))
         write("", to: src.appending(path: "vuoto.txt"))
