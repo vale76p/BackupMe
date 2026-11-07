@@ -221,6 +221,21 @@ import Testing
         #expect(try fm.contentsOfDirectory(atPath: object.deletingLastPathComponent().path) == [object.lastPathComponent])
     }
 
+    /// A link planted as a large object, pointing at a file with the right content, must not come back as a link.
+    @Test func largeObjectPlantedAsLinkIsNotRestored() throws {
+        let r = try Repository(destination: tmp(), computerName: "Mac")
+        let outside = tmp().appending(path: "outside.bin")
+        let data = Data((0..<Int(Repository.streamThreshold)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        try data.write(to: outside)
+        let hash = sha256Hex(data)
+        let object = r.root.appending(path: "objects/\(hash.prefix(2))/\(hash).raw")
+        try fm.createDirectory(at: object.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try plant(outside, at: object)
+        let restored = tmp().appending(path: "restored.bin")
+        #expect(throws: (any Error).self) { try r.restoreObject(hash, to: restored) }
+        #expect(!fm.fileExists(atPath: restored.path) && (try? fm.destinationOfSymbolicLink(atPath: restored.path)) == nil)
+    }
+
     @Test(arguments: [false, true]) func interruptedCopyLeavesNoSpaceBehind(streamed: Bool) throws {
         let r = try Repository(destination: tmp(), computerName: "Mac")
         // incompressible: stored raw by both writers

@@ -69,6 +69,23 @@ import Testing
         }
     }
 
+    /// A large object restored to another volume, where it can't be a clone: copied, verified, never over a file.
+    @Test(arguments: ["ExFAT", "APFS"]) func largeObjectRestoresOntoAnotherVolume(fs: String) throws {
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let source = tmp().appending(path: "grande.bin")
+        let data = Data((0..<Int(Repository.streamThreshold)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        try data.write(to: source)
+        let hash = sha256Hex(data)
+        #expect(try repo.putObjectFile(from: source, hash: hash) == Int64(data.count))
+        try withVolume(fs) { mount in
+            let restored = mount.appending(path: "grande.bin")
+            try repo.restoreObject(hash, to: restored)
+            #expect(try Data(contentsOf: restored) == data)
+            #expect(throws: (any Error).self) { try repo.restoreObject(hash, to: restored) }
+            #expect(try Data(contentsOf: restored) == data)
+        }
+    }
+
     /// M3: names differing only by case in one saved folder don't stop the kit: the other folders are restored,
     /// the collision is named, and the exit status says something is missing.
     @Test func kitRestoresOtherSourcesBesideACaseCollision() throws {

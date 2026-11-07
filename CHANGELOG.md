@@ -2,6 +2,11 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [Non rilasciato]
+
+### Sicurezza
+- Il ripristino di un file grande (32 MB o più) non segue più un collegamento messo nell'archivio al posto dell'oggetto: prima nella cartella ripristinata finiva un collegamento a un file fuori dall'archivio.
+
 ## [1.0.0-rc1] - 2026-11-07
 
 Candidata alla 1.0, dalla revisione avversativa della 0.9.4. Nell'app la versione è 1.0.0 (build 19). La 1.0 finale dipende dalla prova reale su OneDrive (#24).

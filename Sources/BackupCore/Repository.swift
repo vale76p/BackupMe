@@ -302,14 +302,35 @@ public final class Repository {
     /// Writes an object's content to `destination` (which must not exist), verifying its hash.
     public func restoreObject(_ hash: String, to destination: URL) throws {
         guard let url = existingObjectURL(hash) else { throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: hash]) }
-        let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
-        if url.pathExtension == "raw", size >= Self.streamThreshold {
-            try fm.copyItem(at: url, to: destination)
-            guard (try? streamHash(destination)) == hash else {
-                try? fm.removeItem(at: destination)
-                throw RepositoryError.corruptObject(hash)
+        if url.pathExtension == "raw" {
+            let parent = try parentDirectory(of: url)
+            defer { close(parent) }
+            // never through a link planted as the object: it would come back as a link to a file outside the archive
+            let fd = openat(parent, url.lastPathComponent, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw Self.posixError() }
+            defer { close(fd) }
+            var st = stat()
+            guard fstat(fd, &st) == 0 else { throw Self.posixError() }
+            guard st.st_mode & S_IFMT == S_IFREG else { throw RepositoryError.corruptObject(hash) }
+            if st.st_size >= Self.streamThreshold {
+                // a clone on the same volume, elsewhere a copy of the data; never over an existing file
+                if fclonefileat(fd, AT_FDCWD, destination.path, 0) != 0 {
+                    guard errno == ENOTSUP || errno == EOPNOTSUPP || errno == EXDEV else { throw Self.posixError() }
+                    let out = open(destination.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                    guard out >= 0 else { throw Self.posixError() }
+                    defer { close(out) }
+                    if fcopyfile(fd, out, nil, copyfile_flags_t(COPYFILE_DATA)) != 0 {
+                        let error = Self.posixError()
+                        try? fm.removeItem(at: destination)
+                        throw error
+                    }
+                }
+                guard (try? streamHash(destination)) == hash else {
+                    try? fm.removeItem(at: destination)
+                    throw RepositoryError.corruptObject(hash)
+                }
+                return
             }
-            return
         }
         try readObject(hash).write(to: destination, options: .withoutOverwriting)
     }
