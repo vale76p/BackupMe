@@ -71,7 +71,7 @@ BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchA
 
 `<id>` viene dall'identificativo hardware del Mac e `<utente>` è l'account: due Mac con lo stesso nome, né due account dello stesso Mac, non condividono mai l'archivio, e rinominare il Mac non ne crea uno nuovo. Un archivio creato da una versione precedente tiene il suo nome, senza `-<utente>`.
 
-La cartella dell'archivio è leggibile solo dal tuo account. Per ripristinare da un altro account, su un disco esterno che rispetta i proprietari dei file, attiva **Ottieni informazioni › Ignora la proprietà su questo volume** sul disco.
+La cartella dell'archivio è leggibile solo dal tuo account, sui dischi che rispettano i proprietari dei file (exFAT, FAT32 e molte condivisioni SMB li ignorano: lì la legge chiunque usi il disco). Per ripristinare da un altro account, su un disco esterno che li rispetta, attiva **Ottieni informazioni › Ignora la proprietà su questo volume** sul disco.
 
 I file non si leggono direttamente da OneDrive: si ripristinano con **Sfoglia backup…**. Da un altro Mac basta installare BackupMe, scegliere la stessa destinazione e aprire **Sfoglia backup…**, dove si può scegliere il computer di origine.
 

@@ -9,11 +9,32 @@ public struct ExcludeRules: Sendable {
     public let paths: Set<String>
     /// Files bigger than this (bytes) are left out, never inside .git; nil means no limit.
     public let maxFileSize: Int64?
+    /// The patterns read once, ready to compare: checked for every file of a scan.
+    private let compiled: [Compiled]
+
+    private struct Compiled: Sendable {
+        var pattern: String
+        var glob: String
+        var byPath: Bool
+        var matchesFiles: Bool
+        /// No wildcard or escape: fnmatch would compare the bytes, so they are compared directly
+        var literal: Bool
+    }
 
     public init(patterns: [String], paths: [String] = [], maxFileSize: Int64? = nil) {
         self.patterns = patterns.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         self.paths = Set(paths.map(Self.resolved))
         self.maxFileSize = maxFileSize
+        compiled = self.patterns.map { pattern in
+            // like .gitignore: a trailing "/" means a folder (they all match folders), a leading one the source root
+            var p = pattern.hasSuffix("/") ? String(pattern.dropLast()) : pattern
+            let byPath = p.contains("/")
+            if byPath { p = p.hasPrefix("/") ? String(p.dropFirst()) : p }
+            let last = (p as NSString).lastPathComponent
+            return Compiled(pattern: pattern, glob: p, byPath: byPath,
+                            matchesFiles: last.hasPrefix(".") || last.contains(where: { "*?[".contains($0) }),
+                            literal: !p.contains(where: { "*?[\\".contains($0) }))
+        }
     }
 
     public static func resolved(_ path: String) -> String { URL(fileURLWithPath: path).resolvingSymlinksInPath().path }
@@ -27,15 +48,13 @@ public struct ExcludeRules: Sendable {
     /// A pattern with "/" (`apps/*/dist`, `/build`) matches `path`, relative to the source; otherwise the name.
     /// Returns the first pattern that leaves the item out.
     public func matchingPattern(name: String, isDirectory: Bool, path: String? = nil) -> String? {
-        patterns.first { p in
-            // like .gitignore: a trailing "/" means a folder (they all match folders), a leading one the source root
-            var p = p.hasSuffix("/") ? String(p.dropLast()) : p
-            let byPath = p.contains("/")
-            if byPath { p = p.hasPrefix("/") ? String(p.dropFirst()) : p }
-            let last = (p as NSString).lastPathComponent
-            guard isDirectory || last.hasPrefix(".") || last.contains(where: { "*?[".contains($0) }) else { return false }
-            return byPath ? fnmatch(p, path ?? name, FNM_PATHNAME) == 0 : fnmatch(p, name, 0) == 0
-        }
+        compiled.first { c in
+            guard isDirectory || c.matchesFiles else { return false }
+            let subject = c.byPath ? path ?? name : name
+            // bytes, not String ==: "é" composed and decomposed are different names to fnmatch, and to the disk
+            if c.literal { return subject.utf8.elementsEqual(c.glob.utf8) }
+            return fnmatch(c.glob, subject, c.byPath ? FNM_PATHNAME : 0) == 0
+        }?.pattern
     }
 
     public enum Kind: Sendable { case folders, foldersAndFiles, path, rootPath }

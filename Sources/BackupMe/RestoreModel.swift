@@ -45,7 +45,8 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     var error: (title: String, message: String)?
     /// True until the snapshot list arrives: "no backups" must not flash while it loads.
     var isLoading = true
-    /// Only the few snapshots opened recently stay in memory: one manifest can be tens of MB.
+    /// Only the two snapshots opened last stay in memory: one manifest of a million entries, with its index, takes
+    /// hundreds of MB.
     private var loaded: [String: Snapshot] = [:]
     private var loadOrder: [String] = []
     /// snapshot id → source → parent path → children, built once off the main thread
@@ -152,7 +153,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
                 index[id] = built
                 loadOrder.removeAll { $0 == id } // once: a duplicate of the selected one would make the loop below endless
                 loadOrder.append(id)
-                while loadOrder.count > 3 {
+                while loadOrder.count > 2 {
                     let old = loadOrder.removeFirst()
                     if old != selectedID { loaded[old] = nil; index[old] = nil } else { loadOrder.append(old) }
                 }
@@ -281,9 +282,13 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
             for (n, id) in ids.enumerated() {
                 guard !Task.isCancelled, gen == generation, hits.count < 500 else { break }
                 busy = "Cerco in \(n + 1) di \(ids.count) backup…"
-                let found = (try? await withRepository { repo in
-                    try autoreleasepool { try repo.readSnapshot(id).entries.filter { !$0.path.isEmpty && $0.name.lowercased().contains(query) } }
-                }) ?? []
+                let match: @Sendable (Entry) -> Bool = { e in !e.path.isEmpty && e.name.lowercased().contains(query) }
+                // a backup already open is not read again
+                let found = if let open = loaded[id] {
+                    await Task.detached(priority: .userInitiated) { open.entries.filter(match) }.value
+                } else {
+                    (try? await withRepository { repo in try autoreleasepool { try repo.readSnapshot(id).entries.filter(match) } }) ?? []
+                }
                 var new: [SearchHit] = []
                 // symlinks keyed by target too: two links with different targets are different versions
                 for e in found where seen.insert("\(e.source)\u{0}\(e.path)\u{0}\(e.hash ?? e.linkTarget ?? "dir")").inserted {
@@ -305,27 +310,31 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         }
     }
 
-    /// One entry per distinct content, newest first. One manifest at a time, so a cancelled task (another file
-    /// selected) stops reading at once instead of decoding every manifest to the end. A content that is also in
-    /// `preferring` is listed under that backup: the one being viewed.
-    func versions(of entry: Entry, preferring: String? = nil) async -> [(snapshotID: String, entry: Entry)] {
-        var result: [(snapshotID: String, entry: Entry)] = []
-        var index: [String: Int] = [:]
-        let source = entry.source, path = entry.path
-        for s in snapshots {
-            if Task.isCancelled { return result }
-            let id = s.id
-            let found: Entry?
-            if let snapshot = loaded[id] { found = snapshot.entries.first { $0.source == source && $0.path == path } }
-            else {
-                found = try? await withRepository { repo in
-                    try autoreleasepool { try repo.readSnapshot(id).entries.first { $0.source == source && $0.path == path } }
-                }
-            }
-            guard let e = found, let h = e.hash else { continue }
-            if let i = index[h] { if id == preferring { result[i] = (id, e) } } else { index[h] = result.count; result.append((id, e)) }
+    /// The saved versions of `entry`, found in `snapshotID`: one per distinct content, newest first, listed under
+    /// `snapshotID` when it holds that content. First from the backups already open, at once; with `all` the others
+    /// too, one manifest at a time (a million entries take seconds each), calling `update` after each one so the list
+    /// fills in as it goes, with how many are left. A cancelled task (another file selected) stops reading at once.
+    func versions(of entry: Entry, in snapshotID: String, all: Bool,
+                  update: ([(snapshotID: String, entry: Entry)], _ unread: Int) -> Void) async {
+        let source = entry.source, path = entry.path, order = snapshots.map(\.id)
+        // saved folders and single files sit under "" at the top level of the index
+        let key = path.isEmpty ? "" : source, parent = path.isEmpty ? "" : (path as NSString).deletingLastPathComponent
+        var found = [(snapshotID: snapshotID, entry: entry)]
+        var unread: [String] = []
+        for id in order where id != snapshotID {
+            guard let tree = index[id] else { unread.append(id); continue }
+            if let e = tree[key]?[parent]?.first(where: { $0.source == source && $0.path == path }) { found.append((id, e)) }
         }
-        return result
+        update(Restorer.versions(found, newestFirst: order, preferring: snapshotID), unread.count)
+        guard all else { return }
+        for (n, id) in unread.enumerated() {
+            if Task.isCancelled { return }
+            if let e = try? await withRepository({ repo in
+                try autoreleasepool { try repo.readSnapshot(id).entries.first { $0.source == source && $0.path == path } }
+            }) { found.append((id, e)) }
+            if Task.isCancelled { return }
+            update(Restorer.versions(found, newestFirst: order, preferring: snapshotID), unread.count - n - 1)
+        }
     }
 
     func restore(snapshotID: String, source: String, path: String, mode: RestoreMode) {

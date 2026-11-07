@@ -263,15 +263,18 @@ public final class Restorer {
             for case let url as URL in walk {
                 let path = url.relativePath, full = root.path + "/" + path
                 let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                // inside a nested .git (sub/.git) the backup applies no rule and no size limit: neither does this
+                let inGit = path.contains("/.git/")
                 // .git internals: covered by the refs below. A folder only in the cloud: listing it would download it
-                if path == ".git" || rules.excludes(name: url.lastPathComponent, isDirectory: isDir, path: path)
-                    || rules.paths.contains(full)
-                    || (isDir && (isCacheDirectory(full) || FileStat(path: full)?.dataless == true)) {
+                if path == ".git"
+                    || (!inGit && (rules.excludes(name: url.lastPathComponent, isDirectory: isDir, path: path)
+                                   || rules.paths.contains(full) || (isDir && isCacheDirectory(full))))
+                    || (isDir && FileStat(path: full)?.dataless == true) {
                     if isDir { walk.skipDescendants() }
                     continue
                 }
                 guard !isDir, !saved.contains(path) else { continue }
-                if let max = rules.maxFileSize, let st = FileStat(path: full), st.size > max { continue }
+                if !inGit, let max = rules.maxFileSize, let st = FileStat(path: full), st.size > max { continue }
                 check.newFiles += 1
             }
         }
@@ -282,6 +285,22 @@ public final class Restorer {
             if isRef { if s != .unchanged { check.repositoryChanged = true } } else if s == .modified { check.changedFiles += 1 }
         }
         return check
+    }
+
+    /// One version per distinct content of `found` (backups read so far, in any order), newest first by `newestFirst`.
+    /// Each is listed under the newest backup holding it, or under `preferring` (the one being viewed) if that holds it.
+    public static func versions(_ found: [(snapshotID: String, entry: Entry)], newestFirst: [String],
+                                preferring: String? = nil) -> [(snapshotID: String, entry: Entry)] {
+        let rank = Dictionary(newestFirst.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        var best: [String: (rank: Int, version: (snapshotID: String, entry: Entry))] = [:]
+        for v in found {
+            guard let h = v.entry.hash, let r = rank[v.snapshotID] else { continue }
+            guard var b = best[h] else { best[h] = (r, v); continue }
+            if r < b.rank { b.rank = r; if b.version.snapshotID != preferring { b.version = v } }
+            if v.snapshotID == preferring { b.version = v }
+            best[h] = b
+        }
+        return best.values.sorted { $0.rank < $1.rank }.map(\.version)
     }
 
     public static func restoredName(_ name: String, date: Date) -> String {

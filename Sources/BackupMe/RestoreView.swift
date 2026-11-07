@@ -834,6 +834,9 @@ private struct EntryInspector: View {
     let preview: (Entry) -> Void
     @State private var versions: [SearchHit]? // nil while loading
     @State private var picked: SearchHit?
+    /// Backups not yet read for versions: they are read only after "Cerca in tutti i backup".
+    @State private var unread = 0
+    @State private var searchAll = false
 
     var body: some View {
         ScrollView {
@@ -856,15 +859,16 @@ private struct EntryInspector: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task {
+        .task(id: searchAll) {
             guard entry.kind == .file else { return }
-            // moving through files with the arrows cancels this before any manifest is read
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            let found = await model.versions(of: entry, preferring: snapshotID).map { SearchHit(snapshotID: $0.snapshotID, entry: $0.entry) }
-            guard !Task.isCancelled else { return }
-            versions = found
-            picked = found.first { $0.snapshotID == snapshotID } ?? found.first
+            // the backups already open answer at once; the others only on request, as each manifest takes seconds
+            await model.versions(of: entry, in: snapshotID, all: searchAll) { list, left in
+                let found = list.map { SearchHit(snapshotID: $0.snapshotID, entry: $0.entry) }
+                versions = found
+                unread = left
+                // the pick stays on its content: a newer backup holding it may now name the row
+                picked = found.first { $0.entry.hash == picked?.entry.hash } ?? found.first { $0.snapshotID == snapshotID } ?? found.first
+            }
         }
     }
 
@@ -906,6 +910,19 @@ private struct EntryInspector: View {
                 }
             }
             Text("Una riga per ogni contenuto diverso, dalla più recente.").font(.caption).foregroundStyle(.secondary)
+            if unread > 0 {
+                if searchAll {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(unread == 1 ? "Resta 1 backup da leggere…" : "Restano \(unread) backup da leggere…")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Button("Cerca in tutti i backup") { searchAll = true }
+                        .help((unread == 1 ? "Legge l'altro backup" : "Legge gli altri \(unread) backup") + ": con molti file può richiedere qualche minuto")
+                        .accessibilityLabel("Cerca le versioni in tutti i backup")
+                }
+            }
             HStack {
                 Button("Anteprima") { preview(picked?.entry ?? entry) }
                 // the version picked, as Anteprima and Ripristina use

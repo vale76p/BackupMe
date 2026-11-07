@@ -49,8 +49,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
     /// True until the backup task really ends: after a "stuck" timeout it may still hold the archive lock.
     private var workerActive = false
-    /// The same for the full check and the deletion of damaged backups, which hold the lock too.
+    /// The same for the full check, which holds the lock too.
     private var checkWorkerActive = false
+    /// The deletion of damaged backups, which holds the lock: a backup waits for it, never "stuck".
+    private var deleting = false
     /// The last archive problem (damaged, incomplete, recreated, cleanup failed): it stays in the badge until a
     /// full check finds the archive healthy, not only for the one backup that noticed it.
     var archiveProblem = UserDefaults.standard.string(forKey: "archiveProblem") {
@@ -68,10 +70,12 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     static let restoreDeferral = SystemServices.Deferral(reason: "Ripristino in corso", until: "Alla fine del ripristino")
     static let stuckCheckDeferral = SystemServices.Deferral(reason: "Controllo dell'archivio bloccato",
                                                             until: "Quando si sblocca, o riavvia BackupMe")
+    static let deletingDeferral = SystemServices.Deferral(reason: "Eliminazione dei backup illeggibili in corso",
+                                                          until: "Alla fine dell'eliminazione")
     /// Why no backup can start now even by hand: a check stuck on a read still holds the lock, or a restore runs
     /// (cleanup could delete the backup being restored).
     private var blockedDeferral: SystemServices.Deferral? {
-        checkWorkerActive ? Self.stuckCheckDeferral : restoring ? Self.restoreDeferral : nil
+        deleting ? Self.deletingDeferral : checkWorkerActive ? Self.stuckCheckDeferral : restoring ? Self.restoreDeferral : nil
     }
     /// The last full check's outcome, in words, and whether the archive was healthy.
     var checkResult: (text: String, healthy: Bool)?
@@ -238,7 +242,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
     /// Reads back every backup and every file of this Mac's archive, from Impostazioni › Avanzate.
     func checkArchiveNow() {
-        guard !isRunning, !workerActive, !checkWorkerActive, checkProgress == nil, let dest = settings.destination else { return }
+        guard !isRunning, !workerActive, !checkWorkerActive, !deleting, checkProgress == nil, let dest = settings.destination else { return }
         checkProgress = 0
         checkWorkerActive = true
         checkResult = nil
@@ -310,10 +314,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     func deleteDamagedBackups() {
-        guard !isRunning, !workerActive, !checkWorkerActive, checkProgress == nil, let dest = settings.destination,
+        guard !isRunning, !workerActive, !checkWorkerActive, !deleting, checkProgress == nil, let dest = settings.destination,
               !damagedBackups.isEmpty else { return }
         let ids = damagedBackups, archive = AppPaths.archiveName
-        checkWorkerActive = true
+        deleting = true
         Task.detached(priority: .userInitiated) {
             let result = Result {
                 let repo = try Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false)
@@ -321,8 +325,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 return try BackupCore.deleteDamagedSnapshots(ids, repository: repo, refsCache: AppPaths.refsCache(archive, destination: repo.root.path))
             }
             await MainActor.run {
-                self.checkWorkerActive = false
-                if self.deferral == Self.stuckCheckDeferral { self.deferral = nil }
+                self.deleting = false
+                if self.deferral == Self.deletingDeferral { self.deferral = nil }
                 switch result {
                 case .failure(let error):
                     self.checkResult = ("Eliminazione non riuscita: \(Self.describe(error))", false)
