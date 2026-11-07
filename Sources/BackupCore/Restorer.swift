@@ -287,6 +287,16 @@ public final class Restorer {
         return check
     }
 
+    /// How many lines a list bounded by the engine stands for: its last may be "… e altri N avvisi" or
+    /// "… e un altro avviso", which is no warning itself but stands for the ones left out.
+    public static func boundedCount(_ lines: [String]) -> Int {
+        guard let last = lines.last else { return 0 }
+        if last.hasPrefix("… e un altro ") { return lines.count }
+        guard last.hasPrefix("… e altri "), let more = Int(last.dropFirst("… e altri ".count).prefix(while: \.isNumber))
+        else { return lines.count }
+        return lines.count - 1 + more
+    }
+
     /// One version per distinct content of `found` (backups read so far, in any order), newest first by `newestFirst`.
     /// Each is listed under the newest backup holding it, or under `preferring` (the one being viewed) if that holds it.
     public static func versions(_ found: [(snapshotID: String, entry: Entry)], newestFirst: [String],

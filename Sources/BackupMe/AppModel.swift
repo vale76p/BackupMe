@@ -53,6 +53,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     private var checkWorkerActive = false
     /// The deletion of damaged backups, which holds the lock: a backup waits for it, never "stuck".
     private var deleting = false
+    /// Bumped when a deletion of damaged backups ends: what the archive holds and takes changed.
+    private(set) var deletions = 0
     /// The last archive problem (damaged, incomplete, recreated, cleanup failed): it stays in the badge until a
     /// full check finds the archive healthy, not only for the one backup that noticed it.
     var archiveProblem = UserDefaults.standard.string(forKey: "archiveProblem") {
@@ -326,6 +328,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             }
             await MainActor.run {
                 self.deleting = false
+                self.deletions += 1
                 if self.deferral == Self.deletingDeferral { self.deferral = nil }
                 switch result {
                 case .failure(let error):
@@ -505,12 +508,12 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             lastSuccess = report.date
             // errors are solved; archive problems still there stay notified once, not at every hourly backup
             notifiedErrors.formIntersection(critical)
-            Log.backup.info("Backup \(report.snapshotID ?? "") riuscito: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(report.warnings.count) avvisi, \(Int(report.duration)) s")
+            Log.backup.info("Backup \(report.snapshotID ?? "") riuscito: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(Restorer.boundedCount(report.warnings)) avvisi, \(Int(report.duration)) s")
         }
         for w in critical { notifyOnce(w, title: "Problema nell'archivio") }
         if let last = critical.last { archiveProblem = last }
         if report.error == nil, settings.notify != .errors {
-            let others = report.warnings.count - critical.count
+            let others = Restorer.boundedCount(report.warnings) - critical.count
             // the same warnings as the backup before (a database always open, a cleanup that waits): told once
             let before = history.dropLast().last?.warnings ?? []
             if others > 0, Set(report.warnings) != Set(before) {
