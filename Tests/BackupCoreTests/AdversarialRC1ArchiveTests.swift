@@ -66,7 +66,8 @@ import Testing
         let hash = try #require(s.entries.first { $0.path == "video.mov" }?.hash)
         #expect(try repo.verifyObject(hash))
         if fs == "MS-DOS" {
-            #expect(report.warnings.contains { $0.hasPrefix(huge.path) && $0.contains("FAT32") }, "\(report.warnings)")
+            #expect(report.warnings.contains { $0.hasPrefix(huge.path) && $0.contains("troppo grande per il filesystem") },
+                    "\(report.warnings)")
             #expect(!s.entries.contains { $0.path == "disco.img" })
         } else {
             #expect(repo.maxFileSize == .max)
@@ -107,6 +108,24 @@ import Testing
         #expect(!fm.fileExists(atPath: leftovers[0].path))
         _ = try prune(repository: repo, policy: RetentionPolicy(), capBytes: nil, now: t0, forceGC: true)
         #expect(!fm.fileExists(atPath: leftovers[1].path))
+    }
+
+    /// A leftover that is a hard link to a locked file of the user: removing it may fail, unlocking that file never.
+    @Test func hardLinkedLeftoverNeverUnlocksTheUsersFile() throws {
+        let big = try bigFile("grande.bin")
+        let hash = try streamHash(big)
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let mine = tmp().appending(path: "contratto.pdf")
+        write("firmato", to: mine)
+        let fanout = repo.root.appending(path: "objects/\(hash.prefix(2))", directoryHint: .isDirectory)
+        try fm.createDirectory(at: fanout, withIntermediateDirectories: true)
+        try fm.linkItem(at: mine, to: fanout.appending(path: "\(hash).raw.tmp")) // publish's leftover
+        try fm.linkItem(at: mine, to: repo.root.appending(path: "objects/x.tmp")) // removeTemporaryFiles'
+        lock(mine, true) // after linking: a locked file can't get new links
+        defer { lock(mine, false) }
+        _ = try? backup(repo)
+        _ = try? prune(repository: repo, policy: RetentionPolicy(), capBytes: nil, now: t0, forceGC: true)
+        #expect((try fm.attributesOfItem(atPath: mine.path)[.immutable] as? Bool) == true)
     }
 
     // MARK: A3: links in objects/

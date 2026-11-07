@@ -331,7 +331,8 @@ public final class BackupEngine {
         }
         // never hashed or copied: it can't be written there, and isn't a full disk to retry every 15 minutes
         if initial.size > repository.maxFileSize {
-            warnings.append("\(path): troppo grande per un disco FAT32 (al massimo 4 GB per file), non salvato")
+            let limit = ByteCountFormatter.string(fromByteCount: repository.maxFileSize, countStyle: .file)
+            warnings.append("\(path): troppo grande per il filesystem della destinazione (al massimo \(limit) per file), non salvato")
             return nil
         }
         let url = URL(fileURLWithPath: path)
