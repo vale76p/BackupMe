@@ -406,12 +406,13 @@ private struct ScheduleSection: View {
                     Spacer()
                     Button("Apri Elementi login") { SystemServices.openLoginItemsSettings() }
                 }
-                // back from System Settings: switched on there, the warning goes and the toggle follows
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                    loginDisabled = SystemServices.loginItemDisabled
-                    if !loginDisabled { launchAtLogin = SystemServices.launchAtLogin }
-                }
             }
+        }
+        // back from System Settings: switched off there the warning appears, switched on it goes and the toggle
+        // follows. Not turned off here: that would delete the plist the user may switch on again there
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginDisabled = SystemServices.loginItemDisabled
+            if !loginDisabled { launchAtLogin = SystemServices.launchAtLogin }
         }
         Section {
             Toggle("Rimanda quando il Mac è a batteria", isOn: $model.settings.onlyOnPower)
