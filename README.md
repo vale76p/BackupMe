@@ -50,7 +50,7 @@ BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchA
 - **Esclusioni.** Un nome (es. `node_modules`) esclude le cartelle con quel nome; un pattern con `/` vale per il percorso dentro la cartella salvata (es. `apps/*/dist`); i pattern con `*` o che iniziano con `.` (es. `*.log`, `.DS_Store`) valgono anche per i file. Sono escluse anche le cartelle con un file `CACHEDIR.TAG`. Dentro `.git` non si esclude mai niente. **Impostazioni › Esclusioni** mostra le cartelle escluse nell'ultimo backup. Si possono escludere anche i file sopra una dimensione scelta (mai dentro `.git`).
 - **File senza permessi.** I file che macOS non lascia leggere ("non hai i privilegi necessari") vengono saltati ed elencati in **Impostazioni › Esclusioni** invece di comparire tra gli avvisi; si può disattivare. **Cancella avvisi** svuota gli avvisi dell'ultimo backup.
 - **Repository git coerenti.** Se durante il backup si fa un commit, la cartella viene riletta; se cambia ancora, un avviso chiede di ripetere il backup.
-- **Batteria, calore e rete.** I backup pianificati aspettano con Risparmio energetico, batteria sotto il 20%, Mac troppo caldo o su una rete a consumo (hotspot dell'iPhone, rete cellulare, Wi-Fi con «Modalità dati ridotti» attiva; si può disattivare), e a scelta per tutto il tempo a batteria, ma mai oltre 24 ore dall'ultimo riuscito. **Esegui backup ora** parte sempre, tranne mentre **Controlla ora** rilegge l'archivio.
+- **Batteria, calore e rete.** I backup pianificati aspettano con Risparmio energetico, batteria sotto il 20%, Mac troppo caldo o su una rete a consumo (hotspot dell'iPhone, rete cellulare, Wi-Fi con «Modalità dati ridotti» attiva; si può disattivare), e a scelta per tutto il tempo a batteria, ma mai oltre 24 ore dall'ultimo riuscito. **Esegui backup ora** parte sempre, tranne durante **Controlla ora** o un ripristino.
 - **Notifiche.** Problemi sempre; a scelta anche i backup con avvisi o ogni backup completato (**Impostazioni › Pianificazione**).
 - **Registro.** **Impostazioni › Registro** mostra avvii, esiti, rinvii ed errori, anche dopo un riavvio (`~/Library/Application Support/BackupMe/BackupMe.log`, ruotato a 1 MB). Gli stessi messaggi vanno nel registro di sistema.
 - **Cloud.** Se il client (OneDrive, Dropbox…) non carica i backup da più di 3 giorni, o segnala un errore, il pannello e una notifica lo dicono.
@@ -60,7 +60,7 @@ BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchA
 ## Dove sono i backup
 
 ```
-<destinazione>/BackupMe/<nome del Mac>-<id>/
+<destinazione>/BackupMe/<nome del Mac>-<id>-<utente>/
   repo.json    identità e formato dell'archivio
   objects/     contenuto dei file (nome = hash; .lzfse compressi, .raw così come sono)
   snapshots/   un indice per ogni backup
@@ -69,7 +69,9 @@ BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchA
 
 **L'archivio non è cifrato:** chi può leggere la destinazione, o l'account cloud che la sincronizza, può leggere i file salvati, `.env` e chiavi comprese. Si salvano contenuto, permessi, data di modifica e symlink, ma non attributi estesi, ACL, tag del Finder e resource fork.
 
-`<id>` viene dall'identificativo hardware del Mac: due Mac con lo stesso nome non condividono mai l'archivio, e rinominare il Mac non ne crea uno nuovo.
+`<id>` viene dall'identificativo hardware del Mac e `<utente>` è l'account: due Mac con lo stesso nome, né due account dello stesso Mac, non condividono mai l'archivio, e rinominare il Mac non ne crea uno nuovo. Un archivio creato da una versione precedente tiene il suo nome, senza `-<utente>`.
+
+La cartella dell'archivio è leggibile solo dal tuo account. Per ripristinare da un altro account, su un disco esterno che rispetta i proprietari dei file, attiva **Ottieni informazioni › Ignora la proprietà su questo volume** sul disco.
 
 I file non si leggono direttamente da OneDrive: si ripristinano con **Sfoglia backup…**. Da un altro Mac basta installare BackupMe, scegliere la stessa destinazione e aprire **Sfoglia backup…**, dove si può scegliere il computer di origine.
 
