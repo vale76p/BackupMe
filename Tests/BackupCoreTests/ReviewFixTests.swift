@@ -74,8 +74,8 @@ import Testing
             _ = try engine(repo).run(sources: [src], now: t0.addingTimeInterval(Double(i) * 86400))
         }
         var keepAll = RetentionPolicy(); keepAll.days = 1000
-        // a cap makes prune read (and cache) every manifest's references
-        _ = try prune(repository: repo, policy: keepAll, capBytes: .max, now: t0, refsCache: refs)
+        // object cleanup reads (and caches) every manifest's references
+        _ = try prune(repository: repo, policy: keepAll, capBytes: nil, now: t0, refsCache: refs, forceGC: true)
         // garble a manifest that stays: a re-read would throw
         let ids = try repo.snapshotIDs()
         try Data("garbage".utf8).write(to: repo.root.appending(path: "snapshots/\(ids[2]).json.lzfse"))

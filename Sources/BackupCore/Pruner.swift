@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct PruneResult: Equatable, Sendable {
@@ -51,14 +52,18 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         // object → how many kept manifests use it: one entry per object, not one set per manifest (that was
         // gigabytes with a million files), and taking a manifest out updates the size without recounting
         var users: [String: Int]?
-        if let cap = capBytes {
+        let objectSizes = try capBytes.map { _ in try repository.objectSizes() } ?? [:]
+        var manifestSizes = try capBytes.map { _ in try repository.snapshotSizes() } ?? [:]
+        // everything stored, unreferenced objects included, fits: nothing to delete, and no reason to read every
+        // manifest's references at every backup (seconds to minutes with a million files, much more on SMB)
+        let total = objectSizes.values.reduce(0, +) + manifestSizes.values.reduce(0, +)
+        let fits = capBytes.map { total <= $0 } ?? true
+        if fits { size = total } else if let cap = capBytes {
             var counts: [String: Int] = [:]
             for id in ids {
                 Activity.beat()
                 for h in try references(of: id, in: repository, cache: refsCache) { counts[h, default: 0] += 1 }
             }
-            let objectSizes = try repository.objectSizes()
-            var manifestSizes = try repository.snapshotSizes()
             size = counts.keys.reduce(0) { $0 + (objectSizes[$1] ?? 0) } + manifestSizes.values.reduce(0, +)
             // oldest first, never the newest, never a pinned one or an id that isn't ours
             while size > cap, let oldest = ids.dropLast().first(where: { !pinned.contains($0) && Snapshot.date(fromID: $0) != nil }) {
@@ -78,8 +83,9 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         var deletedObjects = 0
         var missingObjects = 0
         // with hourly backups one leaves the last 24 hours every hour: collecting their objects each time reads every
-        // manifest's references. `gcDue` (once a day) lets the orphans wait; a cap needs the space now
-        let collect = (!deleted.isEmpty && (gcDue || capBytes != nil)) || forceGC
+        // manifest's references. `gcDue` (once a day) lets the orphans wait; a cap needs the space now, unless the
+        // archive fits with them
+        let collect = (!deleted.isEmpty && (gcDue || !fits)) || forceGC
         if collect, !gcSkipped {
             var reachable = users.map { Set($0.keys) } ?? []
             if users == nil { for id in ids { reachable.formUnion(try references(of: id, in: repository, cache: refsCache)) } }
@@ -175,18 +181,58 @@ private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, n
 }
 
 /// Object hashes used by one manifest. A manifest that can't be read throws, which aborts pruning before any delete.
+/// Cached as 32-byte hashes under a checksum: 64 hex digits a line were ~65 MB per manifest with a million files.
+/// A cached file that doesn't verify is read from the manifest again; the text of earlier versions is still read.
 private func references(of id: String, in repository: Repository, cache: URL?) throws -> Set<String> {
     let cached = cache?.appending(path: id)
     // an empty file is a manifest that came back after vanishing before its references were cached (its ".gone"
     // marker renamed back): read the manifest, or every object it uses would look unreferenced
-    if let cached, let text = try? String(contentsOf: cached, encoding: .utf8), !text.isEmpty {
-        return Set(text.split(separator: "\n").map(String.init))
+    if let cached, let data = try? Data(contentsOf: cached), !data.isEmpty {
+        if data.starts(with: refsMagic) {
+            let body = data.dropFirst(refsMagic.count), hashes = body.dropFirst(32)
+            if body.count >= 32, hashes.count % 32 == 0, Data(SHA256.hash(data: hashes)) == body.prefix(32) {
+                return hashes.withUnsafeBytes { raw in
+                    Set((0 ..< raw.count / 32).map { hex(UnsafeRawBufferPointer(rebasing: raw[$0 * 32 ..< $0 * 32 + 32])) })
+                }
+            }
+        } else if let text = String(data: data, encoding: .utf8) {
+            // only when every line is a hash: anything else (a damaged file) is read from the manifest
+            let hashes = Set(text.split(separator: "\n").map(String.init))
+            if let binary = refsData(hashes) {
+                try? binary.write(to: cached, options: .atomic) // half the space from now on
+                return hashes
+            }
+        }
     }
     let hashes = try autoreleasepool { Set(try repository.readSnapshot(id).entries.compactMap(\.hash)) }
-    if let cached, let dir = cache {
+    // not cached when a hash isn't one (a tampered manifest): read again each time, as its objects can't exist
+    if let cached, let dir = cache, let binary = refsData(hashes) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? hashes.joined(separator: "\n").write(to: cached, atomically: true, encoding: .utf8)
+        try? binary.write(to: cached, options: .atomic)
         try? FileManager.default.removeItem(at: dir.appending(path: id + ".seen"))
     }
     return hashes
+}
+
+private let refsMagic = Data("BMREFS1\n".utf8)
+private let hexDigits = Array("0123456789abcdef".utf8)
+
+/// The cached form of `hashes`: magic, SHA-256 of the rest, 32 bytes per hash. Nil if one isn't a hash.
+private func refsData(_ hashes: Set<String>) -> Data? {
+    var bytes = [UInt8]()
+    bytes.reserveCapacity(hashes.count * 32)
+    func nibble(_ c: UInt8) -> UInt8 { c <= 57 ? c - 48 : c - 87 } // "0"-"9", "a"-"f"
+    for h in hashes {
+        guard Repository.isHash(h) else { return nil }
+        var digits = h.utf8.makeIterator()
+        while let hi = digits.next(), let lo = digits.next() { bytes.append(nibble(hi) << 4 | nibble(lo)) }
+    }
+    return refsMagic + Data(SHA256.hash(data: bytes)) + Data(bytes)
+}
+
+private func hex(_ bytes: UnsafeRawBufferPointer) -> String {
+    String(unsafeUninitializedCapacity: bytes.count * 2) { out in
+        for (i, b) in bytes.enumerated() { out[2 * i] = hexDigits[Int(b >> 4)]; out[2 * i + 1] = hexDigits[Int(b & 15)] }
+        return bytes.count * 2
+    }
 }

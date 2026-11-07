@@ -191,8 +191,8 @@ import Testing
         write("v2", to: src.appending(path: "a.txt"))
         _ = try engine(r).run(sources: [src], now: t0.addingTimeInterval(60))
         var keepAll = RetentionPolicy(); keepAll.days = 1000
-        // a cap makes cleanup cache every manifest's references
-        _ = try prune(repository: r, policy: keepAll, capBytes: .max, now: t0, refsCache: refs)
+        // object cleanup caches every manifest's references
+        _ = try prune(repository: r, policy: keepAll, capBytes: nil, now: t0, refsCache: refs, forceGC: true)
         let m = r.root.appending(path: "snapshots/\(first.snapshotID!).json.lzfse")
         let hidden = tmp().appending(path: "m")
         func leave(_ at: Date) throws { try fm.moveItem(at: m, to: hidden); _ = try prune(repository: r, policy: keepAll, capBytes: nil, now: at, refsCache: refs) }
