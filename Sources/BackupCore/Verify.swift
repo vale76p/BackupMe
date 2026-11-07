@@ -72,3 +72,92 @@ public func checkArchive(repository: Repository, cache: HashCache, isCancelled: 
         return ArchiveCheck(snapshots: ids.count, unreadableSnapshots: unreadable, missingObjects: missing, objects: objects)
     }
 }
+
+public struct UpgradeReport: Equatable, Sendable {
+    /// Fixed on its own: only what can be rebuilt (restore kit, repo.json, temporary files).
+    public var fixed: [String]
+    /// Found and left as it is: nothing is deleted or followed, the user decides ("Controlla ora", "Elimina…").
+    public var attention: [String]
+
+    public var isClean: Bool { fixed.isEmpty && attention.isEmpty }
+}
+
+/// The light check after an update: repo.json, objects/ and snapshots/ as listed, every manifest against its checksum,
+/// and what opening the archive for a backup fixed (kit, repo.json). Stored objects are never read: on OneDrive or
+/// iCloud that would download the whole archive, which only "Controlla ora" does. An archive of a newer format
+/// throws `newerFormat` before any write.
+public func upgradeCheck(repository: Repository) throws -> UpgradeReport {
+    try repository.withLock {
+        let fm = FileManager.default
+        var r = UpgradeReport(fixed: repository.restoreKitChanges, attention: [])
+        if repository.repairedInfo {
+            r.fixed.append("repo.json, il file che identifica l'archivio, era illeggibile: riscritto")
+        } else if repository.archiveID == nil {
+            r.attention.append("repo.json, il file che identifica l'archivio, non si legge (forse non ancora scaricato dal cloud)")
+        }
+        do {
+            let n = try repository.removeTemporaryFiles()
+            if n > 0 { r.fixed.append(n == 1 ? "Rimosso 1 file temporaneo rimasto da un backup interrotto" : "Rimossi \(n) file temporanei rimasti da backup interrotti") }
+        } catch {
+            r.attention.append("File temporanei rimasti nell'archivio non rimossi: \(error.localizedDescription)")
+        }
+        func examples(_ names: [String]) -> String { names.prefix(3).joined(separator: ", ") + (names.count > 3 ? "…" : "") }
+
+        // hidden names (.DS_Store of the Finder, cloud placeholders) are the system's, not strays
+        let objects = repository.root.appending(path: "objects", directoryHint: .isDirectory)
+        var strays: [String] = []
+        for dir in try fm.contentsOfDirectory(atPath: objects.path).sorted() where !dir.hasPrefix(".") {
+            let d = objects.appending(path: dir)
+            // the item itself, never what a link points to
+            guard (try? fm.attributesOfItem(atPath: d.path)[.type] as? FileAttributeType) == .typeDirectory, dir.utf8.count == 2,
+                  dir.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { strays.append("objects/\(dir)"); continue }
+            Activity.beat()
+            // types from the listing itself (getattrlistbulk): no stat, and no read, per object
+            autoreleasepool {
+                for url in (try? fm.contentsOfDirectory(at: d, includingPropertiesForKeys: [.isRegularFileKey], options: .skipsHiddenFiles)) ?? [] {
+                    let name = url.lastPathComponent, hash = (name as NSString).deletingPathExtension
+                    if ["lzfse", "raw"].contains((name as NSString).pathExtension), Repository.isHash(hash), hash.hasPrefix(dir),
+                       (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true { continue }
+                    strays.append("objects/\(dir)/\(name)")
+                }
+            }
+        }
+        if !strays.isEmpty {
+            r.attention.append("Elementi estranei in objects/ (\(strays.count)): collegamenti, cartelle o nomi che non sono di un file "
+                + "salvato, lasciati dove sono e mai seguiti: \(examples(strays))")
+        }
+
+        let snapshots = repository.root.appending(path: "snapshots", directoryHint: .isDirectory)
+        var unnamed: [String] = [], damaged: [String] = []
+        for name in try fm.contentsOfDirectory(atPath: snapshots.path).sorted() where !name.hasPrefix(".") {
+            let id = String(name.dropLast(11))
+            guard name.hasSuffix(".json.lzfse"), Snapshot.date(fromID: id) != nil,
+                  (try? fm.attributesOfItem(atPath: snapshots.appending(path: name).path)[.type] as? FileAttributeType) == .typeRegular
+            else { unnamed.append("snapshots/\(name)"); continue }
+            Activity.beat()
+            // the checksum as a stream; a manifest from before it (0.9.1 and earlier) is decoded whole
+            if !repository.snapshotIsIntact(id) { damaged.append(id) }
+        }
+        if !damaged.isEmpty {
+            let dates = damaged.map { Snapshot.date(fromID: $0)?.formatted(date: .abbreviated, time: .shortened) ?? $0 }
+            r.attention.append("\(BackupEngine.damagedPrefix) " + (damaged.count == 1
+                ? "il backup del \(dates[0]) non si legge e non si può ripristinare. Dopo «Controlla ora» lo elimini"
+                : "\(damaged.count) backup non si leggono e non si possono ripristinare (\(examples(dates))). Dopo «Controlla ora» li elimini")
+                + " da Impostazioni › Avanzate.")
+        }
+        if !unnamed.isEmpty {
+            r.attention.append("Elementi in snapshots/ con un nome che non è di un backup (\(unnamed.count)), lasciati dove sono: \(examples(unnamed))")
+        }
+        return r
+    }
+}
+
+/// `upgradeCheck` once per build and archive: nil when `build` already checked it. Remembered only after a check
+/// that ran to the end, so one stopped by an unplugged disk runs again at the next backup.
+public func upgradeCheckIfNeeded(repository: Repository, build: String, defaults: UserDefaults = .standard) throws -> UpgradeReport? {
+    let key = "upgradeCheckedBuild-\(repository.root.path)"
+    guard defaults.string(forKey: key) != build else { return nil }
+    let report = try upgradeCheck(repository: repository)
+    defaults.set(build, forKey: key)
+    return report
+}

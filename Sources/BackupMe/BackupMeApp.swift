@@ -49,6 +49,7 @@ private struct MenuBarLabel: View {
                     switch action {
                     case .retry: model.backupNow()
                     case .settings: openSettings(); SystemServices.windowOpened()
+                    case .check: model.checkArchiveNow()
                     }
                 }
                 // first run: nothing to back up yet, so the setup window opens by itself

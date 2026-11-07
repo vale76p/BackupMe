@@ -34,6 +34,8 @@ public final class Repository {
     /// `create: false` opens an existing archive only (browsing must never write to the destination).
     /// repo.json was there but unreadable and has been written again (same layout, a new id).
     public private(set) var repairedInfo = false
+    /// The restore kit files this opening rewrote (missing, older, modified or damaged), in words.
+    public private(set) var restoreKitChanges: [String] = []
 
     public init(destination: URL, computerName: String, create: Bool = true) throws {
         guard Self.isAvailable(destination: destination) else { throw RepositoryError.destinationMissing(destination.path) }
@@ -66,7 +68,7 @@ public final class Repository {
             try atomicWrite(Data(json.utf8), to: info, sync: .file)
         }
         // the BackupMe folder opened again without following links: a link swapped in since is never written through
-        if let base = try? Self.childDirectory("BackupMe", in: destinationFD) { RestoreKit.install(in: base); close(base) }
+        if let base = try? Self.childDirectory("BackupMe", in: destinationFD) { restoreKitChanges = RestoreKit.install(in: base); close(base) }
     }
 
     /// The destination folder is there: false for a disk not plugged in (its folder under /Volumes is gone), so
@@ -124,9 +126,7 @@ public final class Repository {
         let script = "RIPRISTINO.command"
         let old = RestoreKit.read(script, in: base).flatMap { String(data: $0, encoding: .utf8) }.flatMap(RestoreKit.installedVersion)
         if let old, old > RestoreKit.version { return .newerKept(old) }
-        let before = RestoreKit.read(script, in: base)
-        RestoreKit.install(in: base)
-        return RestoreKit.read(script, in: base) == before ? .current(RestoreKit.version) : .installed(from: old, to: RestoreKit.version)
+        return RestoreKit.install(in: base).isEmpty ? .current(RestoreKit.version) : .installed(from: old, to: RestoreKit.version)
     }
 
     public static func computers(in destination: URL) -> [String] {
@@ -322,7 +322,10 @@ public final class Repository {
         for ext in Self.extensions { unlinkat(fanout, "\(hash).\(ext)", 0) }
     }
 
-    public func removeTemporaryFiles() throws {
+    /// Returns how many were removed.
+    @discardableResult
+    public func removeTemporaryFiles() throws -> Int {
+        var removed = 0
         for dir in [snapshotsDir, objectsDir] {
             guard let e = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else { continue }
             for case let url as URL in e where url.pathExtension == "tmp" {
@@ -331,8 +334,10 @@ public final class Repository {
                 var st = stat()
                 if lstat(url.path, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 { lchflags(url.path, 0) }
                 try fm.removeItem(at: url)
+                removed += 1
             }
         }
+        return removed
     }
 
     /// Free space on the destination's volume, nil when the volume doesn't say.

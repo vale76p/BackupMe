@@ -100,6 +100,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     /// Uptime of the last wake: scheduled backups wait a minute after it.
     private var wokeAt: TimeInterval = -.infinity
     private var uploadCheckRunning = false
+    /// The login agent pointed at a moved or old copy of the app and was rewritten at this launch.
+    private var launchAgentRepaired = false
 
     static let retryAfterFailure: TimeInterval = 15 * 60
     static let staleAfter: TimeInterval = 3 * 86400
@@ -125,7 +127,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         }
         // asked in context: the first-run window asks when the first backup starts
         if settings.isConfigured { SystemServices.requestNotificationPermission() }
-        SystemServices.repairLaunchAgent()
+        launchAgentRepaired = SystemServices.repairLaunchAgent()
         _ = SystemServices.network
         // common modes: in the default mode it doesn't fire while an open panel or a menu is up
         let timer = Timer(timeInterval: 60, repeats: true) { _ in MainActor.assumeIsolated { self.tick() } }
@@ -221,7 +223,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                                                                  reason: "Backup in corso")
             defer { ProcessInfo.processInfo.endActivity(activity) }
             var lastSent = 0.0
-            let (report, overCap, verified) = Self.perform(settings: s, archive: archive, lastComplete: complete, verify: verify,
+            let (report, overCap, verified, upgrade) = Self.perform(settings: s, archive: archive, lastComplete: complete, verify: verify,
                                                  isCancelled: { flag.withLock { $0 } }) { p in
                 guard p - lastSent >= 0.01 || p == 1 else { return }
                 lastSent = p
@@ -234,6 +236,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 self.workerActive = false
                 if verified { self.lastVerify = Date() } // not when the archive couldn't even be opened
                 self.finish(report, overCap: overCap)
+                if let upgrade { self.reportUpgrade(upgrade) } // after the backup: its Controlla ora can start now
                 // the destination changed meanwhile: its own first backup was refused while this one ran
                 if self.settings.destination != s.destination { self.backupNow() }
             }
@@ -394,7 +397,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
     nonisolated static func perform(settings s: AppSettings, archive: String, lastComplete: String?, verify: Bool,
                                     isCancelled: @escaping () -> Bool,
-                                    progress: @escaping (Double) -> Void) -> (BackupReport, Bool?, Bool) {
+                                    progress: @escaping (Double) -> Void) -> (BackupReport, Bool?, Bool, UpgradeReport?) {
         let start = Date()
         func failed(_ error: Error) -> BackupReport {
             BackupReport(snapshotID: nil, date: start, duration: Date().timeIntervalSince(start), fileCount: 0,
@@ -406,7 +409,14 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             // before any write or cleanup: another account's archive is refused, not shared
             try repo.withLock { try repo.claim(owner: getuid()) }
         } catch {
-            return (failed(error), nil, false)
+            return (failed(error), nil, false, nil)
+        }
+        // the first backup of a new build checks what earlier versions left (kit, repo.json, leftovers, manifests)
+        let info = Bundle.main.infoDictionary
+        let build = "\(info?["CFBundleShortVersionString"] as? String ?? "") (\(info?["CFBundleVersion"] as? String ?? ""))"
+        var upgrade: UpgradeReport?
+        do { upgrade = try upgradeCheckIfNeeded(repository: repo, build: build) } catch {
+            Log.backup.error("Verifica dopo l'aggiornamento non riuscita: \(describe(error))")
         }
         var report: BackupReport
         var thrown: Error?
@@ -456,7 +466,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         // interrupted, archive locked, or partial with no complete backup to pin: no cleanup (see cleanupDecision)
         guard case .prune(let pinned) = cleanupDecision(thrown: thrown, report: report,
                                                         lastComplete: lastComplete.flatMap { repo.snapshotExists($0) ? $0 : nil })
-        else { return (report, nil, verified) }
+        else { return (report, nil, verified, upgrade) }
         do {
             // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
             let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
@@ -476,13 +486,13 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             if result.missingObjects > 0 {
                 report.warnings.append("\(Self.incomplete) mancano \(result.missingObjects) file usati dai backup, che non si ripristinano per intero")
             }
-            return (report, result.overCap, verified)
+            return (report, result.overCap, verified, upgrade)
         } catch {
             // the destination unplugged: the backup's own error says it, the archive isn't damaged
             if FileManager.default.fileExists(atPath: repo.root.path) {
                 report.warnings.append("Pulizia non riuscita: \(describe(error))")
             }
-            return (report, nil, verified)
+            return (report, nil, verified, upgrade)
         }
     }
 
@@ -529,6 +539,23 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             overCapNotified = overCap
             if overCap { SystemServices.notify("BackupMe", "Il tetto è troppo basso per le cartelle selezionate.") }
         }
+    }
+
+    /// The check after an update, with what only the app knows (login agent): in the Registro and in one notification
+    /// that offers the full check, never started by itself (on OneDrive or iCloud it downloads the whole archive).
+    private func reportUpgrade(_ u: UpgradeReport) {
+        var u = u
+        if launchAgentRepaired { u.fixed.append("Avvio al login riparato: puntava a una copia spostata o vecchia di BackupMe") }
+        if SystemServices.loginItemDisabled {
+            u.attention.append("Avvia al login è disattivato in Impostazioni di Sistema › Generali › Elementi login: BackupMe non parte da solo")
+        }
+        let lines = u.fixed.map { "Corretto: \($0)" } + u.attention.map { "Da controllare: \($0)" }
+        let text = "Aggiornamento verificato: " + (lines.isEmpty ? "tutto a posto" : lines.joined(separator: "; "))
+        if u.attention.isEmpty { Log.backup.info(text) } else { Log.backup.error(text) }
+        SystemServices.notify("Aggiornamento verificato",
+                              (lines.isEmpty ? "Tutto a posto." : lines.joined(separator: "\n"))
+                                  + "\nIl controllo completo rilegge tutto l'archivio: avvialo con Controlla ora.",
+                              offerCheck: true)
     }
 
     private func saveHistory() {

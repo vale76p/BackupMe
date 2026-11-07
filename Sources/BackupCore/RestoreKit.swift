@@ -9,14 +9,23 @@ enum RestoreKit {
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit. `base`: the BackupMe folder,
     /// opened without following links; a link under a kit file's name is replaced, never read or written through.
-    static func install(in base: Int32) {
-        if let existing = read("RIPRISTINO.command", in: base).flatMap({ String(data: $0, encoding: .utf8) }),
-           let v = installedVersion(existing), v > version { return }
+    /// Returns what it rewrote and why, with the version before and after (for the check after an update).
+    @discardableResult
+    static func install(in base: Int32) -> [String] {
+        let installed = read("RIPRISTINO.command", in: base)
+        let old = installed.flatMap { String(data: $0, encoding: .utf8) }.flatMap(installedVersion)
+        if let old, old > version { return [] }
+        var rewritten: [String] = []
         for (name, text, mode) in [("RIPRISTINO.command", script, 0o755), ("LEGGIMI.txt", readme, 0o644)] {
-            let data = Data(text.utf8)
-            guard read(name, in: base) != data else { continue }
-            try? Repository.atomicWrite(data, named: name, in: base, sync: .file, mode: mode_t(mode))
+            let data = Data(text.utf8), existing = read(name, in: base)
+            guard existing != data, (try? Repository.atomicWrite(data, named: name, in: base, sync: .file, mode: mode_t(mode))) != nil
+            else { continue }
+            let why = existing == nil ? "mancante"
+                : old.map { $0 < version ? "della versione \($0)" : "modificato o danneggiato" }
+                ?? (installed == nil ? "modificato o danneggiato" : "senza versione (il primo kit) o danneggiato")
+            rewritten.append("\(name) \(why): riscritto con la versione \(version) del kit di ripristino")
         }
+        return rewritten
     }
 
     /// A regular file's content; nil for a link, a folder or a pipe (whose read would never end).

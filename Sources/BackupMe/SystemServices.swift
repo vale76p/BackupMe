@@ -18,14 +18,17 @@ enum SystemServices {
             identifier: problemCategory,
             actions: [UNNotificationAction(identifier: Action.retry.rawValue, title: "Riprova"),
                       UNNotificationAction(identifier: Action.settings.rawValue, title: "Apri Impostazioni", options: [.foreground])],
-            intentIdentifiers: [])])
+            intentIdentifiers: []),
+            UNNotificationCategory(identifier: checkCategory,
+                                   actions: [UNNotificationAction(identifier: Action.check.rawValue, title: "Controlla ora")],
+                                   intentIdentifiers: [])])
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    /// Buttons on problem notifications; the app wires them to a backup and to the settings window.
-    enum Action: String { case retry, settings }
+    /// Buttons on notifications; the app wires them to a backup, the settings window and the full archive check.
+    enum Action: String { case retry, settings, check }
     @MainActor static var onAction: ((Action) -> Void)?
-    private static let problemCategory = "problem"
+    private static let problemCategory = "problem", checkCategory = "check"
 
     /// False when the user denied notifications: errors and the 3-day alert would then go unseen.
     static func notificationsAllowed() async -> Bool {
@@ -34,14 +37,15 @@ enum SystemServices {
         return status != .denied
     }
 
-    /// `problem` adds the Riprova / Apri Impostazioni buttons. All of them stack as one group in Notification Center.
-    static func notify(_ title: String, _ body: String, problem: Bool = true) {
+    /// `problem` adds the Riprova / Apri Impostazioni buttons, `offerCheck` the Controlla ora one instead. All of them
+    /// stack as one group in Notification Center.
+    static func notify(_ title: String, _ body: String, problem: Bool = true, offerCheck: Bool = false) {
         guard hasBundle else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.threadIdentifier = "backupme"
-        if problem { content.categoryIdentifier = problemCategory }
+        if offerCheck { content.categoryIdentifier = checkCategory } else if problem { content.categoryIdentifier = problemCategory }
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
@@ -154,13 +158,14 @@ enum SystemServices {
     }
 
     /// A login agent pointing at an app that was moved or deleted starts nothing at login, silently: rewritten
-    /// at every launch when its path is wrong.
-    static func repairLaunchAgent() {
+    /// at every launch when its path is wrong. True when it was rewritten.
+    @discardableResult
+    static func repairLaunchAgent() -> Bool {
         guard launchAtLogin, let exe = agentExecutable,
               let data = try? Data(contentsOf: agentPlist),
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              (plist["ProgramArguments"] as? [String])?.first != exe else { return }
-        try? setLaunchAtLogin(true)
+              (plist["ProgramArguments"] as? [String])?.first != exe else { return false }
+        return (try? setLaunchAtLogin(true)) != nil
     }
 
     /// A per-user LaunchAgent: started at login and restarted if it crashes (KeepAlive on unsuccessful exit),
