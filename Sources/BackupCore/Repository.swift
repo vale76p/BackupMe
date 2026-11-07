@@ -162,9 +162,8 @@ public final class Repository {
         if let n = sampleDirs { dirs = Array(dirs.shuffled().prefix(n)) }
         for dir in dirs {
             let d = objectsDir.appending(path: dir)
-            for f in objectNames(in: dir) {
-                let size = (try? fm.attributesOfItem(atPath: d.appending(path: f).path)[.size] as? Int64) ?? 0
-                result[(f as NSString).deletingPathExtension] = size
+            for (f, hash) in objects(in: dir) {
+                result[hash] = (try? fm.attributesOfItem(atPath: d.appending(path: f).path)[.size] as? Int64) ?? 0
             }
         }
         return result
@@ -173,19 +172,19 @@ public final class Repository {
     public func allObjectHashes() throws -> Set<String> {
         var result = Set<String>()
         for dir in try fm.contentsOfDirectory(atPath: objectsDir.path) {
-            for f in objectNames(in: dir) { result.insert((f as NSString).deletingPathExtension) }
+            for (_, hash) in objects(in: dir) { result.insert(hash) }
         }
         return result
     }
 
     /// The objects in one fan-out folder: only `<hash>.<ext>` under its own prefix, never through a link. A link
     /// planted in objects/ would otherwise list files outside the archive as unreferenced objects, for cleanup.
-    private func objectNames(in dir: String) -> [String] {
+    private func objects(in dir: String) -> [(file: String, hash: String)] {
         let d = objectsDir.appending(path: dir)
         guard (try? fm.attributesOfItem(atPath: d.path)[.type] as? FileAttributeType) == .typeDirectory else { return [] }
-        return ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).filter {
+        return ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).compactMap {
             let hash = ($0 as NSString).deletingPathExtension
-            return Self.extensions.contains(($0 as NSString).pathExtension) && Self.isHash(hash) && hash.hasPrefix(dir)
+            return Self.extensions.contains(($0 as NSString).pathExtension) && Self.isHash(hash) && hash.hasPrefix(dir) ? ($0, hash) : nil
         }
     }
 
@@ -319,8 +318,10 @@ public final class Repository {
         for dir in [snapshotsDir, objectsDir] {
             guard let e = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else { continue }
             for case let url as URL in e where url.pathExtension == "tmp" {
-                // a locked leftover (cloned from a file locked in the Finder) would fail every cleanup
-                lchflags(url.path, 0)
+                // a locked leftover (cloned from a file locked in the Finder) would fail every cleanup. Flags belong to
+                // the inode: a hard link planted to a user's locked file is never unlocked
+                var st = stat()
+                if lstat(url.path, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 { lchflags(url.path, 0) }
                 try fm.removeItem(at: url)
             }
         }
@@ -560,7 +561,9 @@ public final class Repository {
         guard errno == EPERM else { return -1 }
         let fd = openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { errno = EPERM; return -1 }
-        fchflags(fd, 0)
+        // flags belong to the inode: a hard link planted to a user's locked file is never unlocked
+        var st = stat()
+        if fstat(fd, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 { fchflags(fd, 0) }
         close(fd)
         return unlinkat(dir, name, 0)
     }
