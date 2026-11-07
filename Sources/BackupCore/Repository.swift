@@ -152,7 +152,7 @@ public final class Repository {
         if let n = sampleDirs { dirs = Array(dirs.shuffled().prefix(n)) }
         for dir in dirs {
             let d = objectsDir.appending(path: dir)
-            for f in (try? fm.contentsOfDirectory(atPath: d.path)) ?? [] where Self.extensions.contains((f as NSString).pathExtension) {
+            for f in objectNames(in: dir) {
                 let size = (try? fm.attributesOfItem(atPath: d.appending(path: f).path)[.size] as? Int64) ?? 0
                 result[(f as NSString).deletingPathExtension] = size
             }
@@ -163,12 +163,20 @@ public final class Repository {
     public func allObjectHashes() throws -> Set<String> {
         var result = Set<String>()
         for dir in try fm.contentsOfDirectory(atPath: objectsDir.path) {
-            for f in (try? fm.contentsOfDirectory(atPath: objectsDir.appending(path: dir).path)) ?? []
-            where Self.extensions.contains((f as NSString).pathExtension) {
-                result.insert((f as NSString).deletingPathExtension)
-            }
+            for f in objectNames(in: dir) { result.insert((f as NSString).deletingPathExtension) }
         }
         return result
+    }
+
+    /// The objects in one fan-out folder: only `<hash>.<ext>` under its own prefix, never through a link. A link
+    /// planted in objects/ would otherwise list files outside the archive as unreferenced objects, for cleanup.
+    private func objectNames(in dir: String) -> [String] {
+        let d = objectsDir.appending(path: dir)
+        guard (try? fm.attributesOfItem(atPath: d.path)[.type] as? FileAttributeType) == .typeDirectory else { return [] }
+        return ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).filter {
+            let hash = ($0 as NSString).deletingPathExtension
+            return Self.extensions.contains(($0 as NSString).pathExtension) && Self.isHash(hash) && hash.hasPrefix(dir)
+        }
     }
 
     public func hasObject(_ hash: String) -> Bool {
@@ -290,8 +298,11 @@ public final class Repository {
     }
 
     public func deleteObject(_ hash: String) throws {
-        for ext in Self.extensions { try? fm.removeItem(at: objectURL(hash, ext)) }
         knownObjects?.remove(hash)
+        // by descriptor, opened without following links: a fan-out folder swapped for a link deletes nothing outside
+        guard Self.isHash(hash), let fanout = try? parentDirectory(of: objectURL(hash, "raw")) else { return }
+        defer { close(fanout) }
+        for ext in Self.extensions { unlinkat(fanout, "\(hash).\(ext)", 0) }
     }
 
     public func removeTemporaryFiles() throws {

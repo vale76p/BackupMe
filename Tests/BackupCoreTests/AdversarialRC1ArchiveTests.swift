@@ -108,4 +108,23 @@ import Testing
         _ = try prune(repository: repo, policy: RetentionPolicy(), capBytes: nil, now: t0, forceGC: true)
         #expect(!fm.fileExists(atPath: leftovers[1].path))
     }
+
+    // MARK: A3: links in objects/
+
+    @Test func cleanupNeverDeletesThroughALinkInObjects() throws {
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let photos = tmp(), lookalike = tmp()
+        let photo = photos.appending(path: "IMG_0001.raw"), stray = photos.appending(path: "x.tmp")
+        let hashNamed = lookalike.appending(path: "ab" + String(repeating: "0", count: 62) + ".raw")
+        for url in [photo, stray, hashNamed] { write("foto", to: url) }
+        try fm.createSymbolicLink(at: repo.root.appending(path: "objects/IM"), withDestinationURL: photos)
+        try fm.createSymbolicLink(at: repo.root.appending(path: "objects/ab"), withDestinationURL: lookalike)
+
+        #expect(try repo.allObjectHashes().isEmpty)
+        #expect(try repo.objectSizes().isEmpty)
+        _ = try prune(repository: repo, policy: RetentionPolicy(), capBytes: nil, now: t0, forceGC: true)
+        try repo.deleteObject(hashNamed.deletingPathExtension().lastPathComponent)
+        try repo.deleteObject("../../IM/IMG_0001")
+        for url in [photo, stray, hashNamed] { #expect(fm.fileExists(atPath: url.path), "\(url.lastPathComponent)") }
+    }
 }
