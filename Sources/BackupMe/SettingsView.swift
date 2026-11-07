@@ -114,7 +114,7 @@ struct FoldersSection: View {
             Text("Cartelle e file da salvare")
         } footer: {
             if model.settings.sources.contains(Self.home) {
-                Text("Il profilo completo salva tutte le cartelle e i file della cartella Inizio. Libreria, Cestino e destinazione sono esclusi in automatico: per salvare una cartella della Libreria aggiungila qui.")
+                Text("Il profilo completo salva tutte le cartelle e i file della cartella Inizio. Libreria, Cestino, cache degli strumenti di sviluppo e destinazione sono esclusi in automatico: per salvare una cartella della Libreria aggiungila qui.")
             }
         }
     }
@@ -771,7 +771,7 @@ private struct ExcludesSection: View {
         Section {
             let list = automatic
             if list.isEmpty {
-                Text("Nessuna: nessun elemento salvato contiene la destinazione, la Libreria o il Cestino.")
+                Text("Nessuna: nessun elemento salvato contiene la destinazione, la Libreria, il Cestino o le cache degli strumenti.")
                     .foregroundStyle(.secondary)
             }
             ForEach(list, id: \.self) { a in

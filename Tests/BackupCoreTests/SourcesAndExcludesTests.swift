@@ -55,6 +55,21 @@ import Testing
         #expect(report.excluded?.contains(base.lastPathComponent + "/Library") == true)
     }
 
+    /// The whole profile leaves out what tools download again, and keeps their settings next to it.
+    @Test func profileSkipsToolCaches() throws {
+        write("{}", to: base.appending(path: ".npm/_cacache/index"))
+        write("crate", to: base.appending(path: ".cargo/registry/cache/serde.crate"))
+        write("[net]", to: base.appending(path: ".cargo/config.toml"))
+        write("mod", to: base.appending(path: "go/pkg/mod/x/y.go"))
+        write("main", to: base.appending(path: "go/src/app/main.go"))
+        let auto = ExcludeRules.automatic(destination: nil, home: base.path).map(\.path)
+        let (report, s, _) = try run([base], dest: tmp(), rules: ExcludeRules(patterns: [], paths: auto))
+        let paths = Set(s.entries.map(\.path))
+        #expect(report.error == nil)
+        #expect(paths.contains(".cargo/config.toml") && paths.contains("go/src/app/main.go"))
+        #expect(!paths.contains { $0.hasPrefix(".npm") || $0.hasPrefix(".cargo/registry") || $0.hasPrefix("go/pkg/mod") })
+    }
+
     @Test func cloudFoldersFound() throws {
         let home = base.path
         for name in ["OneDrive-Personal", "OneDrive-Acme", "Dropbox", "Dropbox (28-12-22 10:05) Archive",

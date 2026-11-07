@@ -105,8 +105,32 @@ public struct ExcludeRules: Sendable {
         // the folders of older cloud clients, outside the Library: with the whole profile saved they would be
         // downloaded and backed up too
         list += CloudFolder.homeFolders(home: home).map { Automatic(path: $0.url.path, reason: "Cartella di \($0.service)") }
+        // caches and downloads of developer tools, which they fetch again: restored they only cost time and space
+        list += toolCaches.map { Automatic(path: home + "/" + $0.0, reason: $0.1) }
         return list
     }
+
+    /// Relative to the home: only what a tool rebuilds or downloads again, never its settings.
+    static let toolCaches = [
+        (".cache", "Cache delle app a riga di comando"),
+        (".npm", "Cache di npm"),
+        (".bun/install/cache", "Cache di Bun"),
+        (".cargo/registry", "Pacchetti scaricati da Cargo"),
+        (".cargo/git", "Pacchetti scaricati da Cargo"),
+        (".rustup/toolchains", "Versioni di Rust installate"),
+        (".gradle/caches", "Cache di Gradle"),
+        (".gradle/wrapper/dists", "Versioni di Gradle scaricate"),
+        (".m2/repository", "Pacchetti scaricati da Maven"),
+        ("go/pkg/mod", "Moduli scaricati da Go"),
+        (".cocoapods/repos", "Indice di CocoaPods"),
+        (".nvm/versions", "Versioni di Node installate"),
+        (".pyenv/versions", "Versioni di Python installate"),
+        (".electron-gyp", "Header scaricati da Electron"),
+        (".vscode/extensions", "Estensioni di VS Code"),
+        (".cursor/extensions", "Estensioni di Cursor"),
+        (".ollama/models", "Modelli di Ollama"),
+        (".thumbnails", "Anteprime"),
+    ]
 }
 
 /// A folder holding a CACHEDIR.TAG (bford.info/cachedir) declares itself a cache that needn't be backed up.
