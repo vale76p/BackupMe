@@ -255,17 +255,24 @@ public final class Restorer {
         var check = ReplaceCheck(changedFiles: 0, repositoryChanged: false)
         let saved = Set(snapshot.entries.lazy.filter { $0.source == source }.map(\.path))
         // a source that is a symlink was backed up through the link: walk the real folder
-        let root = (source as NSString).resolvingSymlinksInPath
-        if let walk = FileManager.default.enumerator(atPath: root) {
-            for case let path as String in walk {
-                let isDir = walk.fileAttributes?[.type] as? FileAttributeType == .typeDirectory
-                // .git internals: covered by the refs below
-                if path == ".git" || rules.excludes(name: (path as NSString).lastPathComponent, isDirectory: isDir, path: path)
-                    || rules.paths.contains(root + "/" + path) {
+        let root = URL(fileURLWithPath: (source as NSString).resolvingSymlinksInPath)
+        // skips what the backup skips (see BackupEngine.walk), or all of it would count as new
+        // relative URLs: absolute ones may come back without /private, and wouldn't match the root
+        if let walk = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
+                                                     options: .producesRelativePathURLs) {
+            for case let url as URL in walk {
+                let path = url.relativePath, full = root.path + "/" + path
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                // .git internals: covered by the refs below. A folder only in the cloud: listing it would download it
+                if path == ".git" || rules.excludes(name: url.lastPathComponent, isDirectory: isDir, path: path)
+                    || rules.paths.contains(full)
+                    || (isDir && (isCacheDirectory(full) || FileStat(path: full)?.dataless == true)) {
                     if isDir { walk.skipDescendants() }
                     continue
                 }
-                if !isDir, !saved.contains(path) { check.newFiles += 1 }
+                guard !isDir, !saved.contains(path) else { continue }
+                if let max = rules.maxFileSize, let st = FileStat(path: full), st.size > max { continue }
+                check.newFiles += 1
             }
         }
         for e in snapshot.entries where e.source == source && e.kind == .file {

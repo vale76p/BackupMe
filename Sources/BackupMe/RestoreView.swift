@@ -9,6 +9,8 @@ struct RestoreView: View {
     @State private var selectedIDs = Set<Entry.ID>()
     @State private var hit: SearchHit?
     @State private var check: Restorer.ReplaceCheck?
+    /// The check of what Sostituisci would send to the Trash is running: it walks the whole folder.
+    @State private var checking = false
     /// The right-hand panel: details and saved versions of the selected item.
     @AppStorage("restoreInspector") private var showInspector = true
     @State private var previewURL: URL?
@@ -216,10 +218,12 @@ struct RestoreView: View {
 
     private func chip(_ s: (id: String, date: Date), label: String, info: (newBytes: Int64, warnings: Int)?) -> some View {
         let selected = model.selectedID == s.id
-        let warned = (info?.warnings ?? 0) > 0
+        // not in this Mac's history (another Mac, a new one, older than its last runs): the manifest, once opened
+        let warnings = info?.warnings ?? model.warningCount(s.id) ?? 0
+        let warned = warnings > 0
         var tip = s.date.formatted(date: .complete, time: .shortened)
         if let info { tip += " · \(info.newBytes.formatted(.byteCount(style: .file))) nuovi" }
-        if warned { tip += " · \(info!.warnings == 1 ? "1 avviso" : "\(info!.warnings) avvisi")" }
+        if warned { tip += " · \(warnings == 1 ? "1 avviso" : "\(warnings) avvisi")" }
         return Button {
             model.search = "" // a backup picked while searching: show it
             model.selectedID = s.id
@@ -326,6 +330,7 @@ struct RestoreView: View {
 
     private var actionBar: some View {
         HStack(spacing: 10) {
+            if checking { ProgressView().controlSize(.small) }
             Text(selectionSummary).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 12)
             // short names, big targets: what each one does exactly is in the tooltip
@@ -349,6 +354,7 @@ struct RestoreView: View {
 
     private var selectionSummary: String {
         if model.restoring { return "Ripristino in corso…" }
+        if checking { return "Controllo della cartella attuale…" }
         let from = targetSnapshot.flatMap(Snapshot.date(fromID:)).map(Self.fromBackup) ?? ""
         if wholeBackup { return "Tutte le cartelle · " + from }
         let t = targets
@@ -645,7 +651,7 @@ struct RestoreView: View {
     /// Also while the chosen backup is still loading: its folders aren't checked yet, and Sostituisci couldn't
     /// say what would go to the Trash.
     private var restoreDisabled: Bool {
-        (targets.isEmpty && !wholeBackup) || model.restoring || (model.search.isEmpty && model.selected == nil)
+        (targets.isEmpty && !wholeBackup) || model.restoring || checking || (model.search.isEmpty && model.selected == nil)
     }
 
     /// Top level with nothing selected: every saved folder of the backup, into a folder of choice (a new Mac).
@@ -672,7 +678,7 @@ struct RestoreView: View {
                 text += "\n\n\(check.changedFiles == 1 ? "1 file è cambiato" : "\(check.changedFiles) file sono cambiati") dopo il backup: le versioni di oggi finiranno nel Cestino."
             }
             if check.newFiles > 0 {
-                text += "\n\n\(check.newFiles == 1 ? "1 file è stato creato" : "\(check.newFiles) file sono stati creati") dopo il backup e non \(check.newFiles == 1 ? "c'è" : "ci sono"): \(check.newFiles == 1 ? "finirà" : "finiranno") nel Cestino."
+                text += "\n\n\(check.newFiles == 1 ? "1 file non è" : "\(check.newFiles) file non sono") nel backup (nuovi o non salvati): \(check.newFiles == 1 ? "finirà" : "finiranno") nel Cestino."
             }
             if check.repositoryChanged {
                 text += "\n\nIl repository git ha commit o branch più recenti del backup: finiranno nel Cestino con la cartella."
@@ -688,8 +694,10 @@ struct RestoreView: View {
         if t.count == 1, t[0].path.isEmpty {
             check = nil
             let source = t[0].source
+            checking = true // a double click would start a second check, and ask twice
             Task {
                 if model.showsStatus, model.app.settings.sources.contains(source) { check = await model.replaceCheck(source: source) }
+                checking = false
                 whole = (id, t[0])
             }
             return

@@ -60,6 +60,9 @@ enum RestoreKit {
 
        sh RIPRISTINO.command MacBook-1A2B3C 2026-11-05T10-00-00Z ~/Desktop/Ripristino
 
+    Usa il nome del computer come lo mostra l'elenco: negli archivi più recenti finisce anche con
+    l'utente del Mac (per esempio MacBook-1A2B3C-mario).
+
     Prima di scrivere qualsiasi cosa lo script controlla il backup e mostra un riepilogo: quali
     cartelle ricrea e dove, quanti file e quanti MB, lo spazio libero e cosa succederà. Poi chiede
     due conferme: rispondi "s" alla prima e scrivi RIPRISTINA alla seconda. Qualsiasi altra
@@ -72,8 +75,9 @@ enum RestoreKit {
     link simbolici, permessi, date di modifica) e controlla il contenuto di ogni file.
     Non sovrascrive mai niente: se una cartella esiste già usa un nome nuovo ("progetto 2").
     Non modifica l'archivio.
-    Se il backup è parziale (una cartella non leggibile, spazio esaurito) il riepilogo lo dice e
-    lo script termina con un errore: per le cartelle che mancano scegli un backup precedente.
+    Se il backup ha avvisi (cartella non leggibile, spazio esaurito, file saltati) il riepilogo li
+    elenca e lo script termina con un errore. Per una cartella che non è nel backup scegli un
+    backup precedente.
 
     Con OneDrive i file vengono scaricati mentre lo script li legge: serve la connessione.
 
@@ -249,7 +253,7 @@ function run(argv) {
   })
   if (notes.length) out('\n' + notes.join('\n'))
   var warnings = Array.isArray(snapshot.warnings) ? snapshot.warnings : []
-  if (warnings.length) out('\nAvvisi del backup (' + warnings.length + '): alcuni file potrebbero mancare\n  ' + warnings.join('\n  '))
+  if (warnings.length) out('\nAvvisi del backup (' + warnings.length + '):\n  ' + warnings.join('\n  '))
   out('\nIn tutto: ' + count + ' file, ' + size(bytes) + '. Spazio libero nella destinazione: '
     + (free === undefined ? 'sconosciuto' : size(free)) + '.')
   if (free !== undefined && free < bytes) out('ATTENZIONE: lo spazio libero non basta, il ripristino si fermerebbe a metà.')
@@ -317,7 +321,7 @@ function run(argv) {
     var t = $.NSTask.alloc.init, input = $.NSPipe.pipe
     t.launchPath = '/usr/bin/perl'
     t.arguments = $(['-e', 'local $/ = "\\0"; my @p = <STDIN>; chomp @p; while (@p) { my ($a, $b) = splice(@p, 0, 2); '
-      + 'my $t = "$a.backupme-nome"; next if -e $t || !rename($a, $t); rename($t, $a) if -e $b || !rename($t, $b) }'])
+      + 'my $t = "$a.backupme-nome"; next if -l $t || -e $t || !rename($a, $t); rename($t, $a) if -l $b || -e $b || !rename($t, $b) }'])
     t.standardInput = input
     t.launch
     input.fileHandleForWriting.writeData($(renames.join('\0') + '\0').dataUsingEncoding($.NSUTF8StringEncoding))
@@ -347,8 +351,8 @@ function run(argv) {
   all.filter(e => e.kind === 'directory').reverse().forEach(finish)
 
   plans.forEach(p => out('Ripristinato: ' + p.target))
-  // a partial backup is no success: said again at the end, and in the exit status for a script
-  problems = problems.concat(notes, warnings.length ? ['il backup è parziale, vedi gli avvisi del backup sopra'] : [])
+  // folders missing or warnings in the backup are no success: said again at the end, and in the exit status for a script
+  problems = problems.concat(notes, warnings.length ? ['il backup ha ' + warnings.length + (warnings.length === 1 ? ' avviso' : ' avvisi') + ', vedi sopra'] : [])
   if (problems.length) fail('\nProblemi (' + problems.length + '):\n' + problems.join('\n'))
 }
 """#

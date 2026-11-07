@@ -61,6 +61,8 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     init(app: AppModel) { self.app = app }
 
     var selected: Snapshot? { selectedID.flatMap { loaded[$0] } }
+    /// Warnings of a backup already opened, from its manifest; nil while it isn't in memory.
+    func warningCount(_ id: String) -> Int? { loaded[id]?.warnings.count }
     var sources: [String] { selected?.sources ?? [] }
     var hasDestination: Bool { destination != nil }
     /// False while the disk holding the destination is not plugged in: the window says so, not "no backups".

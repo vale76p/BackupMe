@@ -164,13 +164,75 @@ import Testing
     /// B12: files created after the backup go to the Trash with the folder: Sostituisci counts them.
     @Test func replaceCheckCountsFilesNewerThanTheBackup() throws {
         write("uno", to: src.appending(path: "a.txt"))
+        // a composed name, made with POSIX calls: the walk must see it as the backup saved it
+        let fd = open(src.path + "/caffè.txt", O_CREAT | O_WRONLY, 0o644)
+        #expect(fd >= 0); close(fd)
         let (_, snap) = try backup([src], excludes: ["node_modules"])
-        let rules = ExcludeRules(patterns: ["node_modules"])
+        let rules = ExcludeRules(patterns: ["node_modules"], maxFileSize: 1000)
         #expect(Restorer.replaceCheck(snap, source: src.path, rules: rules).newFiles == 0)
         write("nuovo", to: src.appending(path: "nuovo.txt"))
         write("nuovo", to: src.appending(path: "cartella nuova/dentro.txt"))
         write("escluso", to: src.appending(path: "node_modules/x.js"))
         write("ref", to: src.appending(path: ".git/refs/heads/nuovo"))
+        // what the backup skips too: a cache folder and a file above the size limit
+        write("Signature: 8a477f597d28d172789f06886806bc55", to: src.appending(path: "cache/CACHEDIR.TAG"))
+        write("x", to: src.appending(path: "cache/dato.bin"))
+        write(String(repeating: "x", count: 2000), to: src.appending(path: "grande.bin"))
         #expect(Restorer.replaceCheck(snap, source: src.path, rules: rules) == .init(changedFiles: 0, repositoryChanged: false, newFiles: 2))
+    }
+
+    /// A damaged older backup is about that backup: the new one, complete, doesn't carry the warning.
+    @Test func damagedOlderBackupWarningStaysOutOfTheManifest() throws {
+        write("uno", to: src.appending(path: "a.txt"))
+        let (repo, first) = try backup([src])
+        let url = repo.root.appending(path: "snapshots/\(first.id).json.lzfse")
+        let raw = try Data(contentsOf: url)
+        try raw.prefix(raw.count / 2).write(to: url)
+        let again = try BackupEngine(repository: repo, cache: HashCache(url: cacheURL), excludes: ExcludeRules(patterns: []))
+            .run(sources: [src], now: first.date.addingTimeInterval(3600))
+        #expect(again.warnings.contains { $0.hasPrefix(BackupEngine.damagedPrefix) })
+        #expect(try repo.readSnapshot(try #require(again.snapshotID)).warnings.isEmpty)
+    }
+
+    /// A warning without missing folders: the kit says how many there are, not that the backup is partial.
+    @Test func kitCountsWarningsWithoutCallingTheBackupPartial() throws {
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let data = Data("ok".utf8)
+        _ = try repo.putObject(data, hash: sha256Hex(data))
+        let d = Date(timeIntervalSince1970: 1_700_000_000)
+        try repo.writeSnapshot(Snapshot(date: d, sources: ["/x/progetto"], entries: [
+            entry("/x/progetto", "", .directory), entry("/x/progetto", "ok.txt", .file, data: data)],
+            warnings: ["/x/progetto/b.txt: modificato durante la lettura, saltato"]))
+        let r = try kitRestore(Snapshot.id(for: d), to: tmp().appending(path: "ripristino"))
+        #expect(r.status == 1 && r.out.contains("il backup ha 1 avviso, vedi sopra"), "\(r.out)")
+        #expect(!r.out.contains("parziale") && !r.out.contains("NON è"), "\(r.out)")
+    }
+
+    /// Hundreds of unreadable folders: report and manifest stay bounded.
+    @Test func sourceErrorsAreBounded() throws {
+        write("uno", to: src.appending(path: "a.txt"))
+        let gone = (0..<(BackupEngine.excludedLimit + 10)).map { base.appending(path: "mancante \($0)") }
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let report = try BackupEngine(repository: repo, cache: HashCache(url: cacheURL), excludes: ExcludeRules(patterns: []))
+            .run(sources: [src] + gone)
+        #expect(report.error?.split(separator: "\n").count == BackupEngine.excludedLimit + 1)
+        #expect(try repo.readSnapshot(try #require(report.snapshotID)).warnings.count == BackupEngine.excludedLimit + 1)
+    }
+
+    /// The kit's temporary name for a composed name is never put over an item of the backup, a dangling link included.
+    @Test func kitNeverRenamesOverALink() throws {
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let d = Date(timeIntervalSince1970: 1_700_000_000)
+        let nfd = "Caffe\u{0300}", data = Data("caffè".utf8)
+        _ = try repo.putObject(data, hash: sha256Hex(data))
+        var link = entry("/x/progetto", nfd + ".backupme-nome", .symlink)
+        link.linkTarget = "/non/esiste"
+        try repo.writeSnapshot(Snapshot(date: d, sources: ["/x/progetto"], entries: [
+            entry("/x/progetto", "", .directory), entry("/x/progetto", "Caffè", .file, data: data), link], warnings: []))
+        let out = tmp().appending(path: "ripristino")
+        let r = try kitRestore(Snapshot.id(for: d), to: out)
+        #expect(r.status == 0, "\(r.out)")
+        #expect((try? fm.destinationOfSymbolicLink(atPath: out.path + "/progetto/" + nfd + ".backupme-nome")) == "/non/esiste")
+        #expect(try String(contentsOf: out.appending(path: "progetto/Caffè"), encoding: .utf8) == "caffè")
     }
 }
