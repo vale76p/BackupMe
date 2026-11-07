@@ -208,11 +208,27 @@ public final class Repository {
         defer { close(sourceFD) }
         var info = stat()
         guard fstat(sourceFD, &info) == 0 else { throw Self.posixError() }
-        // one silent call: allow it the time a slow disk or network share needs (5 MB/s)
-        Activity.beat(grace: Double(info.st_size) / 5_000_000)
         var size: Int64 = 0
         let stored = try publish(to: url, sync: .file, mode: info.st_mode & 0o777, cloning: sourceFD) { fd, cloned in
-            if !cloned, fcopyfile(sourceFD, fd, nil, copyfile_flags_t(COPYFILE_ALL)) != 0 { throw Self.posixError() }
+            // in chunks that each beat: a single copy call to a slow disk looked stuck. Data only: the flags of a file
+            // locked in the Finder (uchg) would lock the temporary file
+            if !cloned {
+                var buffer = [UInt8](repeating: 0, count: 4 << 20)
+                while true {
+                    let n = read(sourceFD, &buffer, buffer.count)
+                    if n < 0, errno == EINTR { continue }
+                    guard n >= 0 else { throw Self.posixError() }
+                    if n == 0 { break }
+                    var offset = 0
+                    while offset < n {
+                        let w = buffer[offset ..< n].withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+                        if w < 0, errno == EINTR { continue }
+                        guard w > 0 else { throw w == 0 ? POSIXError(.EIO) : Self.posixError() }
+                        offset += w
+                    }
+                    Activity.beat()
+                }
+            }
             guard lseek(fd, 0, SEEK_SET) >= 0 else { throw Self.posixError() }
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
             guard try streamHash(handle) == hash else { return false }
@@ -281,7 +297,11 @@ public final class Repository {
     public func removeTemporaryFiles() throws {
         for dir in [snapshotsDir, objectsDir] {
             guard let e = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else { continue }
-            for case let url as URL in e where url.pathExtension == "tmp" { try fm.removeItem(at: url) }
+            for case let url as URL in e where url.pathExtension == "tmp" {
+                // a locked leftover (cloned from a file locked in the Finder) would fail every cleanup
+                lchflags(url.path, 0)
+                try fm.removeItem(at: url)
+            }
         }
     }
 
@@ -460,7 +480,7 @@ public final class Repository {
         try checkComponent(name)
         let tmp = name + ".tmp"
         // a leftover of an interrupted run (its space comes back now) or a planted link: removed, never followed
-        guard unlinkat(parent, tmp, 0) == 0 || errno == ENOENT else { throw Self.posixError() }
+        guard removeLeftover(tmp, in: parent) == 0 || errno == ENOENT else { throw Self.posixError() }
         // other volumes, or a clone that fails, get a plain copy
         let cloned = source.map { fclonefileat($0, parent, tmp, 0) == 0 } ?? false
         // a clone keeps its source's mode (git packs are read-only) and is only read back: never opened for writing
@@ -478,6 +498,9 @@ public final class Repository {
         var st = stat()
         guard fstat(fd, &st) == 0 else { throw Self.posixError() }
         guard st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 else { throw POSIXError(.EPERM) }
+        // a clone keeps its source's flags: a file locked in the Finder (uchg) makes it unchangeable and unremovable
+        let locks = UInt32(UF_IMMUTABLE | UF_APPEND)
+        guard st.st_flags & locks == 0 || fchflags(fd, st.st_flags & ~locks) == 0 else { throw Self.posixError() }
         guard fchmod(fd, 0o600) == 0 else { throw Self.posixError() }
         guard try body(fd, cloned) else { return false }
         // Preserve published-file readability for portable/shared archives.
@@ -490,6 +513,17 @@ public final class Repository {
         guard moved == 0 else { throw Self.posixError() }
         published = true
         return true
+    }
+
+    /// unlinkat that also removes a leftover locked by a clone of a locked file (before 0.9.5): unlocked first.
+    private static func removeLeftover(_ name: String, in dir: Int32) -> Int32 {
+        if unlinkat(dir, name, 0) == 0 { return 0 }
+        guard errno == EPERM else { return -1 }
+        let fd = openat(dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { errno = EPERM; return -1 }
+        fchflags(fd, 0)
+        close(fd)
+        return unlinkat(dir, name, 0)
     }
 
     private func atomicWrite(_ data: Data, to url: URL, sync: Sync, exclusive: Bool = false) throws {
