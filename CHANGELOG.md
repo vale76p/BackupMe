@@ -4,6 +4,9 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la n
 
 ## [Non rilasciato]
 
+### Cambiato
+- `scripts/build-app.sh --install` compila, installa e apre l'app, e basta. È l'app, all'avvio, a registrarsi come servizio di login e a passare sotto launchd (riavvio dopo un crash già dalla prima esecuzione), e ad aggiornare `RIPRISTINO.command` nella destinazione. Il programma `KitUpdater` non c'è più.
+
 ### Sicurezza
 - Il ripristino di un file grande (32 MB o più) non segue più un collegamento messo nell'archivio al posto dell'oggetto: prima nella cartella ripristinata finiva un collegamento a un file fuori dall'archivio.
 

@@ -125,9 +125,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             try? SystemServices.setLaunchAtLogin(true)
             UserDefaults.standard.set(true, forKey: "loginAgentConfigured")
         }
+        launchAgentRepaired = SystemServices.repairLaunchAgent()
+        if SystemServices.handOverToLaunchAgent() {
+            if launchAgentRepaired { Log.app.info("Avvio al login riparato: puntava a una copia spostata o vecchia di BackupMe") }
+            Log.app.info("Avviato come servizio di login: macOS lo riavvia se si chiude per errore")
+            Log.flush()
+            exit(0)
+        }
         // asked in context: the first-run window asks when the first backup starts
         if settings.isConfigured { SystemServices.requestNotificationPermission() }
-        launchAgentRepaired = SystemServices.repairLaunchAgent()
+        updateRestoreKit()
         _ = SystemServices.network
         // common modes: in the default mode it doesn't fire while an open panel or a menu is up
         let timer = Timer(timeInterval: 60, repeats: true) { _ in MainActor.assumeIsolated { self.tick() } }
@@ -139,6 +146,21 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             DispatchQueue.main.asyncAfter(deadline: .now() + 60) { MainActor.assumeIsolated { self.tick() } }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { MainActor.assumeIsolated { self.tick() } }
+    }
+
+    /// An update may bring a new RIPRISTINO.command: written beside the archives at launch, not at the next backup.
+    /// Off the main thread: a network destination can take long to answer.
+    private func updateRestoreKit() {
+        guard let dest = settings.destination else { return }
+        Task.detached(priority: .utility) {
+            switch Repository.updateRestoreKit(destination: URL(fileURLWithPath: dest)) {
+            case .installed(let from, let to):
+                Log.app.info("Kit di ripristino aggiornato \(from.map { "dalla versione \($0) " } ?? "")alla versione \(to) in \(dest)/BackupMe")
+            case .newerKept(let v):
+                Log.app.info("Kit di ripristino lasciato alla versione \(v), più recente di questa app (scritto da un altro Mac)")
+            case .current, .noArchive: break // nothing to say; the first backup writes the kit with the archive
+            }
+        }
     }
 
     /// Opens an existing archive for browsing; never creates one.

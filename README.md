@@ -25,7 +25,7 @@ BackupMe non chiede mai permessi di amministratore.
 scripts/build-app.sh --install
 ```
 
-Lo script compila, firma l'app, la copia in `~/Applications` e la riavvia. Per compilare bastano `Package.swift`, `Sources/`, `Resources/` e `scripts/build-app.sh`: `Tests/` e `docs/` servono solo allo sviluppo e si possono non copiare. Per aggiornare, scarica il codice nuovo (`git pull`) e rilancia lo stesso comando.
+Lo script compila, firma l'app, la copia in `~/Applications` e la apre: il resto lo fa l'app all'avvio (servizio di login, kit di ripristino aggiornato nella destinazione). Per compilare bastano `Package.swift`, `Sources/`, `Resources/` e `scripts/build-app.sh`: `Tests/` e `docs/` servono solo allo sviluppo e si possono non copiare. Per aggiornare, scarica il codice nuovo (`git pull`) e rilancia lo stesso comando.
 
 **Verifica dopo l'aggiornamento.** Al primo backup dopo un aggiornamento (una versione o build nuova in `Info.plist`; non in un archivio nuovo, che non ha niente da verificare) BackupMe controlla l'archivio senza rileggere i file salvati: riscrive il kit di ripristino se è più vecchio, manomesso o mancante, ripara `repo.json` illeggibile e il LaunchAgent, toglie i file temporanei rimasti (mai le cartelle), confronta ogni indice dei backup con il suo checksum (un indice che non si legge, per esempio non ancora scaricato dal cloud, non è considerato danneggiato: la verifica riparte al backup successivo) e segnala (senza mai cancellarli né seguirli) indici illeggibili e file estranei. L'esito è nel Registro e in una notifica con il pulsante **Controlla ora** per il controllo completo, che non parte da solo.
 
@@ -43,7 +43,7 @@ BACKUPME_SIGN_IDENTITY="Nome del certificato" scripts/build-app.sh --install
 
 Il primo backup parte entro un minuto. Con **Esegui backup ora** lo avvii subito.
 
-BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchAgent (`~/Library/LaunchAgents/com.vale76p.BackupMe.plist`), quindi parte a ogni login e viene riavviato se va in crash, ma non dopo **Esci**. Si disattiva da **Impostazioni › Pianificazione › Avvia al login**.
+BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchAgent (`~/Library/LaunchAgents/com.vale76p.BackupMe.plist`) e passa subito sotto launchd, quindi parte a ogni login e viene riavviato se va in crash, ma non dopo **Esci**. Se lo apri a mano, per esempio dopo un aggiornamento, lascia di nuovo il posto alla copia del servizio. Si disattiva da **Impostazioni › Pianificazione › Avvia al login**.
 
 ### Come si comporta
 

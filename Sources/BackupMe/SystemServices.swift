@@ -120,13 +120,15 @@ enum SystemServices {
 
     /// A login agent and a manual open can start two copies: the newer one quits. Unless it is a newer
     /// version (an update opened while the old one runs at login): then the old one is asked to quit instead.
+    /// The login agent's copy also wins over a hand-opened one of the same build: that one is handing over to it.
     static func quitIfAlreadyRunning() {
         guard let id = Bundle.main.bundleIdentifier else { return }
         let me = NSRunningApplication.current
         func build(_ bundle: Bundle?) -> Int { Int(bundle?.infoDictionary?["CFBundleVersion"] as? String ?? "") ?? 0 }
         let mine = build(Bundle.main)
         for other in NSRunningApplication.runningApplications(withBundleIdentifier: id) where other != me {
-            if build(other.bundleURL.flatMap(Bundle.init(url:))) < mine { other.terminate(); continue }
+            let theirs = build(other.bundleURL.flatMap(Bundle.init(url:)))
+            if theirs < mine || (runsAsLaunchAgent && theirs == mine) { other.terminate(); continue }
             if (other.launchDate ?? .distantPast) <= (me.launchDate ?? .distantFuture) { exit(0) }
         }
     }
@@ -139,6 +141,32 @@ enum SystemServices {
     }
 
     static var launchAtLogin: Bool { FileManager.default.fileExists(atPath: agentPlist.path) }
+
+    /// launchd names its own jobs' processes after their label; an app opened by hand gets another name.
+    static var runsAsLaunchAgent: Bool { ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == label }
+
+    /// Opened by hand (after an install or an update) while the login agent is on: the agent is loaded again from
+    /// its plist and started now, so launchd restarts the app after a crash from the first run, not only after the
+    /// next login. True when launchd took over: this copy must quit.
+    static func handOverToLaunchAgent() -> Bool {
+        guard launchAtLogin, !runsAsLaunchAgent, !loginItemDisabled,
+              Bundle.main.executablePath == agentExecutable else { return false }
+        let domain = "gui/\(getuid())"
+        // a job still loaded (stopped with "Esci", or an older copy) would keep its old path: unloaded first
+        _ = launchctl(["bootout", "\(domain)/\(label)"])
+        return launchctl(["bootstrap", domain, agentPlist.path]) // RunAtLoad starts it
+    }
+
+    private static func launchctl(_ arguments: [String]) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = arguments
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
 
     /// Turned off in Impostazioni di Sistema › Generali › Elementi login: the plist is still there but launchd
     /// ignores it, so nothing starts at login (not even the 3-day alert, which the app itself sends).

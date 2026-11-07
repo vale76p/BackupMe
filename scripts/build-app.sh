@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds build/BackupMe.app (ad-hoc signed). With --install, replaces ~/Applications/BackupMe.app.
+# Builds build/BackupMe.app (ad-hoc signed). With --install, replaces ~/Applications/BackupMe.app and opens it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,7 +16,6 @@ strip_detritus() {
 
 # universal: the same app runs on Apple Silicon and Intel Macs
 swift build -c release --product BackupMe --arch arm64 --arch x86_64
-swift build -c release --product KitUpdater
 BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/BackupMe"
 # assembled and signed outside the repo: in a synced folder (Documents in iCloud) the sync daemon tags the bundle
 # again between the cleanup and codesign. build/ gets the signed copy
@@ -56,7 +55,6 @@ echo "Built build/BackupMe.app"
 if [[ "${1:-}" == "--install" ]]; then
     OLD="$(defaults read "$HOME/Applications/BackupMe.app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || true)"
     NEW="$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString)"
-    AGENT="$HOME/Library/LaunchAgents/com.vale76p.BackupMe.plist"
     # the copy launchd supervises goes first: with KeepAlive it would be restarted while the app is replaced
     launchctl bootout "gui/$(id -u)/com.vale76p.BackupMe" 2>/dev/null || true
     pkill -x BackupMe || true
@@ -70,39 +68,6 @@ if [[ "${1:-}" == "--install" ]]; then
     mv "$NEXT" "$HOME/Applications/BackupMe.app"
     echo "Installed $HOME/Applications/BackupMe.app"
     if [[ -n "$OLD" && "$OLD" != "$NEW" ]]; then echo "Aggiornamento da $OLD a $NEW"; fi
-    EXE="$HOME/Applications/BackupMe.app/Contents/MacOS/BackupMe"
-    # first install: the login agent the app writes at its first launch (SystemServices.setLaunchAtLogin), written
-    # now so launchd supervises it from the start. Not when the app has run and the user turned it off
-    if [[ ! -f "$AGENT" ]] && ! defaults read com.vale76p.BackupMe loginAgentConfigured >/dev/null 2>&1; then
-        mkdir -p "$(dirname "$AGENT")"
-        cat > "$AGENT" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.vale76p.BackupMe</string>
-    <key>ProgramArguments</key><array><string></string></array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-    <key>ProcessType</key><string>Interactive</string>
-</dict>
-</plist>
-EOF
-    fi
-    # before bootstrap: an agent still on another copy (/Applications) would start that one, not this update
-    if [[ -f "$AGENT" ]]; then
-        { plutil -replace ProgramArguments -array "$AGENT" && plutil -insert ProgramArguments.0 -string "$EXE" "$AGENT"; } \
-            || echo "warning: servizio di login non aggiornato, lo corregge l'app al primo avvio" >&2
-    fi
-    # under launchd when the login agent is on, so KeepAlive restarts it after a crash from now on, not only
-    # after the next login; otherwise a plain launch (backups must keep running after pkill above)
-    if [[ -f "$AGENT" ]] && launchctl bootstrap "gui/$(id -u)" "$AGENT" 2>/dev/null; then
-        echo "Avviato come servizio di login (riavviato da macOS se si chiude per errore)"
-    else
-        open "$HOME/Applications/BackupMe.app"
-    fi
-    # an upgrade may bring a new restore script: beside the archives now, not at the next backup. Time-limited:
-    # an unreachable network destination must not hang the install
-    perl -e 'alarm 60; exec @ARGV' "$(swift build -c release --show-bin-path)/KitUpdater" \
-        || echo "Kit di ripristino non aggiornato ora: lo farà il prossimo backup"
+    # the app itself sets up the login agent and updates the restore kit when it starts
+    open "$HOME/Applications/BackupMe.app"
 fi

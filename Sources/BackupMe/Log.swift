@@ -38,6 +38,9 @@ enum Log {
         }
     }
 
+    /// Waits for the lines still being written: before an exit, which would drop them.
+    static func flush() { queue.sync {} }
+
     /// The last lines, oldest first, the rotated file included when the current one is short.
     static func lines(limit: Int = 2000) -> [String] {
         queue.sync {
