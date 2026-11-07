@@ -181,7 +181,9 @@ public final class BackupEngine {
             }
             var date = now
             while repository.snapshotExists(Snapshot.id(for: date)) { date += 1 } // one manifest per second, never overwritten
-            let snapshot = Snapshot(date: date, sources: sources.map(\.path), entries: entries, warnings: warnings)
+            // the manifest says the backup is partial too: the kit and other Macs read only that
+            let snapshot = Snapshot(date: date, sources: sources.map(\.path), entries: entries,
+                                    warnings: Array(sourceErrors.prefix(Self.excludedLimit)) + warnings)
             try repository.writeSnapshot(snapshot) // written last: a backup without manifest does not exist
             cache.lastManifest = (digest, snapshot.id)
             try? cache.save()
