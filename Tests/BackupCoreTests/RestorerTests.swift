@@ -52,6 +52,24 @@ import Testing
         #expect(try fm.contentsOfDirectory(atPath: trashDir.path).isEmpty)
     }
 
+    @Test func replaceRefusesCloudFolders() throws {
+        write("a", to: src.appending(path: "a.txt"))
+        let (repo, snapshot) = try backup()
+        func replace(cloud: URL) throws {
+            try Restorer(repository: repo, trash: { try FileManager.default.moveItem(at: $0, to: trashDir.appending(path: "x")) },
+                         cloudFolders: { [CloudFolder(service: "OneDrive", account: nil, url: cloud)] })
+                .restore(snapshot, source: src.path, path: "", mode: .replace)
+        }
+        let target = src.resolvingSymlinksInPath().path
+        // the item is in the cloud folder, or the cloud folder is in the item
+        #expect(throws: RestoreError.inCloudFolder(target, service: "OneDrive")) { try replace(cloud: base) }
+        #expect(throws: RestoreError.inCloudFolder(target, service: "OneDrive")) { try replace(cloud: src.appending(path: "OneDrive")) }
+        #expect(try fm.contentsOfDirectory(atPath: trashDir.path).isEmpty)
+        // a sibling with the same prefix isn't inside it
+        try replace(cloud: base.appending(path: "progetto2"))
+        #expect(fm.fileExists(atPath: trashDir.appending(path: "x/a.txt").path))
+    }
+
     @Test func linkCreatedAfterBackupIsNotFollowed() throws {
         write("a", to: src.appending(path: "sub/a.txt"))
         let (repo, snapshot) = try backup()

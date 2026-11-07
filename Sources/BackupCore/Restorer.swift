@@ -11,16 +11,21 @@ public enum RestoreError: Error, Equatable {
     case containsArchive(String)
     /// A folder on the way to the original is a symbolic link today: writing there would land somewhere else.
     case linkInPath(String)
+    /// Replace would hand this item, or a cloud folder inside it, to a cloud client: OneDrive, Google Drive and
+    /// others may delete it for good instead of moving it to the Trash.
+    case inCloudFolder(String, service: String)
 }
 
 public final class Restorer {
     private let repository: Repository
     private let trash: (URL) throws -> Void
+    private let cloudFolders: () -> [CloudFolder]
     private let fm = FileManager.default
 
     public init(repository: Repository,
-                trash: @escaping (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }) {
-        self.repository = repository; self.trash = trash
+                trash: @escaping (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) },
+                cloudFolders: @escaping () -> [CloudFolder] = { CloudFolder.installed() }) {
+        self.repository = repository; self.trash = trash; self.cloudFolders = cloudFolders
     }
 
     /// Restores `path` ("" = whole source) from `snapshot`. Never overwrites: `.replace` trashes the current copy first.
@@ -58,6 +63,15 @@ public final class Restorer {
         if mode == .replace,
            repository.root.resolvingSymlinksInPath().path.hasPrefix(target.resolvingSymlinksInPath().path + "/") {
             throw RestoreError.containsArchive(target.path)
+        }
+        if mode == .replace {
+            let t = target.resolvingSymlinksInPath().path
+            for c in cloudFolders() {
+                let cloud = c.url.resolvingSymlinksInPath().path
+                if t == cloud || t.hasPrefix(cloud + "/") || cloud.hasPrefix(t + "/") {
+                    throw RestoreError.inCloudFolder(target.path, service: c.service)
+                }
+            }
         }
         // beside or in place of the original: no folder on the way may have become a link since the backup
         var missing: [(URL, String)] = []

@@ -700,6 +700,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             return "«\((p as NSString).lastPathComponent)» oggi è un collegamento a un'altra cartella: usa Ripristina in…"
         case RestoreError.containsArchive(let p):
             return "«\((p as NSString).lastPathComponent)» contiene l'archivio dei backup: Sostituisci lo manderebbe nel Cestino. Usa Ripristina accanto o Ripristina in…"
+        case RestoreError.inCloudFolder(let p, let service):
+            return "Sostituisci «\((p as NSString).lastPathComponent)» toccherebbe file di \(service), che potrebbe eliminarli subito invece di spostarli nel Cestino. Usa Ripristina accanto o Ripristina in…"
         case let e where BackupEngine.posixCode(e) == ELOOP: return linkInArchive
         // a missing object is named by its hash, which means nothing to anyone
         case let e as CocoaError where e.code == .fileNoSuchFile && e.filePath.map(Repository.isHash) == true:
