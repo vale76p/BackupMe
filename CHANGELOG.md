@@ -2,6 +2,46 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [1.0.0-rc1] - 2026-11-07
+
+Candidata alla 1.0, dalla revisione avversativa della 0.9.4. Nell'app la versione è 1.0.0 (build 19). La 1.0 finale dipende dalla prova reale su OneDrive (#24).
+
+### Aggiunto
+- Verifica dopo l'aggiornamento: al primo backup di una build nuova un controllo leggero di `repo.json`, file temporanei, cartelle degli oggetti, indici dei backup e kit di ripristino, senza leggere gli oggetti salvati. L'esito va nel Registro e in una notifica, con "Controlla ora" a portata di mano.
+- Archivio per utente: i nomi nuovi includono l'account e il proprietario è scritto in `repo.json`. Backup, pulizia ed eliminazione rifiutano con un messaggio chiaro l'archivio di un altro utente del Mac. Lo stesso utente con un uid nuovo (Assistente Migrazione) tiene il suo archivio.
+- Con "Avvia al login" spento in Impostazioni di Sistema, l'interruttore lo mostra spento, con un avviso e un pulsante per aprire gli Elementi login.
+- Sfoglia: le versioni di un file arrivano subito dai backup già aperti; "Cerca le versioni in tutti i backup" legge gli altri uno alla volta.
+- Il formato dell'archivio è descritto in `docs/formato-archivio.md`, con archivi di riferimento della 0.8.0, della 0.9.4 e della rc1 nei test.
+
+### Cambiato
+- Molta meno memoria e meno scritture con tanti file: a 100.000 file il picco di un backup con modifiche scende da circa 400 a 192 MB. La cache degli hash è binaria e compressa (circa 5,5 volte più piccola). L'indice dei backup si scrive voce per voce e si controlla senza caricarlo tutto. Con il tetto allo spazio attivo, i riferimenti si rileggono solo quando l'archivio lo supera.
+- Le cache delle versioni precedenti si leggono ancora e vengono convertite: nessun file viene riletto dopo l'aggiornamento.
+- La cartella dell'archivio di questo Mac è privata (0700), anche in un archivio già esistente, sui dischi che rispettano i proprietari.
+- Un tetto allo spazio più basso dello spazio occupato chiede conferma prima di applicarlo, anche con il disco staccato. Dopo "Annulla" il campo torna al valore di prima.
+- Con un ripristino o un controllo dell'archivio in corso, "Esegui backup ora", "Riprova" e il backup pianificato dicono nel pannello perché aspettano e fino a quando.
+- Kit di ripristino alla versione 9: controlla ogni cartella salvata separatamente, nomina quelle che mancano, mostra gli avvisi del backup ed esce con errore se il backup è parziale.
+
+### Sicurezza
+- La pulizia non segue più i collegamenti in `objects/`: un collegamento lì dentro (cartella condivisa, NAS) faceva cancellare file fuori dall'archivio.
+- Un indice chiamato "...json.lzfse" faceva cancellare con "Elimina…" la cartella di supporto dell'app (cronologia, cache, registro). Ora i nomi non validi vengono scartati.
+- Sbloccare un `.tmp` rimasto nell'archivio non toglie più il blocco del Finder a un file dell'utente collegato a esso con un hard link.
+- Un archivio di formato più nuovo blocca ogni scrittura, anche "Controlla ora" ed "Elimina…", non solo il backup.
+
+### Corretto
+- I file bloccati nel Finder non fermano più i backup e la pulizia.
+- Su exFAT e FAT32 lo spazio libero risultava 0: ogni file da 32 MB in su finiva in "Spazio esaurito" anche a disco vuoto. Un file più grande del limite del disco (4 GB su FAT32) ora è un avviso, non un falso disco pieno.
+- Ripristino dall'app su exFAT e FAT32, e nomi con accenti su APFS case-sensitive.
+- Con la destinazione non collegata, Sfoglia, Impostazioni e pannello dicono "Destinazione non collegata" invece di "Nessun backup".
+- I backup parziali sono segnati anche nell'indice: il chip arancione in Sfoglia compare anche da un altro Mac.
+- Il dialogo Sostituisci conta e nomina i file nuovi, che finirebbero nel Cestino con la cartella.
+- Gli oggetti di un backup eliminato vengono raccolti anche quando, in quel giro, la pulizia non elimina nessun backup, se servono a tornare sotto il tetto allo spazio.
+- La registrazione del proprietario non fa più fallire i backup su una destinazione piena o in sola lettura.
+- Alla prima installazione l'app parte subito come servizio di login, e un aggiornamento non riavvia più una copia vecchia.
+- Lo stato di errore resta dopo un riavvio dell'app.
+- Niente più falso "Backup non caricati nel cloud" dopo giorni senza modifiche, né falso "Backup bloccato" con file enormi su dischi lenti.
+- L'avviso di un oggetto mancante nel ripristino non mostra più l'hash.
+- Correzioni di testo: "Nessuna modifica · ultimo backup …", "… e un altro avviso".
+
 ## [0.9.4] - 2026-11-07
 
 Dalla revisione di sicurezza delle scritture nell'archivio.
