@@ -1,0 +1,35 @@
+BackupMe: come ripristinare un backup anche senza l'app
+Kit di ripristino versione 7
+
+Questa cartella contiene un archivio per ogni Mac salvato:
+
+  <nome del Mac>-<id>/
+    snapshots/   un indice per ogni backup (nome = data e ora UTC; JSON compresso LZFSE)
+    objects/     il contenuto dei file, salvato una volta sola anche se è in cento backup
+                 (nome = SHA-256 del contenuto; .lzfse compressi, .raw così come sono)
+    repo.json    informazioni sull'archivio
+
+I file non si leggono direttamente. Per riaverli usa BackupMe (Sfoglia backup…) oppure,
+su qualsiasi Mac con macOS 14 o successivo, anche senza BackupMe, lo script RIPRISTINO.command:
+
+1. Apri Terminale (Applicazioni › Utility).
+2. Scrivi "sh " (con lo spazio), trascina RIPRISTINO.command nella finestra e premi Invio:
+   vedi i computer e i loro backup.
+3. Ripeti aggiungendo computer, backup e cartella dove ripristinare, per esempio:
+
+   sh RIPRISTINO.command MacBook-1A2B3C 2026-11-05T10-00-00Z ~/Desktop/Ripristino
+
+Prima di scrivere qualsiasi cosa lo script controlla il backup e mostra un riepilogo: quali
+cartelle ricrea e dove, quanti file e quanti MB, lo spazio libero e cosa succederà. Poi chiede
+due conferme: rispondi "s" alla prima e scrivi RIPRISTINA alla seconda. Qualsiasi altra
+risposta annulla e non viene scritto nulla.
+Per usarlo in uno script, senza domande, aggiungi --si (in qualsiasi posizione):
+
+   sh RIPRISTINO.command --si MacBook-1A2B3C 2026-11-05T10-00-00Z ~/Desktop/Ripristino
+
+Lo script ricrea nella cartella scelta ogni cartella salvata nel backup (file, cartelle,
+link simbolici, permessi, date di modifica) e controlla il contenuto di ogni file.
+Non sovrascrive mai niente: se una cartella esiste già usa un nome nuovo ("progetto 2").
+Non modifica l'archivio.
+
+Con OneDrive i file vengono scaricati mentre lo script li legge: serve la connessione.
