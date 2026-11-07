@@ -36,6 +36,37 @@ import Testing
         #expect(try upgradeCheckIfNeeded(repository: repo, build: "1.0 (21)", defaults: defaults)?.isClean == true)
     }
 
+    @Test func newArchiveHasNothingToReport() throws {
+        let defaults = try #require(UserDefaults(suiteName: "UpgradeCheckTests-\(UUID().uuidString)"))
+        let repo = try Repository(destination: dest, computerName: "Mac") // kit written now: "mancante" would be a lie
+        #expect(try upgradeCheckIfNeeded(repository: repo, build: "1.0 (20)", defaults: defaults) == nil)
+        _ = try fresh()
+        #expect(try upgradeCheckIfNeeded(repository: repo, build: "1.0 (20)", defaults: defaults) == nil)
+    }
+
+    @Test func unreadableManifestIsNotDamagedAndChecksAgain() throws {
+        let id = try fresh()
+        chmod(manifest(id).path, 0) // as an offline cloud file: the read fails, the content is fine
+        defer { chmod(manifest(id).path, 0o644) }
+        let defaults = try #require(UserDefaults(suiteName: "UpgradeCheckTests-\(UUID().uuidString)"))
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let r = try #require(try upgradeCheckIfNeeded(repository: repo, build: "1.0 (20)", defaults: defaults))
+        #expect(!r.complete && r.attention.count == 1 && !r.attention[0].hasPrefix(BackupEngine.damagedPrefix), "\(r.attention)")
+        #expect(try upgradeCheckIfNeeded(repository: repo, build: "1.0 (20)", defaults: defaults) != nil) // not remembered
+        chmod(manifest(id).path, 0o644)
+        #expect(try upgradeCheckIfNeeded(repository: repo, build: "1.0 (20)", defaults: defaults)?.isClean == true)
+        #expect(try upgradeCheckIfNeeded(repository: repo, build: "1.0 (20)", defaults: defaults) == nil)
+    }
+
+    @Test func folderNamedTmpIsLeftWithItsContent() throws {
+        _ = try fresh()
+        let dir = root.appending(path: "objects/ab/cartella.tmp")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        write("importante", to: dir.appending(path: "importante.txt"))
+        _ = try check()
+        #expect(fm.fileExists(atPath: dir.appending(path: "importante.txt").path))
+    }
+
     @Test func oldKitIsRewrittenSayingBothVersions() throws {
         _ = try fresh()
         let old = RestoreKit.script.replacingOccurrences(of: "BackupMe-kit: \(RestoreKit.version)", with: "BackupMe-kit: 7")

@@ -43,7 +43,7 @@ Scritto alla creazione come `{"format":1,"id":"<UUID>","created":<secondi>}`. Po
 
 - **Archivio**: il campo `id` di `repo.json` (UUID).
 - **Backup (snapshot)**: data UTC nel formato `yyyy-MM-dd'T'HH-mm-ss'Z'`, locale `en_US_POSIX`, per esempio `2026-11-05T10-00-00Z` (`Snapshot.id(for:)`). Se esiste già un manifest con quell'id si aggiunge un secondo: un manifest al secondo, mai sovrascritto.
-  Un backup che non trova niente di cambiato e ha ancora il digest dell'ultimo manifest non ne scrive uno nuovo: riporta l'id di quello precedente.
+  Un backup che non trova niente di cambiato e ha ancora il digest dell'ultimo manifest, se quel manifest è ancora integro, non ne scrive uno nuovo: riporta l'id di quello precedente.
 - **Oggetto**: SHA-256 del contenuto originale (non compresso), 64 cifre esadecimali minuscole (`Repository.isHash`).
 
 ## Oggetti

@@ -332,7 +332,9 @@ public final class Repository {
                 // a locked leftover (cloned from a file locked in the Finder) would fail every cleanup. Flags belong to
                 // the inode: a hard link planted to a user's locked file is never unlocked
                 var st = stat()
-                if lstat(url.path, &st) == 0, st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 { lchflags(url.path, 0) }
+                // only files and links: this archive never makes a folder named .tmp, and one is not removed with what it holds
+                guard lstat(url.path, &st) == 0, [S_IFREG, S_IFLNK].contains(st.st_mode & S_IFMT) else { continue }
+                if st.st_mode & S_IFMT == S_IFREG, st.st_nlink == 1 { lchflags(url.path, 0) }
                 try fm.removeItem(at: url)
                 removed += 1
             }

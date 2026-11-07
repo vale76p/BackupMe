@@ -544,6 +544,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     /// The check after an update, with what only the app knows (login agent): in the Registro and in one notification
     /// that offers the full check, never started by itself (on OneDrive or iCloud it downloads the whole archive).
     private func reportUpgrade(_ u: UpgradeReport) {
+        // manifests not read (offline cloud files): logged, checked again at the next backup, notified once it completes
+        guard u.complete else { return Log.backup.error("Verifica dopo l'aggiornamento incompleta: \(u.attention.joined(separator: "; "))") }
         var u = u
         if launchAgentRepaired { u.fixed.append("Avvio al login riparato: puntava a una copia spostata o vecchia di BackupMe") }
         if SystemServices.loginItemDisabled {

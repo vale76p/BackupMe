@@ -78,6 +78,8 @@ public struct UpgradeReport: Equatable, Sendable {
     public var fixed: [String]
     /// Found and left as it is: nothing is deleted or followed, the user decides ("Controlla ora", "Elimina…").
     public var attention: [String]
+    /// false when some manifests couldn't be read at all (offline cloud files): the check runs again at the next backup.
+    public var complete = true
 
     public var isClean: Bool { fixed.isEmpty && attention.isEmpty }
 }
@@ -128,7 +130,7 @@ public func upgradeCheck(repository: Repository) throws -> UpgradeReport {
         }
 
         let snapshots = repository.root.appending(path: "snapshots", directoryHint: .isDirectory)
-        var unnamed: [String] = [], damaged: [String] = []
+        var unnamed: [String] = [], damaged: [String] = [], unread: [String] = []
         for name in try fm.contentsOfDirectory(atPath: snapshots.path).sorted() where !name.hasPrefix(".") {
             let id = String(name.dropLast(11))
             guard name.hasSuffix(".json.lzfse"), Snapshot.date(fromID: id) != nil,
@@ -136,7 +138,10 @@ public func upgradeCheck(repository: Repository) throws -> UpgradeReport {
             else { unnamed.append("snapshots/\(name)"); continue }
             Activity.beat()
             // the checksum as a stream; a manifest from before it (0.9.1 and earlier) is decoded whole
-            if !repository.snapshotIsIntact(id) { damaged.append(id) }
+            // unreadable is not damaged: a manifest only in the cloud, without network, would push to delete a sound backup
+            if !repository.snapshotIsIntact(id) {
+                if (try? Data(contentsOf: snapshots.appending(path: name))) == nil { unread.append(id) } else { damaged.append(id) }
+            }
         }
         if !damaged.isEmpty {
             let dates = damaged.map { Snapshot.date(fromID: $0)?.formatted(date: .abbreviated, time: .shortened) ?? $0 }
@@ -144,6 +149,12 @@ public func upgradeCheck(repository: Repository) throws -> UpgradeReport {
                 ? "il backup del \(dates[0]) non si legge e non si può ripristinare. Dopo «Controlla ora» lo elimini"
                 : "\(damaged.count) backup non si leggono e non si possono ripristinare (\(examples(dates))). Dopo «Controlla ora» li elimini")
                 + " da Impostazioni › Avanzate.")
+        }
+        if !unread.isEmpty {
+            r.complete = false
+            r.attention.append(unread.count == 1
+                ? "1 indice dei backup non si è potuto leggere (forse non ancora scaricato dal cloud): la verifica riparte al prossimo backup"
+                : "\(unread.count) indici dei backup non si sono potuti leggere (forse non ancora scaricati dal cloud): la verifica riparte al prossimo backup")
         }
         if !unnamed.isEmpty {
             r.attention.append("Elementi in snapshots/ con un nome che non è di un backup (\(unnamed.count)), lasciati dove sono: \(examples(unnamed))")
@@ -157,7 +168,9 @@ public func upgradeCheck(repository: Repository) throws -> UpgradeReport {
 public func upgradeCheckIfNeeded(repository: Repository, build: String, defaults: UserDefaults = .standard) throws -> UpgradeReport? {
     let key = "upgradeCheckedBuild-\(repository.root.path)"
     guard defaults.string(forKey: key) != build else { return nil }
+    // a new archive (first backup ever, or a new destination) holds nothing from an earlier version: nothing to report
+    if try repository.snapshotIDs().isEmpty { defaults.set(build, forKey: key); return nil }
     let report = try upgradeCheck(repository: repository)
-    defaults.set(build, forKey: key)
+    if report.complete { defaults.set(build, forKey: key) }
     return report
 }
