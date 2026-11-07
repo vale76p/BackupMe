@@ -6,8 +6,8 @@ import Testing
 /// Archives written by released versions, kept in Fixtures/ to pin format 1: each is the BackupMe folder (kit included)
 /// after two backups of the same source made with that version's BackupEngine and cleanup (`prune`), plus that
 /// version's local caches in `local/` (HashCache, references of the cleanup). `source/source-N.tar` is the source as
-/// it was at backup N (names, dates, permissions, link). Generated with the tags v0.8.0, v0.9.4 and 057e5ac (1.0-rc1);
-/// the fixtures are only read: every test works on a copy.
+/// it was at backup N (names, dates, permissions, link). Generated with the tags v0.8.0, v0.9.4 and 057e5ac (1.0-rc1),
+/// the source at /private/tmp/BackupMeFixture/src; the fixtures are only read: every test works on a copy.
 @Suite struct FormatFixtureTests {
     static let versions = ["0.8.0", "0.9.4", "1.0-rc1"]
     static let ids = ["2026-01-01T10-00-00Z", "2026-01-02T10-00-00Z"]
@@ -25,8 +25,9 @@ import Testing
         return (dir.appending(path: "dest"), dir.appending(path: "local"))
     }
 
-    /// The source as it was at backup `n` (1 or 2), extracted with its names, dates and permissions. pax, not tar:
-    /// bsdtar on macOS turns the composed names into decomposed ones.
+    /// The source as it was at backup `n` (1 or 2), extracted with its names, dates and permissions. The tars are
+    /// ustar (in its default pax format bsdtar stores composed names decomposed). The fixture's HashCache never
+    /// matches the extracted files: its key holds inode and ctime, which no extraction can give back.
     func source(_ n: Int) throws -> URL {
         let dir = tmp()
         let p = Process()
