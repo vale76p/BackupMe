@@ -121,9 +121,12 @@ public final class BackupEngine {
             var excluded: [String] = []
             var denied: [String] = []
             var entries: [Entry] = []
+            entries.reserveCapacity(total) // growing an array of a million entries copies it
             var newBytes: Int64 = 0
             var fileCount = 0
-            for var scan in scans {
+            // taken out one at a time: each source's scan is freed once stored, not kept until the manifest is written
+            while !scans.isEmpty {
+                var scan = scans.removeFirst()
                 var pass = try store(scan, isCancelled: isCancelled) { done += 1; progress(Double(done) / Double(total)) }
                 newBytes += pass.newBytes
                 // a commit during the pass may have stored refs pointing to objects read before it: read it again
@@ -209,6 +212,7 @@ public final class BackupEngine {
     private func store(_ scan: Scan, isCancelled: () -> Bool, tick: () -> Void) throws
         -> (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64, denied: [String]) {
         var r: (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64, denied: [String]) = ([], [], 0, 0, [])
+        r.entries.reserveCapacity(scan.found.count)
         for item in scan.found {
             if isCancelled() { throw BackupError.cancelled }
             // a pool per file: the compressed copies would otherwise stay in memory until the whole backup ends

@@ -1,4 +1,5 @@
 import Darwin
+import Compression
 import CryptoKit
 import Foundation
 
@@ -161,10 +162,7 @@ public final class Repository {
         var dirs = try fm.contentsOfDirectory(atPath: objectsDir.path)
         if let n = sampleDirs { dirs = Array(dirs.shuffled().prefix(n)) }
         for dir in dirs {
-            let d = objectsDir.appending(path: dir)
-            for (f, hash) in objects(in: dir) {
-                result[hash] = (try? fm.attributesOfItem(atPath: d.appending(path: f).path)[.size] as? Int64) ?? 0
-            }
+            for (hash, size) in objects(in: dir, sizes: true) { result[hash] = size }
         }
         return result
     }
@@ -172,19 +170,27 @@ public final class Repository {
     public func allObjectHashes() throws -> Set<String> {
         var result = Set<String>()
         for dir in try fm.contentsOfDirectory(atPath: objectsDir.path) {
-            for (_, hash) in objects(in: dir) { result.insert(hash) }
+            for (hash, _) in objects(in: dir) { result.insert(hash) }
         }
         return result
     }
 
     /// The objects in one fan-out folder: only `<hash>.<ext>` under its own prefix, never through a link. A link
     /// planted in objects/ would otherwise list files outside the archive as unreferenced objects, for cleanup.
-    private func objects(in dir: String) -> [(file: String, hash: String)] {
+    /// `sizes`: read in the same listing (getattrlistbulk), 8 times faster than a stat per object.
+    private func objects(in dir: String, sizes: Bool = false) -> [(hash: String, size: Int64)] {
         let d = objectsDir.appending(path: dir)
         guard (try? fm.attributesOfItem(atPath: d.path)[.type] as? FileAttributeType) == .typeDirectory else { return [] }
-        return ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).compactMap {
-            let hash = ($0 as NSString).deletingPathExtension
-            return Self.extensions.contains(($0 as NSString).pathExtension) && Self.isHash(hash) && hash.hasPrefix(dir) ? ($0, hash) : nil
+        func hash(_ name: String) -> String? {
+            let hash = (name as NSString).deletingPathExtension
+            return Self.extensions.contains((name as NSString).pathExtension) && Self.isHash(hash) && hash.hasPrefix(dir) ? hash : nil
+        }
+        // a pool per folder: the listing's URLs and names are otherwise kept until the whole backup or cleanup ends
+        return autoreleasepool {
+            guard sizes else { return ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).compactMap { hash($0).map { ($0, 0) } } }
+            return ((try? fm.contentsOfDirectory(at: d, includingPropertiesForKeys: [.fileSizeKey])) ?? []).compactMap { url in
+                hash(url.lastPathComponent).map { ($0, Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)) }
+            }
         }
     }
 
@@ -371,16 +377,34 @@ public final class Repository {
 
     /// Never overwrites an existing manifest: cached references assume manifests are immutable.
     public func writeSnapshot(_ s: Snapshot) throws {
-        let enc = JSONEncoder()
-        enc.dateEncodingStrategy = .secondsSince1970
-        enc.outputFormatting = .sortedKeys
-        let json = try enc.encode(s)
-        // a checksum as the first key: one byte flipped in the compressed file can still decode, into other hashes
-        // and names. Readers that don't know it (RIPRISTINO.command, older versions) skip an unknown key
-        let body = json.dropFirst() // without "{"
-        let sealed = Data(Self.checkPrefix.utf8) + Data(sha256Hex(Data(body)).utf8) + Data("\",".utf8) + body
-        // full flush: the manifest makes the backup exist, so everything before it must be on disk
-        try atomicWrite(try (sealed as NSData).compressed(using: .lzfse) as Data, to: snapshotURL(s.id), sync: .device, exclusive: true)
+        // a pool: the JSON and its compressed copy (hundreds of MB with a million files) are freed here, not at the end of the run
+        try autoreleasepool {
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .secondsSince1970
+            enc.outputFormatting = .sortedKeys
+            // entry by entry into one buffer, the same bytes as encoding the Snapshot whole: that built a tree of every
+            // entry (GBs with a million files) and the checksum took two more copies of the JSON
+            var head = s
+            head.entries = []
+            let skeleton = try enc.encode(head) // {"date":…,"entries":[],"id":…}: keys sorted, "entries" right after the date
+            guard let split = skeleton.range(of: Data(#""entries":["#.utf8))?.upperBound else {
+                throw EncodingError.invalidValue(s, .init(codingPath: [], debugDescription: "no entries key"))
+            }
+            // a checksum as the first key: one byte flipped in the compressed file can still decode, into other hashes
+            // and names. Readers that don't know it (RIPRISTINO.command, older versions) skip an unknown key
+            var sealed = Data(Self.checkPrefix.utf8) + Data(repeating: 0, count: 64) + Data("\",".utf8)
+            let body = sealed.count // what the checksum covers: the JSON without "{"
+            sealed.reserveCapacity(skeleton.count + s.entries.count * 256) // growing a buffer of hundreds of MB copies it
+            sealed.append(skeleton[skeleton.startIndex + 1 ..< split])
+            for (i, e) in s.entries.enumerated() {
+                if i > 0 { sealed.append(UInt8(ascii: ",")) }
+                try autoreleasepool { sealed.append(try enc.encode(e)) }
+            }
+            sealed.append(skeleton[split...])
+            sealed.replaceSubrange(Self.checkPrefix.utf8.count ..< body - 2, with: Data(sha256Hex(sealed[body...]).utf8))
+            // full flush: the manifest makes the backup exist, so everything before it must be on disk
+            try atomicWrite(try (sealed as NSData).compressed(using: .lzfse) as Data, to: snapshotURL(s.id), sync: .device, exclusive: true)
+        }
     }
 
     private static let checkPrefix = #"{"check":""#
@@ -400,9 +424,31 @@ public final class Repository {
     /// Whether a manifest can be read: its checksum, without decoding it, when it has one.
     public func snapshotIsIntact(_ id: String) -> Bool {
         autoreleasepool {
-            guard let json = try? sealedJSON(id) else { return false }
-            return json.starts(with: Data(Self.checkPrefix.utf8)) || (try? readSnapshot(id)) != nil
+            // decompressed and hashed as a stream: the JSON of a million entries is hundreds of MB, and this runs at
+            // every backup that finds nothing changed. nil: no checksum (before 0.9.2), decoded whole as before
+            guard let sealed = try? checksumMatches(id) else { return (try? readSnapshot(id)) != nil }
+            return sealed
         }
+    }
+
+    /// Whether the manifest's checksum matches its content; nil when it has none. Throws when it doesn't decompress.
+    private func checksumMatches(_ id: String) throws -> Bool? {
+        let raw = try Data(contentsOf: snapshotURL(id))
+        let prefix = Data(Self.checkPrefix.utf8), headSize = prefix.count + 66 // {"check":"<64 hex>",
+        var head = Data(), hasher = SHA256(), bodySize = 0
+        let filter = try OutputFilter(.decompress, using: .lzfse) { chunk in
+            guard let chunk else { return }
+            let fill = min(headSize - head.count, chunk.count)
+            head.append(chunk.prefix(fill))
+            hasher.update(data: chunk.dropFirst(fill))
+            bodySize += chunk.count - fill
+        }
+        try filter.write(raw)
+        try filter.finalize()
+        guard head.starts(with: prefix) else { return nil }
+        return head.count == headSize && bodySize > 0 && head.suffix(2) == Data("\",".utf8)
+            && String(decoding: head[prefix.count ..< prefix.count + 64], as: UTF8.self)
+            == hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     /// The manifest's JSON, its checksum verified when it has one.
@@ -413,7 +459,7 @@ public final class Repository {
         guard json.starts(with: prefix) else { return json }
         let start = json.startIndex + prefix.count
         guard json.count > prefix.count + 66, json[start + 64] == UInt8(ascii: "\""), json[start + 65] == UInt8(ascii: ","),
-              String(decoding: json[start ..< start + 64], as: UTF8.self) == sha256Hex(Data(json[(start + 66)...])) else {
+              String(decoding: json[start ..< start + 64], as: UTF8.self) == sha256Hex(json[(start + 66)...]) else {
             throw RepositoryError.damagedSnapshot(id)
         }
         return json
