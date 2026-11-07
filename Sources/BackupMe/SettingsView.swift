@@ -234,6 +234,8 @@ struct DestinationCard: View {
         var dates: [Date]
         /// false: the disk holding the destination is not plugged in, so the numbers say nothing
         var connected = true
+        /// false: the destination holds no archive of this Mac yet
+        var hasArchive = true
     }
 
     var body: some View {
@@ -300,22 +302,28 @@ struct DestinationCard: View {
         }
     }
 
-    /// The last load, shared with the menu bar panel: listing a big archive takes seconds, so it is redone only after
-    /// a backup (`key`); the free space is read again every time. Never what was read with the disk unplugged: it
-    /// would keep saying so, or "no backups", after plugging it in.
-    @MainActor private static var cache: (key: String, info: Info)?
+    /// The last load, shared with the menu bar panel and Spazio: listing a big archive takes seconds, so it is redone
+    /// only after a backup (`key`), and a load still running is awaited, not started again; the free space is read
+    /// again every time. Never what was read with the disk unplugged: it would keep saying so, or "no backups", after
+    /// plugging it in.
+    @MainActor private static var cache: (key: String, load: Task<Info, Never>)?
 
     @MainActor static func info(_ path: String, key: String) async -> Info {
         let url = URL(fileURLWithPath: path)
         guard await Task.detached(priority: .utility, operation: { Repository.isAvailable(destination: url) }).value else {
             return Info(available: nil, used: 0, dates: [], connected: false)
         }
-        if var c = cache?.info, cache?.key == key {
-            c.available = await Task.detached(priority: .utility) { available(path) }.value
-            return c
+        if let c = cache, c.key == key {
+            var info = await c.load.value
+            if info.connected {
+                info.available = await Task.detached(priority: .utility) { available(path) }.value
+                return info
+            }
         }
-        let info = await load(path)
-        if info.connected { cache = (key, info) }
+        let task = Task { await load(path) }
+        cache = (key, task)
+        let info = await task.value
+        if !info.connected, cache?.load == task { cache = nil }
         return info
     }
 
@@ -333,7 +341,7 @@ struct DestinationCard: View {
             let dates = ((try? repo?.snapshotIDs()) ?? []).compactMap(Snapshot.date(fromID:)).sorted()
             // checked after reading: a disk pulled out meanwhile left empty results
             return Info(available: available(path), used: (try? repo?.poolSize()) ?? 0, dates: dates,
-                        connected: Repository.isAvailable(destination: URL(fileURLWithPath: path)))
+                        connected: Repository.isAvailable(destination: URL(fileURLWithPath: path)), hasArchive: repo != nil)
         }.value
     }
 }
@@ -388,8 +396,14 @@ private struct SpaceSection: View {
         // after every backup too, like the destination card above: the two "occupati" must agree
         .task(id: "\(model.settings.destination ?? "")\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)\u{0}\(volumes)") { await refresh() }
         .onVolumeChange {
-            let now = model.settings.destination.map { Repository.isAvailable(destination: URL(fileURLWithPath: $0)) }
-            if now != connected { connected = now; volumes += 1 } // set at once: a second event doesn't start another read
+            let dest = model.settings.destination
+            Task {
+                // off the main thread: a destination on an SMB server that doesn't answer would freeze the window
+                let now = await Task.detached(priority: .utility) {
+                    dest.map { Repository.isAvailable(destination: URL(fileURLWithPath: $0)) }
+                }.value
+                if now != connected { connected = now; volumes += 1 } // compared after the read: two events, one reload
+            }
         }
         .confirmationDialog("Eliminare i backup più vecchi?",
                             isPresented: Binding(get: { pendingCap != nil }, set: { if !$0 { pendingCap = nil; capField += 1 } })) {
@@ -423,17 +437,12 @@ private struct SpaceSection: View {
         usageNote = nil
         noArchive = false
         guard let dest = model.settings.destination else { connected = nil; usageNote = "Nessuna destinazione"; return }
-        let archive = AppPaths.archiveName, url = URL(fileURLWithPath: dest)
-        let isConnected = await Task.detached(priority: .utility) { Repository.isAvailable(destination: url) }.value
+        // the same load as the destination card and the menu bar panel: the size of a big archive is counted once
+        let info = await DestinationCard.info(dest, key: DestinationCard.key(dest, model))
         guard !Task.isCancelled else { return } // a newer read has started
-        connected = isConnected
-        guard isConnected else { usageNote = DestinationCard.notConnected(dest); return }
-        let result = await Task.detached(priority: .utility) { () -> (Int64, Int)? in
-            guard let repo = try? Repository(destination: url, computerName: archive, create: false) else { return nil }
-            return ((try? repo.poolSize()) ?? 0, (try? repo.snapshotIDs().count) ?? 0)
-        }.value
-        guard !Task.isCancelled else { return }
-        if let result { usage = (result.0, result.1) } else { noArchive = true; usageNote = "Nessun backup ancora" }
+        connected = info.connected
+        guard info.connected else { usageNote = DestinationCard.notConnected(dest); return }
+        if info.hasArchive { usage = (info.used, info.dates.count) } else { noArchive = true; usageNote = "Nessun backup ancora" }
     }
 }
 

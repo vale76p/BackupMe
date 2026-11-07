@@ -44,7 +44,7 @@ enum RestoreKit {
 
     Questa cartella contiene un archivio per ogni Mac salvato:
 
-      <nome del Mac>-<id>/
+      <nome del Mac>-<id>-<utente>/  (creato da una versione precedente: <nome del Mac>-<id>/)
         snapshots/   un indice per ogni backup (nome = data e ora UTC; JSON compresso LZFSE)
         objects/     il contenuto dei file, salvato una volta sola anche se è in cento backup
                      (nome = SHA-256 del contenuto; .lzfse compressi, .raw così come sono)
@@ -58,10 +58,10 @@ enum RestoreKit {
        vedi i computer e i loro backup.
     3. Ripeti aggiungendo computer, backup e cartella dove ripristinare, per esempio:
 
-       sh RIPRISTINO.command MacBook-1A2B3C 2026-11-05T10-00-00Z ~/Desktop/Ripristino
+       sh RIPRISTINO.command MacBook-1A2B3C4D 2026-11-05T10-00-00Z ~/Desktop/Ripristino
 
     Usa il nome del computer come lo mostra l'elenco: negli archivi più recenti finisce anche con
-    l'utente del Mac (per esempio MacBook-1A2B3C-mario).
+    l'utente del Mac (per esempio MacBook-1A2B3C4D-mario).
 
     Prima di scrivere qualsiasi cosa lo script controlla il backup e mostra un riepilogo: quali
     cartelle ricrea e dove, quanti file e quanti MB, lo spazio libero e cosa succederà. Poi chiede
@@ -69,7 +69,7 @@ enum RestoreKit {
     risposta annulla e non viene scritto nulla.
     Per usarlo in uno script, senza domande, aggiungi --si (in qualsiasi posizione):
 
-       sh RIPRISTINO.command --si MacBook-1A2B3C 2026-11-05T10-00-00Z ~/Desktop/Ripristino
+       sh RIPRISTINO.command --si MacBook-1A2B3C4D 2026-11-05T10-00-00Z ~/Desktop/Ripristino
 
     Lo script ricrea nella cartella scelta ogni cartella salvata nel backup (file, cartelle,
     link simbolici, permessi, date di modifica) e controlla il contenuto di ogni file.
