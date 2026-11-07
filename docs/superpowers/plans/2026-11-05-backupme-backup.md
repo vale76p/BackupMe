@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-05-backupme-backup-design.md`
 
+**Stato (1.0):** piano eseguito. Ogni task ha il suo commit (Task 1 `65fcc19`, 2 `aec17e1`, 3 `bf0850b`, 4 `5ea8deb`, 5 `e849c5b`, 6 `1c5418c`, 7 `5045a53`, 8 `6d0b158`, 9 `92b088e`) con i file e i test che il task elenca. I passi "Run → FAIL" non lasciano traccia; sono spuntati perché i test che descrivono sono nel commit del task. Le quattro verifiche manuali (Task 6 step 6, Task 7 step 2, Task 8 step 3, Task 9 step 2) non hanno un esito registrato: restano vuote e rimandano a [#24](https://github.com/vale76p/BackupMe/issues/24). Diverse note di implementazione sono state superate dalle versioni successive (lock con `flock` invece di `{pid, host}`, LaunchAgent invece di `SMAppService`, nome dell'archivio): vedi "Differenze rispetto alla spec" nella spec e `docs/formato-archivio.md`.
+
 ## Global Constraints
 
 - macOS 14+ (`platforms: [.macOS(.v14)]`, `LSMinimumSystemVersion` 14.0).
@@ -87,9 +89,9 @@
   public func sha256Hex(_ data: Data) -> String
   ```
 
-- [ ] **Step 1: Crea `Package.swift`** con `platforms: [.macOS(.v14)]`, target `BackupCore` (library), `BackupMe` (executableTarget, dipende da `BackupCore`, per ora solo un `main.swift` vuoto o un `@main` minimo), `BackupCoreTests` (testTarget). Run: `swift build` → successo.
+- [x] **Step 1: Crea `Package.swift`** con `platforms: [.macOS(.v14)]`, target `BackupCore` (library), `BackupMe` (executableTarget, dipende da `BackupCore`, per ora solo un `main.swift` vuoto o un `@main` minimo), `BackupCoreTests` (testTarget). Run: `swift build` → successo.
 
-- [ ] **Step 2: Scrivi i test che falliscono** in `RepositoryTests.swift` (ognuno usa una cartella temporanea come destinazione):
+- [x] **Step 2: Scrivi i test che falliscono** in `RepositoryTests.swift` (ognuno usa una cartella temporanea come destinazione):
   ```swift
   @Test func missingDestinationThrows() {
       let dest = tmp().appending(path: "non-esiste")
@@ -116,9 +118,9 @@
   @Test func temporaryFilesRemoved() // crea objects/ab/x.tmp → removeTemporaryFiles() lo elimina
   ```
 
-- [ ] **Step 3: Run** `swift test --filter RepositoryTests` → FAIL (tipi non definiti).
+- [x] **Step 3: Run** `swift test --filter RepositoryTests` → FAIL (tipi non definiti).
 
-- [ ] **Step 4: Implementa `Models.swift` e `Repository.swift`.** Note:
+- [x] **Step 4: Implementa `Models.swift` e `Repository.swift`.** Note:
   - `init` non crea mai `destination`: se manca lancia `destinationMissing(destination.path)`; crea solo `BackupMe/<nome>/…` e `repo.json` (`{"format":1,"id":UUID,"created":Date}`) se assenti. Nel nome computer sostituisci `/` e `:` con `-`.
   - `hasObject` usa un `Set<String>` caricato pigramente elencando `objects/*/` (elencare non scarica i file da OneDrive) e aggiornato da put/delete.
   - Scrittura atomica: scrivi `<nome>.tmp` nella stessa cartella, poi `FileManager.moveItem`/`replaceItemAt`. Vale per oggetti, manifest e `repo.json`.
@@ -126,9 +128,9 @@
   - Lock: file JSON `{pid, host}`; è stale se l'host coincide e `kill(pid, 0) != 0 && errno == ESRCH`. Lock di un altro host: trattalo come vivo.
   - `poolSize` = somma delle dimensioni dei file in `objects/` e `snapshots/`.
 
-- [ ] **Step 5: Run** `swift test --filter RepositoryTests` → PASS.
+- [x] **Step 5: Run** `swift test --filter RepositoryTests` → PASS.
 
-- [ ] **Step 6: Commit** `git add Package.swift Sources Tests && git commit -m "feat(core): archivio con oggetti deduplicati, manifest e lock"`
+- [x] **Step 6: Commit** `git add Package.swift Sources Tests && git commit -m "feat(core): archivio con oggetti deduplicati, manifest e lock"`
 
 ---
 
@@ -157,7 +159,7 @@
   }
   ```
 
-- [ ] **Step 1: Scrivi i test che falliscono:**
+- [x] **Step 1: Scrivi i test che falliscono:**
   ```swift
   @Test func excludesByName() { let r = ExcludeRules(patterns: ExcludeRules.defaults + ["*.log"])
       #expect(r.excludes(name: "node_modules")); #expect(r.excludes(name: "x.log")); #expect(!r.excludes(name: ".git")) }
@@ -172,9 +174,9 @@
   @Test func cancelledLeavesNoSnapshot() // isCancelled = { true } → lancia .cancelled, snapshotIDs() vuoto
   ```
 
-- [ ] **Step 2: Run** `swift test --filter BackupEngineTests` → FAIL.
+- [x] **Step 2: Run** `swift test --filter BackupEngineTests` → FAIL.
 
-- [ ] **Step 3: Implementa.** Note:
+- [x] **Step 3: Implementa.** Note:
   - `ExcludeRules.excludes` = `fnmatch(pattern, name, 0) == 0` per un pattern qualsiasi.
   - La scansione usa `FileManager.enumerator(at:includingPropertiesForKeys:options:)` senza seguire symlink; i metadati (inode, size, mtime, mode, tipo) vengono da `lstat`. Una cartella esclusa viene saltata con `skipDescendants()`.
   - Per ogni file: hash dalla cache; se manca, leggi `Data(contentsOf:options: .mappedIfSafe)`, calcola l'hash, poi rifai `lstat`. Se size o mtime sono cambiati, riprova una volta; poi aggiungi un avviso e salta il file. Se `!hasObject` → `putObject`. *shortcut: il file intero viene caricato in memoria (mappato); file di molti GB → passare alla lettura a blocchi.*
@@ -182,9 +184,9 @@
   - Tutto il run sta dentro `repository.withLock`. Il manifest si scrive per ultimo; `isCancelled` va controllato a ogni file. `cache.save()` dopo il manifest.
   - Progresso = file elaborati / file contati in una prima passata di sola enumerazione.
 
-- [ ] **Step 4: Run** `swift test --filter BackupEngineTests` → PASS.
+- [x] **Step 4: Run** `swift test --filter BackupEngineTests` → PASS.
 
-- [ ] **Step 5: Commit** `git commit -am "feat(core): motore di backup con esclusioni e cache degli hash"` (aggiungi prima i file nuovi).
+- [x] **Step 5: Commit** `git commit -am "feat(core): motore di backup con esclusioni e cache degli hash"` (aggiungi prima i file nuovi).
 
 ---
 
@@ -203,7 +205,7 @@
   public func isBackupDue(lastSuccess: Date?, intervalHours: Int, now: Date) -> Bool
   ```
 
-- [ ] **Step 1: Scrivi i test che falliscono** (calendario gregoriano, fuso `Europe/Rome`, `firstWeekday = 2`; `now` = 2026-11-05 12:00):
+- [x] **Step 1: Scrivi i test che falliscono** (calendario gregoriano, fuso `Europe/Rome`, `firstWeekday = 2`; `now` = 2026-11-05 12:00):
   ```swift
   @Test func keepsAllWithin24h() // snapshot ogni ora per le ultime 24 h → tutti tenuti
   @Test func keepsLastPerDay() // 3 snapshot il 2026-11-01 (09, 13, 18) → tenuto solo quello delle 18
@@ -217,9 +219,9 @@
   ```
   Nel test `dropsDailyBeyondNDays` scrivi l'asserzione esatta: con `days = 2` le finestre giornaliere sono oggi (5 nov) e ieri (4 nov). Snapshot del 4 nov alle 18 e del 1 nov alle 18, entrambi oltre le 24 h, e uno del 5 nov alle 11 → tenuti 5 nov e 4 nov, scartato 1 nov.
 
-- [ ] **Step 2: Run** `swift test --filter RetentionTests` → FAIL.
+- [x] **Step 2: Run** `swift test --filter RetentionTests` → FAIL.
 
-- [ ] **Step 3: Implementa `snapshotsToKeep`:**
+- [x] **Step 3: Implementa `snapshotsToKeep`:**
   ```
   keep = {id con date più recente} ∪ {id con now - date < 24h}
   per (componente, N) in [(.day, days), (.weekOfYear, weeks), (.month, months)] con N > 0:
@@ -228,9 +230,9 @@
   ```
   `isBackupDue` = `lastSuccess == nil || now - lastSuccess >= intervalHours * 3600`.
 
-- [ ] **Step 4: Run** `swift test --filter RetentionTests` → PASS.
+- [x] **Step 4: Run** `swift test --filter RetentionTests` → PASS.
 
-- [ ] **Step 5: Commit** `git commit -m "feat(core): retention giornaliera/settimanale/mensile e calcolo scadenza"`
+- [x] **Step 5: Commit** `git commit -m "feat(core): retention giornaliera/settimanale/mensile e calcolo scadenza"`
 
 ---
 
@@ -248,7 +250,7 @@
   public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int64?, now: Date, calendar: Calendar = .current) throws -> PruneResult
   ```
 
-- [ ] **Step 1: Scrivi i test che falliscono:**
+- [x] **Step 1: Scrivi i test che falliscono:**
   ```swift
   @Test func deletesExpiredSnapshotsAndTheirObjects() // 2 backup con contenuti diversi a date distanti; policy che tiene solo il recente → il vecchio snapshot e l'oggetto usato solo da lui vengono eliminati; quello condiviso resta
   @Test func orphanObjectsFromInterruptedBackupRemoved() // putObject senza manifest + file .tmp → prune li elimina entrambi
@@ -257,13 +259,13 @@
   ```
   I dati di test (file casuali da 1 MB) si creano con `BackupEngine.run` usando un `now` diverso per ogni run.
 
-- [ ] **Step 2: Run** `swift test --filter PrunerTests` → FAIL.
+- [x] **Step 2: Run** `swift test --filter PrunerTests` → FAIL.
 
-- [ ] **Step 3: Implementa `prune`:** dentro `withLock`: elimina gli snapshot non tenuti da `snapshotsToKeep`; poi la GC, cioè raggiungibili = unione degli hash di tutti i manifest rimasti, e si eliminano gli oggetti in `allObjectHashes()` non raggiungibili, più `removeTemporaryFiles()`; poi, se `capBytes != nil` e `poolSize > cap` e ci sono più snapshot, elimina il più vecchio, rifai la GC e ripeti. `overCap = poolSize > cap` alla fine.
+- [x] **Step 3: Implementa `prune`:** dentro `withLock`: elimina gli snapshot non tenuti da `snapshotsToKeep`; poi la GC, cioè raggiungibili = unione degli hash di tutti i manifest rimasti, e si eliminano gli oggetti in `allObjectHashes()` non raggiungibili, più `removeTemporaryFiles()`; poi, se `capBytes != nil` e `poolSize > cap` e ci sono più snapshot, elimina il più vecchio, rifai la GC e ripeti. `overCap = poolSize > cap` alla fine.
 
-- [ ] **Step 4: Run** `swift test --filter PrunerTests` → PASS.
+- [x] **Step 4: Run** `swift test --filter PrunerTests` → PASS.
 
-- [ ] **Step 5: Commit** `git commit -m "feat(core): pulizia oggetti orfani e tetto del pool"`
+- [x] **Step 5: Commit** `git commit -m "feat(core): pulizia oggetti orfani e tetto del pool"`
 
 ---
 
@@ -289,7 +291,7 @@
   }
   ```
 
-- [ ] **Step 1: Scrivi i test che falliscono** (`trash` iniettato: sposta in una cartella temporanea, così i test non toccano il Cestino vero):
+- [x] **Step 1: Scrivi i test che falliscono** (`trash` iniettato: sposta in una cartella temporanea, così i test non toccano il Cestino vero):
   ```swift
   @Test func restoredNameFormat() { let d = /* 2026-11-05 10:00 Europe/Rome */
       #expect(Restorer.restoredName("README.md", date: d) == "README (ripristinato 5 nov 10.00).md")
@@ -304,18 +306,18 @@
   @Test func statusDetection() // file invariato → .unchanged; modificato → .modified; cancellato → .missing
   ```
 
-- [ ] **Step 2: Run** `swift test --filter RestorerTests` → FAIL.
+- [x] **Step 2: Run** `swift test --filter RestorerTests` → FAIL.
 
-- [ ] **Step 3: Implementa.** Note:
+- [x] **Step 3: Implementa.** Note:
   - Le voci da ripristinare sono quelle con `source` uguale e `path` uguale oppure che inizia con `path + "/"`.
   - Destinazione: `.besideOriginal` → stessa cartella dell'originale con `restoredName` (data = `snapshot.date`); `.replace` → `trash` sull'originale se esiste, poi scrive al suo posto; `.into(dir)` → `dir/<ultimo componente>`.
   - Ordine di scrittura: prima le cartelle (permessi temporanei 0700), poi file e symlink, poi permessi e mtime delle cartelle dalla più profonda alla più superficiale.
   - `readObject` verifica già l'hash; dopo la scrittura imposta `mode` e `mtime` con `FileManager.setAttributes` (per i symlink usa `lchmod`/`lutimes`, oppure ignora mode e mtime).
   - `restoredName` usa un `DateFormatter` con `locale it_IT`, `dateFormat "d MMM HH.mm"`, fuso corrente; estensione = `(name as NSString).pathExtension`.
 
-- [ ] **Step 4: Run** `swift test --filter RestorerTests` → PASS; poi `swift test` tutto → PASS.
+- [x] **Step 4: Run** `swift test --filter RestorerTests` → PASS; poi `swift test` tutto → PASS.
 
-- [ ] **Step 5: Commit** `git commit -m "feat(core): ripristino senza sovrascrittura, versioni e stato file"`
+- [x] **Step 5: Commit** `git commit -m "feat(core): ripristino senza sovrascrittura, versioni e stato file"`
 
 ---
 
@@ -350,29 +352,29 @@
   }
   ```
 
-- [ ] **Step 1: Crea `Resources/Info.plist`** con `CFBundleIdentifier` `com.vale76p.BackupMe`, `CFBundleExecutable` `BackupMe`, `CFBundleName` `BackupMe`, `CFBundlePackageType` `APPL`, `CFBundleShortVersionString` `0.1.0`, `CFBundleVersion` `1`, `LSUIElement` true, `LSMinimumSystemVersion` `14.0`.
+- [x] **Step 1: Crea `Resources/Info.plist`** con `CFBundleIdentifier` `com.vale76p.BackupMe`, `CFBundleExecutable` `BackupMe`, `CFBundleName` `BackupMe`, `CFBundlePackageType` `APPL`, `CFBundleShortVersionString` `0.1.0`, `CFBundleVersion` `1`, `LSUIElement` true, `LSMinimumSystemVersion` `14.0`.
 
-- [ ] **Step 2: Crea `scripts/build-app.sh`** (`set -euo pipefail`): `swift build -c release --product BackupMe`; ricrea `build/BackupMe.app/Contents/{MacOS,Resources}`; copia l'eseguibile e `Info.plist`; `codesign --force --sign - build/BackupMe.app`; con `--install` sostituisce `~/Applications/BackupMe.app` (crea `~/Applications` se manca; prima chiude l'app con `pkill -x BackupMe || true`). Aggiungi `build/` al `.gitignore`.
+- [x] **Step 2: Crea `scripts/build-app.sh`** (`set -euo pipefail`): `swift build -c release --product BackupMe`; ricrea `build/BackupMe.app/Contents/{MacOS,Resources}`; copia l'eseguibile e `Info.plist`; `codesign --force --sign - build/BackupMe.app`; con `--install` sostituisce `~/Applications/BackupMe.app` (crea `~/Applications` se manca; prima chiude l'app con `pkill -x BackupMe || true`). Aggiungi `build/` al `.gitignore`.
 
-- [ ] **Step 3: Implementa `AppModel`:**
+- [x] **Step 3: Implementa `AppModel`:**
   - Il backup gira in un `Task.detached(priority: .utility)`, che crea `Repository`, `HashCache` (`Application Support/BackupMe/hashcache-<computer>.json`) e `BackupEngine`, esegue `run`, poi `prune` con `capBytes = capGB * 1e9`. Status e history si aggiornano sul main actor. Un solo backup alla volta; `cancelBackup` imposta il flag letto da `isCancelled`.
   - Pianificatore: un `Timer` ogni 60 s chiama `backupNow()` se `!paused && isBackupDue(...)`; all'avvio fa lo stesso controllo; su `NSWorkspace.didWakeNotification` lo ripete dopo 60 s.
   - Destinazione mancante o sorgenti invalide (`BackupEngine.validate`) → `.failed("Destinazione non trovata: …")`, e notifica.
 
-- [ ] **Step 4: Implementa `SystemServices.swift`:**
+- [x] **Step 4: Implementa `SystemServices.swift`:**
   - `notify(title:body:)` tramite `UNUserNotificationCenter`, con permesso chiesto al primo avvio. Si notifica in tre casi: errore di un backup; `overCap` ("Il tetto è troppo basso per le cartelle selezionate"); nessun backup riuscito da 3 giorni, al massimo una volta al giorno.
   - `setLaunchAtLogin(_ on: Bool) throws` usa `SMAppService.mainApp.register()/unregister()`. Se fallisce, scrive o rimuove `~/Library/LaunchAgents/com.vale76p.BackupMe.plist` (`ProgramArguments` = percorso dell'eseguibile nel bundle, `RunAtLoad` true) e lo carica o scarica con `launchctl bootstrap|bootout gui/$UID`.
 
-- [ ] **Step 5: Implementa `BackupMeApp.swift`:** `MenuBarExtra` con icona di sistema (`externaldrive` a riposo, `arrow.triangle.2.circlepath` in corso, `exclamationmark.triangle` in caso di errore), stile `.menu`. Voci:
+- [x] **Step 5: Implementa `BackupMeApp.swift`:** `MenuBarExtra` con icona di sistema (`externaldrive` a riposo, `arrow.triangle.2.circlepath` in corso, `exclamationmark.triangle` in caso di errore), stile `.menu`. Voci:
   - riga di stato: "Ultimo backup: oggi 10:00" / "Backup in corso… 42%" / "Errore: …"
   - "Esegui backup ora" (diventa "Interrompi backup" durante l'esecuzione)
   - "Sfoglia backup…" e "Impostazioni…": aprono le scene `Window` con id `restore` e `settings` (per ora vuote) tramite `openWindow` e `NSApp.activate`
   - "Sospendi backup" / "Riprendi backup"
   - "Esci"
 
-- [ ] **Step 6: Verifica:** `scripts/build-app.sh --install && open ~/Applications/BackupMe.app` → l'icona compare nella barra dei menu e il menu mostra le voci. Con le impostazioni vuote "Esegui backup ora" mostra un errore chiaro e non va in crash. `codesign -dv ~/Applications/BackupMe.app` → `Signature=adhoc`.
+- [ ] **Step 6: Verifica:** *(Non registrata: nessun esito scritto nel repository. Si rifà sulla rc1 in [#24](https://github.com/vale76p/BackupMe/issues/24).)* `scripts/build-app.sh --install && open ~/Applications/BackupMe.app` → l'icona compare nella barra dei menu e il menu mostra le voci. Con le impostazioni vuote "Esegui backup ora" mostra un errore chiaro e non va in crash. `codesign -dv ~/Applications/BackupMe.app` → `Signature=adhoc`.
 
-- [ ] **Step 7: Commit** `git commit -m "feat(app): barra dei menu, pianificatore, notifiche, build locale"`
+- [x] **Step 7: Commit** `git commit -m "feat(app): barra dei menu, pianificatore, notifiche, build locale"`
 
 ---
 
@@ -385,7 +387,7 @@
 **Interfaces:**
 - Consumes: `AppModel`, `AppSettings` (Task 6); `BackupEngine.validate`, `Repository.poolSize`, `snapshotIDs` (Task 1–2); `setLaunchAtLogin` (Task 6).
 
-- [ ] **Step 1: Implementa `SettingsView`** (`Form`, testi in italiano):
+- [x] **Step 1: Implementa `SettingsView`** (`Form`, testi in italiano):
   - **Cartelle**: lista con +/− (`NSOpenPanel`, solo cartelle, selezione multipla). Una sorgente rifiutata da `validate` mostra l'errore e non viene aggiunta.
   - **Destinazione**: percorso + "Scegli…". Se non è impostata, suggerisce il primo `~/Library/CloudStorage/OneDrive-*` trovato, con un pulsante "Usa OneDrive".
   - **Frequenza**: `Picker` 1/2/4/6/12/24 ore.
@@ -395,9 +397,9 @@
   - **Avvio al login**: `Toggle`; un errore viene mostrato sotto il toggle.
   - In fondo: "Spazio occupato: X GB · N backup", calcolato in background all'apertura.
 
-- [ ] **Step 2: Verifica manuale:** imposta come sorgente una cartella progetto di prova e come destinazione una cartella in `/private/tmp`. "Esegui backup ora" → lo stato diventa "Ultimo backup: oggi HH:MM" e nella destinazione compaiono `BackupMe/<Mac>/snapshots/*.json.lzfse`. Chiudi e riapri l'app → le impostazioni sono rimaste. Prova ad aggiungere come sorgente la destinazione stessa → rifiutata.
+- [ ] **Step 2: Verifica manuale:** *(Non registrata: nessun esito scritto nel repository. Si rifà sulla rc1 in [#24](https://github.com/vale76p/BackupMe/issues/24).)* imposta come sorgente una cartella progetto di prova e come destinazione una cartella in `/private/tmp`. "Esegui backup ora" → lo stato diventa "Ultimo backup: oggi HH:MM" e nella destinazione compaiono `BackupMe/<Mac>/snapshots/*.json.lzfse`. Chiudi e riapri l'app → le impostazioni sono rimaste. Prova ad aggiungere come sorgente la destinazione stessa → rifiutata.
 
-- [ ] **Step 3: Commit** `git commit -m "feat(app): finestra impostazioni"`
+- [x] **Step 3: Commit** `git commit -m "feat(app): finestra impostazioni"`
 
 ---
 
@@ -421,9 +423,9 @@
   }
   ```
 
-- [ ] **Step 1: Implementa `RestoreModel`.** I manifest si caricano in background, uno alla volta; si tengono in cache solo quelli già aperti, e la ricerca carica il resto con un indicatore di avanzamento.
+- [x] **Step 1: Implementa `RestoreModel`.** I manifest si caricano in background, uno alla volta; si tengono in cache solo quelli già aperti, e la ricerca carica il resto con un indicatore di avanzamento.
 
-- [ ] **Step 2: Implementa `RestoreView`** con `NavigationSplitView`:
+- [x] **Step 2: Implementa `RestoreView`** con `NavigationSplitView`:
   - **Toolbar**: picker Computer (solo se ce n'è più di uno), picker Cartella sorgente, campo di ricerca.
   - **Sidebar**: backup raggruppati in "Oggi", "Ieri", "Settimana scorsa" (ultimi 7 giorni), "Mesi precedenti", con l'ora o la data secondo il gruppo.
   - **Dettaglio**: breadcrumb del percorso; lista con icona, nome, dimensione, data ed etichetta da `Restorer.status` ("modificato" / "non più presente oggi"). Doppio clic su una cartella per entrarci. Durante una ricerca mostra i risultati con la data del backup.
@@ -433,7 +435,7 @@
     - "Ripristina": `.besideOriginal` per file e sottocartelle. Per la sorgente intera apre un dialogo con "Sostituisci" (`.replace`, con il testo "La versione attuale verrà spostata nel Cestino"), "Ripristina in…" e "Annulla".
   - Alla fine mostra in Finder il risultato (`NSWorkspace.activateFileViewerSelecting`); gli errori compaiono in un alert.
 
-- [ ] **Step 3: Verifica manuale** con la configurazione del Task 7:
+- [ ] **Step 3: Verifica manuale** *(Non registrata: nessun esito scritto nel repository. Si rifà sulla rc1 in [#24](https://github.com/vale76p/BackupMe/issues/24).)* con la configurazione del Task 7:
   1. Modifica un file e cancellane un altro nel progetto di prova, poi fai un secondo backup.
   2. In "Sfoglia backup…" il primo backup mostra il file modificato con "modificato" e quello cancellato con "non più presente oggi".
   3. "Ripristina" sul file cancellato → `nome (ripristinato …)` accanto all'originale, contenuto corretto.
@@ -441,7 +443,7 @@
   5. "Mostra versioni" sul file modificato → 2 versioni.
   6. Ripristino della sorgente intera con "Sostituisci" → la versione attuale finisce nel Cestino.
 
-- [ ] **Step 4: Commit** `git commit -m "feat(app): finestra di ripristino"`
+- [x] **Step 4: Commit** `git commit -m "feat(app): finestra di ripristino"`
 
 ---
 
@@ -450,17 +452,17 @@
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Scrivi `README.md`** con:
+- [x] **Step 1: Scrivi `README.md`** con:
   - requisiti: macOS 14+, Xcode o Command Line Tools;
   - build e installazione: `scripts/build-app.sh --install`;
   - primo avvio: permessi per cartelle e notifiche, scelta di sorgenti e destinazione;
   - dove sono i backup su OneDrive e come recuperarli da un altro Mac;
   - disinstallazione: chiudere l'app, rimuovere `~/Applications/BackupMe.app`, `~/Library/Application Support/BackupMe`, l'eventuale LaunchAgent; i backup su OneDrive restano.
 
-- [ ] **Step 2: Prova reale:** backup di una cartella progetto vera (con `.git` e `node_modules`) verso `~/Library/CloudStorage/OneDrive-…`.
+- [ ] **Step 2: Prova reale:** *(Non registrata: nessun esito scritto nel repository. Si rifà sulla rc1 in [#24](https://github.com/vale76p/BackupMe/issues/24).)* backup di una cartella progetto vera (con `.git` e `node_modules`) verso `~/Library/CloudStorage/OneDrive-…`.
   - Dopo la sincronizzazione i file compaiono nel web di OneDrive sotto `BackupMe/<Mac>/`, e `node_modules` non è nell'archivio.
   - Un secondo backup senza modifiche dura pochi secondi e non scrive oggetti nuovi (`newBytes == 0` nello storico).
   - Il ripristino di un file e di una cartella funziona.
   - Dopo un logout e un nuovo login, l'app si riavvia da sola.
 
-- [ ] **Step 3: Commit e push** `git commit -am "docs: README di installazione e uso" && git push`
+- [x] **Step 3: Commit e push** `git commit -am "docs: README di installazione e uso" && git push`
