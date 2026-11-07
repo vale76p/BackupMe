@@ -251,7 +251,7 @@ struct RestoreView: View {
         for r in model.app.history {
             guard let id = r.snapshotID, let made = Snapshot.date(fromID: id), abs(made.timeIntervalSince(r.date)) < 2 else { continue }
             // a partial backup (a folder unreadable, no room for some files) is marked too
-            info[id] = (r.newBytes, r.warnings.count + (r.error?.split(separator: "\n").count ?? 0))
+            info[id] = (r.newBytes, Restorer.boundedCount(r.warnings) + Restorer.boundedCount(r.error?.split(separator: "\n").map(String.init) ?? []))
         }
         return info
     }
@@ -834,7 +834,7 @@ private struct EntryInspector: View {
     let preview: (Entry) -> Void
     @State private var versions: [SearchHit]? // nil while loading
     @State private var picked: SearchHit?
-    /// Backups not yet read for versions: they are read only after "Cerca in tutti i backup".
+    /// Backups not yet read for versions: they are read only after "Cerca le versioni in tutti i backup".
     @State private var unread = 0
     @State private var searchAll = false
 
@@ -918,9 +918,8 @@ private struct EntryInspector: View {
                     }
                     .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Button("Cerca in tutti i backup") { searchAll = true }
+                    Button("Cerca le versioni in tutti i backup") { searchAll = true }
                         .help((unread == 1 ? "Legge l'altro backup" : "Legge gli altri \(unread) backup") + ": con molti file può richiedere qualche minuto")
-                        .accessibilityLabel("Cerca le versioni in tutti i backup")
                 }
             }
             HStack {

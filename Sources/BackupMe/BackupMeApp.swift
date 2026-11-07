@@ -167,7 +167,10 @@ private struct DestinationRow: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
         .help((path as NSString).abbreviatingWithTildeInPath)
         .accessibilityElement(children: .combine)
-        .task(id: "\(key)\u{0}\(volumes)") { info = await DestinationCard.info(path, key: key) }
+        .task(id: "\(key)\u{0}\(volumes)") {
+            let loaded = await DestinationCard.info(path, key: key)
+            if !Task.isCancelled { info = loaded } // a newer load has started: this one may be older
+        }
         .onVolumeChange { volumes += 1 }
     }
 
@@ -312,9 +315,11 @@ struct MenuContent: View {
     }
 
     private func warningsMenu(_ warnings: [String]) -> some View {
-        Menu {
+        // the engine's last "… e altri N avvisi" line is no warning: it stands for N more
+        let count = Restorer.boundedCount(warnings)
+        return Menu {
             ForEach(Array(warnings.prefix(15).enumerated()), id: \.offset) { Text($0.element) }
-            if warnings.count > 15 { Text("… e altri \(warnings.count - 15)") }
+            if warnings.count > 15 { Text("… e altri \(count - 15)") }
             Divider()
             Button("Copia tutti gli avvisi") {
                 NSPasteboard.general.clearContents()
@@ -325,13 +330,13 @@ struct MenuContent: View {
                 Text("Un problema dell'archivio resta finché Impostazioni › Avanzate › Controlla ora non lo trova integro")
             }
         } label: {
-            Label("\(warnings.count)", systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+            Label("\(count)", systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Avvisi dell'ultimo backup")
-        .accessibilityLabel("\(warnings.count) avvisi dell'ultimo backup")
+        .accessibilityLabel(count == 1 ? "1 avviso dell'ultimo backup" : "\(count) avvisi dell'ultimo backup")
     }
 
     private func tile(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {

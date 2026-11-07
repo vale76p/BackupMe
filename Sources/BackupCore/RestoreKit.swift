@@ -5,7 +5,7 @@ import Foundation
 enum RestoreKit {
     /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
-    static let version = 8
+    static let version = 9
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit. `base`: the BackupMe folder,
     /// opened without following links; a link under a kit file's name is replaced, never read or written through.
@@ -253,7 +253,10 @@ function run(argv) {
   })
   if (notes.length) out('\n' + notes.join('\n'))
   var warnings = Array.isArray(snapshot.warnings) ? snapshot.warnings : []
-  if (warnings.length) out('\nAvvisi del backup (' + warnings.length + '):\n  ' + warnings.join('\n  '))
+  // like Restorer.boundedCount: a last "… e altri N avvisi" line is no warning, it stands for N more
+  var more = warnings.length ? /^… e (?:altri (\d+)|un altro) /.exec(warnings[warnings.length - 1]) : null
+  var warned = more ? warnings.length - 1 + (more[1] ? +more[1] : 1) : warnings.length
+  if (warnings.length) out('\nAvvisi del backup (' + warned + '):\n  ' + warnings.join('\n  '))
   out('\nIn tutto: ' + count + ' file, ' + size(bytes) + '. Spazio libero nella destinazione: '
     + (free === undefined ? 'sconosciuto' : size(free)) + '.')
   if (free !== undefined && free < bytes) out('ATTENZIONE: lo spazio libero non basta, il ripristino si fermerebbe a metà.')
@@ -352,7 +355,7 @@ function run(argv) {
 
   plans.forEach(p => out('Ripristinato: ' + p.target))
   // folders missing or warnings in the backup are no success: said again at the end, and in the exit status for a script
-  problems = problems.concat(notes, warnings.length ? ['il backup ha ' + warnings.length + (warnings.length === 1 ? ' avviso' : ' avvisi') + ', vedi sopra'] : [])
+  problems = problems.concat(notes, warned ? ['il backup ha ' + warned + (warned === 1 ? ' avviso' : ' avvisi') + ', vedi sopra'] : [])
   if (problems.length) fail('\nProblemi (' + problems.length + '):\n' + problems.join('\n'))
 }
 """#

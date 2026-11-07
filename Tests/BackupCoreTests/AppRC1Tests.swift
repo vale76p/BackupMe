@@ -22,16 +22,18 @@ import Testing
         let patterns = ExcludeRules.defaults + [
             "*.log", "logs/", "/build", "apps/*/dist", ".git", nfc, "e\u{301}t\u{e9}", "[Tt]emp", "a\\*b", "?x",
             "dir//", "/", "  spaced  ", "*", "**/foo", "sub/", "/top/leaf", "Build", ".env*", "x/y/", "näme",
+            "\\.env", "a\\b", "\\build", "logs\\/old",
         ]
         let names = ExcludeRules.defaults + [
             nfc, nfd, nfc.lowercased(), nfd.uppercased(), "\u{e9}t\u{e9}", "e\u{301}te\u{301}", "build", "BUILD", "Build",
             ".git", ".gitignore", "a.log", "A.LOG", "logs", "temp", "Temp", "TEMP", "a*b", "a\\*b", "ax", "xx", "dir",
             "spaced", "  spaced  ", "foo", "dist", "sub", "top", "leaf", ".env", ".env.local", "y", "x", "na\u{308}me",
-            "n\u{e4}me", "file.txt", "", " ",
+            "n\u{e4}me", "file.txt", "", " ", "\\.env", "a\\b", "ab", "\\build", "old",
         ]
         let parents = ["", "apps/web", "top", "sub", "a/b", "x", nfd, nfc, ".git", "apps/web/.git", "logs"]
         var checked = 0
-        for set in [patterns, ExcludeRules.defaults, [], ["*"], ["/build", "apps/*/dist"], [nfc, nfd]] {
+        // each pattern alone too: in the full list "*" would answer first for most names
+        for set in [patterns, ExcludeRules.defaults, [], ["/build", "apps/*/dist"], [nfc, nfd]] + patterns.map({ [$0] }) {
             let rules = ExcludeRules(patterns: set)
             for name in names {
                 for parent in parents {
@@ -98,6 +100,43 @@ import Testing
         // the viewed one read first, a newer copy arriving later keeps it
         let late = Restorer.versions([found[0], found[3]], newestFirst: order, preferring: "s3")
         #expect(late.map(\.snapshotID) == ["s3"])
+        // a newer copy read first, the viewed one arriving later still names the row
+        let viewedLast = Restorer.versions([found[3], found[0]], newestFirst: order, preferring: "s3")
+        #expect(viewedLast.map(\.snapshotID) == ["s3"])
         #expect(Restorer.versions([], newestFirst: order).isEmpty)
+    }
+
+    @Test func boundedListsCountWhatTheyStandFor() {
+        let shown = (1...200).map { "avviso \($0)" }
+        #expect(Restorer.boundedCount(shown) == 200)
+        #expect(Restorer.boundedCount(shown + ["… e altri 50 avvisi"]) == 250)
+        #expect(Restorer.boundedCount(shown + ["… e un altro avviso"]) == 201)
+        #expect(Restorer.boundedCount(shown + ["… e altri 3 errori"]) == 203)
+        #expect(Restorer.boundedCount(["… e altri avvisi"]) == 1) // not a count: a warning like any other
+        #expect(Restorer.boundedCount([]) == 0)
+    }
+
+    /// The restore kit counts the same way: "… e altri 50 avvisi" is 50 warnings, not one.
+    @Test func kitCountsBoundedWarnings() throws {
+        let dest = tmp()
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let data = Data("x".utf8), d = Date(timeIntervalSince1970: 1_700_000_000)
+        _ = try repo.putObject(data, hash: sha256Hex(data))
+        try repo.writeSnapshot(Snapshot(date: d, sources: ["/x/progetto"], entries: [
+            Entry(source: "/x/progetto", path: "", kind: .directory, hash: nil, size: 0, mtime: d, mode: 0o755, linkTarget: nil),
+            Entry(source: "/x/progetto", path: "a.txt", kind: .file, hash: sha256Hex(data), size: 1, mtime: d, mode: 0o644, linkTarget: nil),
+        ], warnings: ["primo", "secondo", "… e altri 50 avvisi"]))
+        let p = Process(), pipe = Pipe()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = [dest.appending(path: "BackupMe/RIPRISTINO.command").path, "--si", "Mac", Snapshot.id(for: d),
+                       tmp().appending(path: "ripristino").path]
+        p.standardOutput = pipe
+        p.standardError = pipe
+        p.standardInput = FileHandle.nullDevice
+        try p.run()
+        let out = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        #expect(out.contains("Avvisi del backup (52)"), "\(out)")
+        #expect(out.contains("il backup ha 52 avvisi"), "\(out)")
     }
 }

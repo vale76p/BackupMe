@@ -63,7 +63,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
 
     var selected: Snapshot? { selectedID.flatMap { loaded[$0] } }
     /// Warnings of a backup already opened, from its manifest; nil while it isn't in memory.
-    func warningCount(_ id: String) -> Int? { loaded[id]?.warnings.count }
+    func warningCount(_ id: String) -> Int? { loaded[id].map { Restorer.boundedCount($0.warnings) } }
     var sources: [String] { selected?.sources ?? [] }
     var hasDestination: Bool { destination != nil }
     /// False while the disk holding the destination is not plugged in: the window says so, not "no backups".
@@ -91,9 +91,6 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         guard let dest = destination else {
             generation += 1; computers = []; snapshots = []; selectedID = nil; isLoading = false; return
         }
-        connected = Repository.isAvailable(destination: dest)
-        computers = Repository.computers(in: dest)
-        if !computers.contains(computer), let first = computers.first { computer = first; return }
         generation += 1
         let gen = generation
         searchTask?.cancel()
@@ -110,6 +107,14 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         selectedID = nil
         isLoading = true
         Task {
+            // off the main thread: a destination on an SMB server that doesn't answer would freeze the whole app
+            let (isConnected, list) = await Task.detached(priority: .userInitiated) {
+                (Repository.isAvailable(destination: dest), Repository.computers(in: dest))
+            }.value
+            guard gen == generation else { return }
+            connected = isConnected
+            computers = list
+            if !list.contains(computer), let first = list.first { computer = first; return } // reloads for it
             do {
                 let ids = try await withRepository { try $0.snapshotIDs() }
                 guard gen == generation else { return }
@@ -127,10 +132,12 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     /// without closing the window. The one being viewed stays selected while it exists.
     func refreshList() {
         guard let dest = destination, !isLoading else { return }
-        // the disk was plugged in or pulled out since: everything is read again
-        guard Repository.isAvailable(destination: dest) == connected else { reload(); return }
         let gen = generation
         Task {
+            let now = await Task.detached(priority: .utility) { Repository.isAvailable(destination: dest) }.value
+            guard gen == generation, !isLoading else { return }
+            // the disk was plugged in or pulled out since: everything is read again
+            guard now == connected else { reload(); return }
             guard let ids = try? await withRepository({ try $0.snapshotIDs() }), gen == generation else { return }
             let list = ids.reversed().compactMap { id in Snapshot.date(fromID: id).map { (id, $0) } }
             guard list.map(\.0) != snapshots.map(\.id) else { return }

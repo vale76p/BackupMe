@@ -256,12 +256,17 @@ struct DestinationCard: View {
         .padding(.vertical, 4)
         .help((path as NSString).abbreviatingWithTildeInPath)
         // reloaded after every backup: the span and the space change with it
-        .task(id: "\(Self.key(path, model))\u{0}\(volumes)") { info = await Self.info(path, key: Self.key(path, model)) }
+        .task(id: "\(Self.key(path, model))\u{0}\(volumes)") {
+            let loaded = await Self.info(path, key: Self.key(path, model))
+            if !Task.isCancelled { info = loaded } // a newer load has started: this one may be older
+        }
         .onVolumeChange { volumes += 1 }
     }
 
+    /// What the archive's size and backups depend on: a backup that failed may have cleaned up too, and deleting
+    /// damaged backups changes them as well.
     static func key(_ path: String, _ model: AppModel) -> String {
-        "\(path)\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)"
+        "\(path)\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)\u{0}\(model.lastReport?.date.timeIntervalSince1970 ?? 0)\u{0}\(model.deletions)"
     }
 
     static func notConnected(_ path: String) -> String { "Destinazione non collegata: \(title(path))" }
@@ -394,7 +399,7 @@ private struct SpaceSection: View {
             }
         }
         // after every backup too, like the destination card above: the two "occupati" must agree
-        .task(id: "\(model.settings.destination ?? "")\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)\u{0}\(volumes)") { await refresh() }
+        .task(id: "\(model.settings.destination.map { DestinationCard.key($0, model) } ?? "")\u{0}\(volumes)") { await refresh() }
         .onVolumeChange {
             let dest = model.settings.destination
             Task {
