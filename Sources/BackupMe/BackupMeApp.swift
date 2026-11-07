@@ -144,6 +144,7 @@ private struct DestinationRow: View {
     let model: AppModel
     let path: String
     @State private var info: DestinationCard.Info?
+    @State private var volumes = 0
 
     var body: some View {
         let key = DestinationCard.key(path, model)
@@ -166,11 +167,13 @@ private struct DestinationRow: View {
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
         .help((path as NSString).abbreviatingWithTildeInPath)
         .accessibilityElement(children: .combine)
-        .task(id: key) { info = await DestinationCard.info(path, key: key) }
+        .task(id: "\(key)\u{0}\(volumes)") { info = await DestinationCard.info(path, key: key) }
+        .onVolumeChange { volumes += 1 }
     }
 
     private var space: String {
         guard let info else { return "Calcolo dello spazio…" }
+        guard info.connected else { return "Destinazione non collegata" } // the name is the line above
         let f = { (n: Int64) in ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }
         return (info.available.map { "\(f($0)) liberi · " } ?? "") + "\(f(info.used)) di backup"
     }

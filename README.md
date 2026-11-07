@@ -25,7 +25,7 @@ BackupMe non chiede mai permessi di amministratore.
 scripts/build-app.sh --install
 ```
 
-Lo script compila, firma l'app, la copia in `~/Applications` e la riavvia. Per compilare bastano `Package.swift`, `Sources/`, `Resources/` e `scripts/build-app.sh`: `Tests/` e `docs/` servono solo allo sviluppo e si possono non copiare. Per aggiornare, rilancia lo stesso comando.
+Lo script compila, firma l'app, la copia in `~/Applications` e la riavvia. Per compilare bastano `Package.swift`, `Sources/`, `Resources/` e `scripts/build-app.sh`: `Tests/` e `docs/` servono solo allo sviluppo e si possono non copiare. Per aggiornare, scarica il codice nuovo (`git pull`) e rilancia lo stesso comando.
 
 **Permessi che non si perdono a ogni aggiornamento.** Con la firma ad-hoc predefinita ogni build è per macOS un'app nuova: l'accesso a Documenti/Scrivania può essere richiesto di nuovo, e finché non lo concedi i backup di quelle cartelle falliscono (il menu lo segnala). Per evitarlo crea una volta un certificato di firma del codice in *Accesso Portachiavi › Assistente certificato › Crea un certificato* (tipo "Firma codice") e compila con:
 
@@ -36,21 +36,21 @@ BACKUPME_SIGN_IDENTITY="Nome del certificato" scripts/build-app.sh --install
 ## Primo avvio
 
 1. Clicca l'icona nella barra dei menu e scegli **Impostazioni…**
-2. Aggiungi le cartelle da salvare e scegli la destinazione. Se c'è OneDrive, compare un pulsante **Usa OneDrive-…** per ogni account.
+2. Aggiungi le cartelle da salvare e scegli la destinazione. Se sul Mac c'è una sola cartella cloud (OneDrive, Dropbox, iCloud Drive…) compare il pulsante **Usa** con il suo nome; se ce ne sono più, per esempio OneDrive personale e aziendale, il menu **Usa una cartella cloud** le elenca tutte.
 3. Concedi i permessi che macOS chiede: notifiche, e accesso a Documenti/Scrivania se le cartelle sono lì.
 
 Il primo backup parte entro un minuto. Con **Esegui backup ora** lo avvii subito.
 
-BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchAgent (`~/Library/LaunchAgents/com.vale76p.BackupMe.plist`), quindi parte a ogni login e viene riavviato se va in crash, ma non dopo **Esci**. Si disattiva da **Impostazioni › Avvia al login**.
+BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchAgent (`~/Library/LaunchAgents/com.vale76p.BackupMe.plist`), quindi parte a ogni login e viene riavviato se va in crash, ma non dopo **Esci**. Si disattiva da **Impostazioni › Pianificazione › Avvia al login**.
 
 ### Come si comporta
 
-- **Backup parziale.** Se una cartella sorgente manca o non è leggibile, le altre vengono salvate lo stesso, ma il backup è segnato come non riuscito: notifica, icona di errore e nessuna pulizia dei backup vecchi finché il problema resta.
+- **Backup parziale.** Se una cartella sorgente manca o non è leggibile, le altre vengono salvate lo stesso, ma il backup è segnato come non riuscito: notifica e icona di errore. La pulizia dei backup vecchi continua secondo la conservazione, ma l'ultimo backup completo non viene mai eliminato finché il problema resta.
 - **Nessuna modifica, nessun upload.** Se dall'ultimo backup non è cambiato niente non viene scritto un nuovo indice su OneDrive.
 - **Esclusioni.** Un nome (es. `node_modules`) esclude le cartelle con quel nome; un pattern con `/` vale per il percorso dentro la cartella salvata (es. `apps/*/dist`); i pattern con `*` o che iniziano con `.` (es. `*.log`, `.DS_Store`) valgono anche per i file. Sono escluse anche le cartelle con un file `CACHEDIR.TAG`. Dentro `.git` non si esclude mai niente. **Impostazioni › Esclusioni** mostra le cartelle escluse nell'ultimo backup. Si possono escludere anche i file sopra una dimensione scelta (mai dentro `.git`).
 - **File senza permessi.** I file che macOS non lascia leggere ("non hai i privilegi necessari") vengono saltati ed elencati in **Impostazioni › Esclusioni** invece di comparire tra gli avvisi; si può disattivare. **Cancella avvisi** svuota gli avvisi dell'ultimo backup.
 - **Repository git coerenti.** Se durante il backup si fa un commit, la cartella viene riletta; se cambia ancora, un avviso chiede di ripetere il backup.
-- **Batteria, calore e rete.** I backup pianificati aspettano con Risparmio energetico, batteria sotto il 20%, Mac troppo caldo o su una rete a consumo (hotspot, Wi-Fi segnata «a consumo»), e a scelta per tutto il tempo a batteria, ma mai oltre 24 ore dall'ultimo riuscito. **Esegui backup ora** parte sempre.
+- **Batteria, calore e rete.** I backup pianificati aspettano con Risparmio energetico, batteria sotto il 20%, Mac troppo caldo o su una rete a consumo (hotspot dell'iPhone, rete cellulare, Wi-Fi con «Modalità dati ridotti» attiva; si può disattivare), e a scelta per tutto il tempo a batteria, ma mai oltre 24 ore dall'ultimo riuscito. **Esegui backup ora** parte sempre, tranne mentre **Controlla ora** rilegge l'archivio.
 - **Notifiche.** Problemi sempre; a scelta anche i backup con avvisi o ogni backup completato (**Impostazioni › Pianificazione**).
 - **Registro.** **Impostazioni › Registro** mostra avvii, esiti, rinvii ed errori, anche dopo un riavvio (`~/Library/Application Support/BackupMe/BackupMe.log`, ruotato a 1 MB). Gli stessi messaggi vanno nel registro di sistema.
 - **Cloud.** Se il client (OneDrive, Dropbox…) non carica i backup da più di 3 giorni, o segnala un errore, il pannello e una notifica lo dicono.
@@ -61,9 +61,13 @@ BackupMe gira come servizio dell'utente: al primo avvio si registra come LaunchA
 
 ```
 <destinazione>/BackupMe/<nome del Mac>-<id>/
+  repo.json    identità e formato dell'archivio
   objects/     contenuto dei file (nome = hash; .lzfse compressi, .raw così come sono)
   snapshots/   un indice per ogni backup
+  lock         impedisce a due backup dello stesso Mac di scrivere insieme
 ```
+
+**L'archivio non è cifrato:** chi può leggere la destinazione, o l'account cloud che la sincronizza, può leggere i file salvati, `.env` e chiavi comprese. Si salvano contenuto, permessi, data di modifica e symlink, ma non attributi estesi, ACL, tag del Finder e resource fork.
 
 `<id>` viene dall'identificativo hardware del Mac: due Mac con lo stesso nome non condividono mai l'archivio, e rinominare il Mac non ne crea uno nuovo.
 
@@ -98,7 +102,10 @@ Esci dall'app, poi:
 launchctl bootout gui/$(id -u)/com.vale76p.BackupMe 2>/dev/null
 rm -rf ~/Applications/BackupMe.app ~/Library/Application\ Support/BackupMe ~/Library/LaunchAgents/com.vale76p.BackupMe.plist
 defaults delete com.vale76p.BackupMe
+tccutil reset All com.vale76p.BackupMe
 ```
+
+`tccutil` toglie i permessi concessi (notifiche, Documenti/Scrivania). Se avevi spostato l'app in `/Applications`, cancella anche `/Applications/BackupMe.app`.
 
 I backup nella destinazione restano dove sono, insieme a `RIPRISTINO.command` e `LEGGIMI.txt` per ripristinarli senza l'app.
 
