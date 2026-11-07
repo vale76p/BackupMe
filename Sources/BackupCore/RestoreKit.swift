@@ -18,9 +18,11 @@ enum RestoreKit {
         var rewritten: [String] = []
         for (name, text, mode) in [("RIPRISTINO.command", script, 0o755), ("LEGGIMI.txt", readme, 0o644)] {
             let data = Data(text.utf8), existing = read(name, in: base)
+            var st = stat()
+            let present = fstatat(base, name, &st, AT_SYMLINK_NOFOLLOW) == 0
             guard existing != data, (try? Repository.atomicWrite(data, named: name, in: base, sync: .file, mode: mode_t(mode))) != nil
             else { continue }
-            let why = existing == nil ? "mancante"
+            let why = existing == nil ? (present ? "non era un file normale (un collegamento o simile)" : "mancante")
                 : old.map { $0 < version ? "della versione \($0)" : "modificato o danneggiato" }
                 ?? (installed == nil ? "modificato o danneggiato" : "senza versione (il primo kit) o danneggiato")
             rewritten.append("\(name) \(why): riscritto con la versione \(version) del kit di ripristino")

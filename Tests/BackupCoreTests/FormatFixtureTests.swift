@@ -127,6 +127,7 @@ import Testing
 
     /// A backup by the current code on the old archive, with the old local caches: no object copied again, the
     /// cleanup deletes nothing, the manifest keeps the old layout, and the kit saved by that version restores it.
+    /// The old HashCache is only read and converted here, never hit (see `source`): every file is hashed again.
     @Test(arguments: versions) func newBackupOnOldArchive(_ version: String) throws {
         let (dest, local) = try copy(version), name = Self.archive(version)
         let base = dest.appending(path: "BackupMe")

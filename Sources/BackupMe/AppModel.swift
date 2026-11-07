@@ -246,8 +246,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     func cancelBackup() { cancelFlag.withLock { $0 = true } }
 
     /// Reads back every backup and every file of this Mac's archive, from Impostazioni › Avanzate.
-    func checkArchiveNow() {
-        guard !isRunning, !workerActive, !checkWorkerActive, !deleting, checkProgress == nil, let dest = settings.destination else { return }
+    /// false when it couldn't start (a backup, a check or a deletion running, no destination).
+    @discardableResult
+    func checkArchiveNow() -> Bool {
+        guard !isRunning, !workerActive, !checkWorkerActive, !deleting, checkProgress == nil, let dest = settings.destination else { return false }
         checkProgress = 0
         checkWorkerActive = true
         checkResult = nil
@@ -283,6 +285,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 if self.settings.destination != dest { self.backupNow() }
             }
         }
+        return true
     }
 
     func cancelCheck() { checkCancel.withLock { $0 = true } }
@@ -548,12 +551,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         guard u.complete else { return Log.backup.error("Verifica dopo l'aggiornamento incompleta: \(u.attention.joined(separator: "; "))") }
         var u = u
         if launchAgentRepaired { u.fixed.append("Avvio al login riparato: puntava a una copia spostata o vecchia di BackupMe") }
+        launchAgentRepaired = false // reported once, not again for every destination or later update this session
         if SystemServices.loginItemDisabled {
             u.attention.append("Avvia al login è disattivato in Impostazioni di Sistema › Generali › Elementi login: BackupMe non parte da solo")
         }
-        let lines = u.fixed.map { "Corretto: \($0)" } + u.attention.map { "Da controllare: \($0)" }
-        let text = "Aggiornamento verificato: " + (lines.isEmpty ? "tutto a posto" : lines.joined(separator: "; "))
-        if u.attention.isEmpty { Log.backup.info(text) } else { Log.backup.error(text) }
+        // each item is a sentence of its own (some carry a colon): one Registro line each, a list in the notification
+        if u.isClean { Log.backup.info("Aggiornamento verificato: tutto a posto") }
+        u.fixed.forEach { Log.backup.info("Aggiornamento verificato, corretto. \($0)") }
+        u.attention.forEach { Log.backup.error("Aggiornamento verificato, da controllare. \($0)") }
+        let list = { (title: String, items: [String]) in items.isEmpty ? [] : [title] + items.map { "• \($0)" } }
+        let lines = list("Corretto", u.fixed) + list("Da controllare", u.attention)
         SystemServices.notify("Aggiornamento verificato",
                               (lines.isEmpty ? "Tutto a posto." : lines.joined(separator: "\n"))
                                   + "\nIl controllo completo rilegge tutto l'archivio: avvialo con Controlla ora.",

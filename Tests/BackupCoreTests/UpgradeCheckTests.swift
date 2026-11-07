@@ -90,6 +90,14 @@ import Testing
         #expect(try String(contentsOf: base.appending(path: "LEGGIMI.txt"), encoding: .utf8) == RestoreKit.readme)
     }
 
+    @Test func kitReplacedByLinkIsNotCalledMissing() throws {
+        _ = try fresh()
+        try fm.removeItem(at: base.appending(path: "LEGGIMI.txt"))
+        try fm.createSymbolicLink(atPath: base.appending(path: "LEGGIMI.txt").path, withDestinationPath: "/etc/hosts")
+        #expect(try check().fixed == ["LEGGIMI.txt non era un file normale (un collegamento o simile): riscritto con la versione \(RestoreKit.version) del kit di ripristino"])
+        #expect(try String(contentsOf: base.appending(path: "LEGGIMI.txt"), encoding: .utf8) == RestoreKit.readme)
+    }
+
     @Test func damagedManifestIsReportedNeverDeleted() throws {
         let id = try fresh()
         var raw = try Data(contentsOf: manifest(id))

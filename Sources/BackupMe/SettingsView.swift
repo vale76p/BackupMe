@@ -956,7 +956,7 @@ private struct ArchiveCheckSection: View {
                 }
             } else {
                 LabeledContent("Controllo completo") {
-                    Button("Controlla ora", action: model.checkArchiveNow)
+                    Button("Controlla ora") { model.checkArchiveNow() }
                         .disabled(model.isRunning || model.settings.destination == nil)
                 }
             }

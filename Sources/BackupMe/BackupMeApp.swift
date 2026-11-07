@@ -49,7 +49,12 @@ private struct MenuBarLabel: View {
                     switch action {
                     case .retry: model.backupNow()
                     case .settings: openSettings(); SystemServices.windowOpened()
-                    case .check: model.checkArchiveNow()
+                    case .check:
+                        // from a notification the Settings button isn't in sight: say why nothing happens
+                        if !model.checkArchiveNow() {
+                            SystemServices.notify("Controllo non avviato", "C'è un backup, un controllo o un'eliminazione in corso: "
+                                                  + "quando finisce, avvialo da Impostazioni › Avanzate › Controlla ora.", problem: false)
+                        }
                     }
                 }
                 // first run: nothing to back up yet, so the setup window opens by itself
