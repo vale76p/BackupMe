@@ -66,6 +66,8 @@ public final class HashCache {
         for k in unseen { items[k] = nil }
         guard changed || !unseen.isEmpty else { return }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // shortcut: rewritten whole when anything changed (~66 MB with a million files); keep it in the app and save
+        // it once a day if that is still too much for the SSD
         try autoreleasepool { try write() } // its buffers (tens of MB) freed now, not when the run ends
         changed = false
     }

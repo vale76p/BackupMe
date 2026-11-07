@@ -195,6 +195,8 @@ public final class Repository {
     }
 
     public func hasObject(_ hash: String) -> Bool {
+        // shortcut: the first call lists the whole archive (a set of every hash, ~100 MB with a million objects);
+        // check the object's file instead if that listing is too slow on a network destination
         if knownObjects == nil { knownObjects = (try? allObjectHashes()) ?? [] }
         return knownObjects!.contains(hash)
     }
