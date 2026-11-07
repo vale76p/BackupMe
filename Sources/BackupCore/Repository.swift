@@ -468,7 +468,11 @@ public final class Repository {
         guard destinationFD >= 0 else { throw POSIXError(.EBADF) }
         let base = try Self.childDirectory("BackupMe", in: destinationFD, create: create)
         defer { close(base) }
-        return try Self.childDirectory(computer, in: base, create: create)
+        let fd = try Self.childDirectory(computer, in: base, create: create)
+        // private files (~/.ssh) must not be readable by the other accounts of a shared disk or NAS; an archive made
+        // before is fixed too. Disks that ignore ownership refuse or ignore it
+        if create { fchmod(fd, 0o700) }
+        return fd
     }
 
     private func parentDirectory(of url: URL) throws -> Int32 {

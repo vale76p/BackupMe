@@ -143,4 +143,15 @@ import Testing
         }
         #expect(try repo.snapshotIDs() == [id], "browsing still works")
     }
+
+    // MARK: M7: permissions
+
+    @Test func archiveFolderIsPrivate() throws {
+        func mode() throws -> Int { try fm.attributesOfItem(atPath: dest.appending(path: "BackupMe/Mac").path)[.posixPermissions] as! Int }
+        _ = try Repository(destination: dest, computerName: "Mac")
+        #expect(try mode() == 0o700)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest.appending(path: "BackupMe/Mac").path)
+        _ = try Repository(destination: dest, computerName: "Mac") // an archive from before is fixed
+        #expect(try mode() == 0o700)
+    }
 }
