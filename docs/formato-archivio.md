@@ -49,10 +49,10 @@ Scritto alla creazione come `{"format":1,"id":"<UUID>","created":<secondi>}`. Po
 
 `objects/<prime 2 cifre>/<sha256>.<ext>`. Lo stesso contenuto si salva una volta sola, qualunque sia il numero di file, cartelle e backup che lo usano.
 
-- **`.lzfse`**: il contenuto compresso con `NSData.compressed(using: .lzfse)`. Si usa per i file sotto 32 MiB (`Repository.streamThreshold`) quando la compressione fa risparmiare almeno il 5%.
+- **`.lzfse`**: il contenuto compresso con `NSData.compressed(using: .lzfse)`. Si usa per i file sotto 32 MiB (`Repository.streamThreshold`) quando la compressione fa risparmiare più del 5% (compresso `< 95%` dell'originale).
 - **`.raw`**: il contenuto byte per byte. Si usa per i file vuoti, per quelli poco comprimibili e per tutti quelli da 32 MiB in su, che vengono copiati in streaming (con un clone APFS se si può) e verificati prima della rinomina.
 - In lettura si cerca prima `.lzfse`, poi `.raw`; il contenuto decompresso deve avere lo SHA-256 del nome, altrimenti `corruptObject`. Un oggetto danneggiato non viene mai cancellato in lettura.
-- Permessi: `0644` per gli oggetti compressi; quelli copiati in streaming tengono i permessi del file d'origine.
+- Permessi: `0644` per gli oggetti scritti dalla memoria (i `.lzfse` e i `.raw` sotto 32 MiB); quelli copiati in streaming tengono i permessi del file d'origine.
 
 ## Manifest
 
@@ -76,9 +76,9 @@ Il checksum copre quindi tutti i byte dal 77° in poi: 10 di `{"check":"`, 64 de
 | `date` | numero | Data del backup, secondi dal 1970. |
 | `sources` | [stringa] | Percorsi assoluti degli elementi salvati (cartelle o singoli file), anche quelli che in questo backup mancano. |
 | `entries` | [Entry] | Le voci salvate. |
-| `warnings` | [stringa] | Errori delle sorgenti (mancanti, illeggibili, spazio esaurito) seguiti dagli avvisi; al massimo 200 righe più una "… e altri N avvisi". |
+| `warnings` | [stringa] | Errori delle sorgenti (mancanti, illeggibili, spazio esaurito) seguiti dagli avvisi. Il limite di 200 righe vale su errori e avvisi insieme; le righe in più diventano una sola, "… e un altro avviso" o "… e altri N avvisi". |
 
-Non c'è un campo "parziale": un backup è parziale quando una voce di `sources` non ha voci in `entries`, oppure quando una cartella non si è potuta leggere. In entrambi i casi il motivo è in `warnings`.
+Non c'è un campo "parziale". Un backup è parziale in tre casi: una voce di `sources` non ha voci in `entries` (sorgente mancante o illeggibile), una cartella non si è potuta leggere, oppure lo spazio era esaurito e alcuni file non sono stati salvati, anche se la loro sorgente ha voci. In tutti e tre i casi il motivo è in `warnings`. Il contrario non vale: `warnings` non vuoto non vuol dire parziale, perché ci finiscono anche avvisi semplici (per esempio un file non leggibile o cambiato durante la lettura). Il kit chiama parziale solo il backup con cartelle mancanti; negli altri casi dice che il backup ha N avvisi.
 
 **Entry**:
 
@@ -89,7 +89,7 @@ Non c'è un campo "parziale": un backup è parziale quando una voce di `sources`
 | `kind` | `"file"` \| `"directory"` \| `"symlink"` | Tipo. Socket, FIFO e dispositivi non vengono salvati. |
 | `hash` | stringa, facoltativo | Solo per `file`: SHA-256 del contenuto, cioè il nome dell'oggetto. |
 | `size` | intero (Int64) | `st_size` dello `lstat`; ha senso solo per i file. |
-| `mtime` | numero | Data di modifica, secondi dal 1970 con i nanosecondi come decimali. |
+| `mtime` | numero | Data di modifica, secondi dal 1970 come Double (precisione di circa 0,2 µs, non i nanosecondi di `stat`). |
 | `mode` | intero (UInt16) | `st_mode & 0o7777`: permessi POSIX, compresi setuid, setgid e sticky. |
 | `linkTarget` | stringa, facoltativo | Solo per `symlink`: destinazione del collegamento così com'è scritta. |
 
