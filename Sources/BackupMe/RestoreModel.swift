@@ -63,6 +63,13 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     var selected: Snapshot? { selectedID.flatMap { loaded[$0] } }
     var sources: [String] { selected?.sources ?? [] }
     var hasDestination: Bool { destination != nil }
+    /// False while the disk holding the destination is not plugged in: the window says so, not "no backups".
+    private(set) var connected = true
+    /// "Destinazione non collegata: <name>" when there is a destination but its disk is not plugged in.
+    var notConnectedText: String? {
+        guard !connected, let path = app.settings.destination else { return nil }
+        return DestinationCard.notConnected(path)
+    }
     /// Comparing with this Mac's disk is meaningless for another computer's archive.
     var showsStatus: Bool { computer == AppPaths.archiveName }
 
@@ -81,6 +88,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         guard let dest = destination else {
             generation += 1; computers = []; snapshots = []; selectedID = nil; isLoading = false; return
         }
+        connected = Repository.isAvailable(destination: dest)
         computers = Repository.computers(in: dest)
         if !computers.contains(computer), let first = computers.first { computer = first; return }
         generation += 1
@@ -115,7 +123,9 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     /// Re-reads the list of backups only, keeping what is open: new backups, and ones cleaned up, show up
     /// without closing the window. The one being viewed stays selected while it exists.
     func refreshList() {
-        guard destination != nil, !isLoading else { return }
+        guard let dest = destination, !isLoading else { return }
+        // the disk was plugged in or pulled out since: everything is read again
+        guard Repository.isAvailable(destination: dest) == connected else { reload(); return }
         let gen = generation
         Task {
             guard let ids = try? await withRepository({ try $0.snapshotIDs() }), gen == generation else { return }

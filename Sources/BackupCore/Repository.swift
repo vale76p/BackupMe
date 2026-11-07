@@ -33,10 +33,7 @@ public final class Repository {
     public private(set) var repairedInfo = false
 
     public init(destination: URL, computerName: String, create: Bool = true) throws {
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDir), isDir.boolValue else {
-            throw RepositoryError.destinationMissing(destination.path)
-        }
+        guard Self.isAvailable(destination: destination) else { throw RepositoryError.destinationMissing(destination.path) }
         let safeName = computerName.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
         try Self.checkComponent(safeName)
         computer = safeName
@@ -72,6 +69,13 @@ public final class Repository {
         }
         // the BackupMe folder opened again without following links: a link swapped in since is never written through
         if let base = try? Self.childDirectory("BackupMe", in: destinationFD) { RestoreKit.install(in: base); close(base) }
+    }
+
+    /// The destination folder is there: false for a disk not plugged in (its folder under /Volumes is gone), so
+    /// "no backups" is never shown, or remembered, for an archive that is only out of reach.
+    public static func isAvailable(destination: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: destination.path, isDirectory: &isDir) && isDir.boolValue
     }
 
     /// The archive's identity, from repo.json: a different one means the archive was made again from nothing.

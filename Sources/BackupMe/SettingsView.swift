@@ -226,11 +226,14 @@ struct DestinationCard: View {
     let model: AppModel
     let path: String
     @State private var info: Info?
+    @State private var volumes = 0
 
     struct Info: Sendable {
         var available: Int64?
         var used: Int64
         var dates: [Date]
+        /// false: the disk holding the destination is not plugged in, so the numbers say nothing
+        var connected = true
     }
 
     var body: some View {
@@ -251,12 +254,15 @@ struct DestinationCard: View {
         .padding(.vertical, 4)
         .help((path as NSString).abbreviatingWithTildeInPath)
         // reloaded after every backup: the span and the space change with it
-        .task(id: Self.key(path, model)) { info = await Self.info(path, key: Self.key(path, model)) }
+        .task(id: "\(Self.key(path, model))\u{0}\(volumes)") { info = await Self.info(path, key: Self.key(path, model)) }
+        .onVolumeChange { volumes += 1 }
     }
 
     static func key(_ path: String, _ model: AppModel) -> String {
         "\(path)\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)"
     }
+
+    static func notConnected(_ path: String) -> String { "Destinazione non collegata: \(title(path))" }
 
     /// "TEST – Dropbox": the folder, then the cloud service it syncs with, or the disk it is on.
     static func title(_ path: String) -> String {
@@ -264,7 +270,8 @@ struct DestinationCard: View {
         let parts = url.pathComponents
         // the cloud service as "Usa una cartella cloud" names it, iCloud Drive and older clients included
         let cloud = CloudFolder.installed().first { path == $0.url.path || path.hasPrefix($0.url.path + "/") }
-        var place = cloud?.title ?? (try? url.resourceValues(forKeys: [.volumeLocalizedNameKey]))?.volumeLocalizedName ?? ""
+        var place = cloud?.title ?? (try? url.resourceValues(forKeys: [.volumeLocalizedNameKey]))?.volumeLocalizedName
+            ?? (parts.count > 2 && parts[1] == "Volumes" ? parts[2] : "") // a disk not plugged in has no volume to ask
         if cloud == nil, let i = parts.firstIndex(of: "CloudStorage"), i + 1 < parts.count {
             place = parts[i + 1].replacingOccurrences(of: "-", with: " ")
         }
@@ -273,6 +280,7 @@ struct DestinationCard: View {
 
     private var spaceLine: String {
         guard let info else { return "Calcolo dello spazio…" }
+        guard info.connected else { return "Destinazione non collegata" } // the name is the title above
         let f = { (n: Int64) in ByteCountFormatter.string(fromByteCount: n, countStyle: .file) }
         var parts: [String] = []
         if let a = info.available { parts.append("\(f(a)) disponibili") }
@@ -283,6 +291,7 @@ struct DestinationCard: View {
 
     private var backupsLine: String {
         guard let info else { return "Lettura dei backup…" }
+        guard info.connected else { return "Collegala per vedere spazio e backup" }
         let f = { (d: Date) in d.formatted(date: .numeric, time: .shortened) }
         switch info.dates.count {
         case 0: return "Nessun backup ancora"
@@ -292,16 +301,21 @@ struct DestinationCard: View {
     }
 
     /// The last load, shared with the menu bar panel: listing a big archive takes seconds, so it is redone only after
-    /// a backup (`key`); the free space is read again every time.
+    /// a backup (`key`); the free space is read again every time. Never what was read with the disk unplugged: it
+    /// would keep saying so, or "no backups", after plugging it in.
     @MainActor private static var cache: (key: String, info: Info)?
 
     @MainActor static func info(_ path: String, key: String) async -> Info {
+        let url = URL(fileURLWithPath: path)
+        guard await Task.detached(priority: .utility, operation: { Repository.isAvailable(destination: url) }).value else {
+            return Info(available: nil, used: 0, dates: [], connected: false)
+        }
         if var c = cache?.info, cache?.key == key {
             c.available = await Task.detached(priority: .utility) { available(path) }.value
             return c
         }
         let info = await load(path)
-        cache = (key, info)
+        if info.connected { cache = (key, info) }
         return info
     }
 
@@ -315,7 +329,9 @@ struct DestinationCard: View {
         return await Task.detached(priority: .utility) {
             let repo = try? Repository(destination: URL(fileURLWithPath: path), computerName: archive, create: false)
             let dates = ((try? repo?.snapshotIDs()) ?? []).compactMap(Snapshot.date(fromID:)).sorted()
-            return Info(available: available(path), used: (try? repo?.poolSize()) ?? 0, dates: dates)
+            // checked after reading: a disk pulled out meanwhile left empty results
+            return Info(available: available(path), used: (try? repo?.poolSize()) ?? 0, dates: dates,
+                        connected: Repository.isAvailable(destination: URL(fileURLWithPath: path)))
         }.value
     }
 }
@@ -324,6 +340,9 @@ private struct SpaceSection: View {
     @Bindable var model: AppModel
     @State private var usage: (bytes: Int64, count: Int)?
     @State private var usageNote: String?
+    @State private var volumes = 0
+    /// A cap waiting for the confirmation below.
+    @State private var pendingCap: Double?
 
     var body: some View {
         Section("Spazio") {
@@ -343,33 +362,67 @@ private struct SpaceSection: View {
             }
             Toggle("Limita spazio occupato", isOn: Binding(
                 get: { model.settings.capGB != nil },
-                set: { model.settings.capGB = $0 ? (model.settings.capGB ?? 50) : nil }))
+                set: { setCap($0 ? (model.settings.capGB ?? 50) : nil) }))
             if model.settings.capGB != nil {
                 LabeledContent("Tetto") {
                     HStack(spacing: 4) {
                         TextField("Tetto", value: Binding(get: { model.settings.capGB ?? 50 },
-                                                          set: { model.settings.capGB = max($0, 0.1) }),
+                                                          set: { setCap(max($0, 0.1)) }),
                                   format: .number)
                             .labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
+                            .accessibilityLabel("Tetto in GB")
                         Text("GB").foregroundStyle(.secondary)
                     }
                 }
             }
         }
         // after every backup too, like the destination card above: the two "occupati" must agree
-        .task(id: "\(model.settings.destination ?? "")\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)") { await refresh() }
+        .task(id: "\(model.settings.destination ?? "")\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)\u{0}\(volumes)") { await refresh() }
+        .onVolumeChange { volumes += 1 }
+        .confirmationDialog("Eliminare i backup più vecchi?",
+                            isPresented: Binding(get: { pendingCap != nil }, set: { if !$0 { pendingCap = nil } })) {
+            Button("Applica il tetto di \(Self.gb(pendingCap ?? 0))", role: .destructive) {
+                model.settings.capGB = pendingCap
+                pendingCap = nil
+            }
+            Button("Annulla", role: .cancel) {}
+        } message: {
+            Text("Occupati \(ByteCountFormatter.string(fromByteCount: usage?.bytes ?? 0, countStyle: .file)): alla prossima pulizia verranno eliminati i backup più vecchi, finché l'archivio non sta in \(Self.gb(pendingCap ?? 0)). L'ultimo backup resta sempre.")
+        }
+    }
+
+    private static func gb(_ cap: Double) -> String { ByteCountFormatter.string(fromByteCount: Int64(min(cap, 1_000_000) * 1e9), countStyle: .file) }
+
+    /// A cap lowered below what the backups take deletes the oldest ones at the next backup: asked first.
+    private func setCap(_ cap: Double?) {
+        if let cap, let usage, Double(usage.bytes) > cap * 1e9, cap < (model.settings.capGB ?? .infinity) {
+            pendingCap = cap
+        } else {
+            model.settings.capGB = cap
+        }
     }
 
     private func refresh() async {
         usage = nil
         usageNote = nil
         guard let dest = model.settings.destination else { usageNote = "Nessuna destinazione"; return }
-        let archive = AppPaths.archiveName
+        let archive = AppPaths.archiveName, url = URL(fileURLWithPath: dest)
         let result = await Task.detached(priority: .utility) { () -> (Int64, Int)? in
-            guard let repo = try? Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false) else { return nil }
+            guard let repo = try? Repository(destination: url, computerName: archive, create: false) else { return nil }
             return ((try? repo.poolSize()) ?? 0, (try? repo.snapshotIDs().count) ?? 0)
         }.value
-        if let result { usage = (result.0, result.1) } else { usageNote = "Nessun backup ancora" }
+        if let result { usage = (result.0, result.1); return }
+        let connected = await Task.detached(priority: .utility) { Repository.isAvailable(destination: url) }.value
+        usageNote = connected ? "Nessun backup ancora" : DestinationCard.notConnected(dest)
+    }
+}
+
+extension View {
+    /// A disk plugged in or pulled out: a destination on it appears or disappears.
+    func onVolumeChange(_ action: @escaping () -> Void) -> some View {
+        let center = NSWorkspace.shared.notificationCenter
+        return onReceive(center.publisher(for: NSWorkspace.didMountNotification)) { _ in action() }
+            .onReceive(center.publisher(for: NSWorkspace.didUnmountNotification)) { _ in action() }
     }
 }
 

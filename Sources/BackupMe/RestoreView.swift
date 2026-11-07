@@ -61,6 +61,7 @@ struct RestoreView: View {
             // after every backup, and when coming back to the app: the list may have changed meanwhile
             .onChange(of: model.app.lastReport?.date) { model.refreshList() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshList() }
+            .onVolumeChange { model.refreshList() } // a destination disk plugged in or pulled out
             .background {
                 Group {
                     Button("Cartella superiore", action: goUp).keyboardShortcut(.upArrow, modifiers: .command)
@@ -121,6 +122,9 @@ struct RestoreView: View {
                     } actions: {
                         SettingsLink { Text("Apri Impostazioni…") }
                     }
+                } else if let text = model.notConnectedText {
+                    ContentUnavailableView(text, systemImage: "externaldrive.badge.xmark",
+                                           description: Text("Collegala per sfogliare e ripristinare i backup."))
                 } else {
                     VStack(spacing: 0) {
                         if model.search.isEmpty, model.selected != nil, model.showsStatus {
@@ -203,7 +207,7 @@ struct RestoreView: View {
         .listStyle(.sidebar)
         .overlay {
             if model.isLoading, model.hasDestination { ProgressView() }
-            else if model.snapshots.isEmpty, model.hasDestination {
+            else if model.snapshots.isEmpty, model.hasDestination, model.notConnectedText == nil {
                 ContentUnavailableView("Nessun backup", systemImage: "externaldrive.badge.questionmark",
                                        description: Text("Compariranno qui dopo il primo salvataggio."))
             }
