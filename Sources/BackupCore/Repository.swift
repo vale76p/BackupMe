@@ -10,6 +10,8 @@ public enum RepositoryError: Error, Equatable {
     case newerFormat(Int)
     /// A manifest whose checksum or hashes don't match: that backup can't be trusted, so it isn't read.
     case damagedSnapshot(String)
+    /// The archive belongs to another account of this Mac (repo.json "owner"): see `claim(owner:)`.
+    case otherOwner
 }
 
 /// Archive layout: <destination>/BackupMe/<archive name>/{repo.json, objects/, snapshots/, lock}
@@ -559,7 +561,7 @@ public final class Repository {
         return unlinkat(dir, name, 0)
     }
 
-    private func atomicWrite(_ data: Data, to url: URL, sync: Sync, exclusive: Bool = false) throws {
+    func atomicWrite(_ data: Data, to url: URL, sync: Sync, exclusive: Bool = false) throws {
         let parent = try parentDirectory(of: url)
         defer { close(parent) }
         try Self.atomicWrite(data, named: url.lastPathComponent, in: parent, sync: sync, exclusive: exclusive)
