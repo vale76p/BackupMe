@@ -329,6 +329,11 @@ public final class BackupEngine {
             cloudOnly += 1
             return nil
         }
+        // never hashed or copied: it can't be written there, and isn't a full disk to retry every 15 minutes
+        if initial.size > repository.maxFileSize {
+            warnings.append("\(path): troppo grande per un disco FAT32 (al massimo 4 GB per file), non salvato")
+            return nil
+        }
         let url = URL(fileURLWithPath: path)
         var st = initial
         for attempt in 0..<2 {

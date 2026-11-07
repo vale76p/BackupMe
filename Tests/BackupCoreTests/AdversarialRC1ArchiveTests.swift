@@ -26,6 +26,53 @@ import Testing
 
     func lock(_ url: URL, _ on: Bool) { _ = try? fm.setAttributes([.immutable: on], ofItemAtPath: url.path) }
 
+    func hdiutil(_ args: String...) throws -> Int32 {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        p.arguments = args
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        p.waitUntilExit()
+        return p.terminationStatus
+    }
+
+    // MARK: A1 / A2 / B4: exFAT and FAT32
+
+    /// These volumes say 0 bytes free for important usage. The 33 MB file, locked in the Finder, is copied in chunks
+    /// (no clone across volumes) and verifies; on FAT32 a file over 4 GiB is a warning, not a failed backup.
+    @Test(arguments: ["ExFAT", "MS-DOS"]) func bigFilesOnFATFilesystems(fs: String) throws {
+        let dir = tmp(), mount = dir.appending(path: "vol"), image = dir.appending(path: "vol.dmg")
+        try fm.createDirectory(at: mount, withIntermediateDirectories: true)
+        try #require(try hdiutil("create", "-quiet", "-size", "80m", "-fs", fs, "-volname", "T", image.path) == 0)
+        try #require(try hdiutil("attach", "-quiet", "-nobrowse", "-mountpoint", mount.path, image.path) == 0)
+        defer { _ = try? hdiutil("detach", "-quiet", "-force", mount.path) }
+
+        let big = try bigFile("video.mov")
+        lock(big, true)
+        defer { lock(big, false) }
+        let huge = src.appending(path: "disco.img")
+        if fs == "MS-DOS" {
+            // sparse: never read, the size alone decides
+            #expect(fm.createFile(atPath: huge.path, contents: nil))
+            try FileHandle(forWritingTo: huge).truncate(atOffset: (1 << 32) + 1)
+        }
+        let repo = try Repository(destination: mount, computerName: "Mac")
+        #expect((repo.availableCapacity() ?? 0) > Repository.streamThreshold)
+        let report = try backup(repo)
+        #expect(report.error == nil, "\(report.error ?? "")")
+        let id = try #require(report.snapshotID)
+        let s = try repo.readSnapshot(id)
+        let hash = try #require(s.entries.first { $0.path == "video.mov" }?.hash)
+        #expect(try repo.verifyObject(hash))
+        if fs == "MS-DOS" {
+            #expect(report.warnings.contains { $0.hasPrefix(huge.path) && $0.contains("FAT32") }, "\(report.warnings)")
+            #expect(!s.entries.contains { $0.path == "disco.img" })
+        } else {
+            #expect(repo.maxFileSize == .max)
+        }
+    }
+
     // MARK: A2: files locked in the Finder
 
     @Test func lockedBigFileIsStoredAndRestored() throws {

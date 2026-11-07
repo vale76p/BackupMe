@@ -307,8 +307,18 @@ public final class Repository {
 
     /// Free space on the destination's volume, nil when the volume doesn't say.
     public func availableCapacity() -> Int64? {
-        (try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage
+        let values = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+        // exFAT, FAT32 and APFS mounted outside /Volumes say 0 for important usage: a big file would never fit
+        if let important = values?.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
+        return values?.volumeAvailableCapacity.map(Int64.init)
     }
+
+    /// The largest file the destination's filesystem can hold: 4 GiB - 1 on FAT32.
+    public private(set) lazy var maxFileSize: Int64 = {
+        // bits of the size as a signed number: 33 on FAT32, 64 on exFAT
+        let bits = pathconf(root.path, _PC_FILESIZEBITS)
+        return bits > 1 && bits < 64 ? (Int64(1) << (bits - 1)) - 1 : .max
+    }()
 
     public func poolSize() throws -> Int64 {
         try objectSizes().values.reduce(0, +) + snapshotSizes().values.reduce(0, +)
