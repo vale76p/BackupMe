@@ -158,11 +158,13 @@ public final class BackupEngine {
                 sourceErrors.append("Spazio esaurito nella destinazione: \(noRoom.count) file (\(size)) non \(noRoom.count == 1 ? "salvato" : "salvati") in questo backup")
             }
             // bounded like the excluded list: 400k cloud files offline would mean MBs in every report and manifest
-            let error = sourceErrors.isEmpty ? nil : Self.bounded(sourceErrors, "errori").joined(separator: "\n")
-            warnings = Self.bounded(warnings, "avvisi")
+            let error = sourceErrors.isEmpty ? nil : Self.bounded(sourceErrors, "errori", "errore").joined(separator: "\n")
+            // bounded once for the report and once for the manifest, both from the whole list: bounding the bounded
+            // list again said "altri 1 avvisi"
+            var shown = Self.bounded(warnings, "avvisi", "avviso")
             func report(_ id: String?) -> BackupReport {
                 BackupReport(snapshotID: id, date: now, duration: Date().timeIntervalSince(start), fileCount: fileCount,
-                             newBytes: newBytes, warnings: warnings, error: id == nil ? (error ?? "Nessun file da salvare") : error,
+                             newBytes: newBytes, warnings: shown, error: id == nil ? (error ?? "Nessun file da salvare") : error,
                              excluded: Array(excluded.prefix(Self.excludedLimit)),
                              skipped: denied.isEmpty ? nil : Array(denied.prefix(Self.excludedLimit)),
                              cloudOnly: cloudOnly == 0 ? nil : cloudOnly)
@@ -177,14 +179,14 @@ public final class BackupEngine {
                     try? cache.save()
                     return report(last.id)
                 }
-                warnings.append("\(Self.damagedPrefix) il backup del \(Snapshot.date(fromID: last.id)?.formatted(date: .abbreviated, time: .shortened) ?? last.id) non si legge più e non si può ripristinare: i file sono stati salvati in un backup nuovo. Dopo «Controlla ora» lo elimini da Impostazioni › Avanzate.")
+                shown.append("\(Self.damagedPrefix) il backup del \(Snapshot.date(fromID: last.id)?.formatted(date: .abbreviated, time: .shortened) ?? last.id) non si legge più e non si può ripristinare: i file sono stati salvati in un backup nuovo. Dopo «Controlla ora» lo elimini da Impostazioni › Avanzate.")
             }
             var date = now
             while repository.snapshotExists(Snapshot.id(for: date)) { date += 1 } // one manifest per second, never overwritten
             // the manifest says the backup is partial too: the kit and other Macs read only that. Not the damaged
             // older backup: it is about another one, this backup is complete without it
             let snapshot = Snapshot(date: date, sources: sources.map(\.path), entries: entries,
-                                    warnings: Self.bounded(sourceErrors + warnings.filter { !$0.hasPrefix(Self.damagedPrefix) }, "avvisi"))
+                                    warnings: Self.bounded(sourceErrors + warnings, "avvisi", "avviso"))
             try repository.writeSnapshot(snapshot) // written last: a backup without manifest does not exist
             cache.lastManifest = (digest, snapshot.id)
             try? cache.save()
@@ -195,9 +197,10 @@ public final class BackupEngine {
     static let excludedLimit = 200
 
     /// At most `excludedLimit` lines, then one saying how many more there were.
-    static func bounded(_ lines: [String], _ what: String) -> [String] {
+    static func bounded(_ lines: [String], _ what: String, _ one: String) -> [String] {
         guard lines.count > excludedLimit else { return lines }
-        return Array(lines.prefix(excludedLimit)) + ["… e altri \(lines.count - excludedLimit) \(what)"]
+        let more = lines.count - excludedLimit
+        return Array(lines.prefix(excludedLimit)) + [more == 1 ? "… e un altro \(one)" : "… e altri \(more) \(what)"]
     }
 
     private struct Scan {
