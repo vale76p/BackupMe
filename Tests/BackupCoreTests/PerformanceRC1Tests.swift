@@ -124,6 +124,16 @@ import Testing
         #expect(third.knows("/a/Caffè") && !third.knows("/b"))
     }
 
+    /// The mtime alone tells an evicted cloud file (ctime ignored) whose content changed: no hit with another one.
+    @Test func hashCacheMissesOnOtherMtime() throws {
+        let cache = HashCache(url: tmp().appending(path: "c.json"))
+        let m = Date(timeIntervalSince1970: 1000), c = Date(timeIntervalSince1970: 2000), h = sha256Hex(Data("a".utf8))
+        cache.store(path: "/a", inode: 1, size: 3, mtime: m, ctime: c, hash: h)
+        #expect(cache.lookup(path: "/a", inode: 1, size: 3, mtime: m, ctime: nil) == h)
+        #expect(cache.lookup(path: "/a", inode: 1, size: 3, mtime: m.addingTimeInterval(1), ctime: nil) == nil)
+        #expect(cache.lookup(path: "/a", inode: 1, size: 3, mtime: m.addingTimeInterval(1), ctime: c) == nil)
+    }
+
     /// The JSON cache of earlier versions keeps its hashes (no file read again after the update) and is written
     /// again in the new format; one without ctime still matches an evicted cloud file.
     @Test func legacyJSONCacheIsReadAndConverted() throws {
@@ -200,6 +210,26 @@ import Testing
         #expect(r.deletedSnapshots.count == 1 && r.collected && !repo.hasObject(sha256Hex(orphan)))
         let used = try repo.snapshotIDs().reduce(into: Set<String>()) { $0.formUnion(try repo.readSnapshot($1).entries.compactMap(\.hash)) }
         #expect(try repo.allObjectHashes() == used)
+    }
+
+    /// Orphans left by a deletion while the archive fitted push it over the cap later, with nothing deleted by
+    /// retention in that run: they are collected now, the archive doesn't stay over the cap unnoticed.
+    @Test func orphansOverCapWithoutDeletion() throws {
+        func rnd(_ n: Int) -> String { String((0..<n).map { _ in "0123456789abcdefghijklmnopqrstuvwxyz".randomElement()! }) }
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let b = rnd(20000)
+        _ = try backup(repo, ["a.txt": rnd(20000)], at: t0)
+        _ = try backup(repo, ["b.txt": b], at: t0.addingTimeInterval(86400 * 2))
+        var keepNewest = RetentionPolicy(); keepNewest.days = 0; keepNewest.weeks = 0; keepNewest.months = 0
+        let first = try prune(repository: repo, policy: keepNewest, capBytes: 1 << 40, now: t0.addingTimeInterval(86400 * 2),
+                              refsCache: tmp(), gcDue: false)
+        #expect(first.deletedSnapshots.count == 1 && !first.collected) // fits: the orphan waits for the daily collection
+        _ = try backup(repo, ["b.txt": b, "c.txt": rnd(20000)], at: t0.addingTimeInterval(86400 * 2 + 3600))
+        let cap = try repo.poolSize() - 5000 // what the two backups use fits, with the orphan it doesn't
+        let second = try prune(repository: repo, policy: keepAll, capBytes: cap, now: t0.addingTimeInterval(86400 * 2 + 3600),
+                               refsCache: tmp(), gcDue: false)
+        #expect(second.deletedSnapshots.isEmpty && second.collected && !second.overCap)
+        #expect(try repo.poolSize() <= cap)
     }
 
     /// Object sizes from the bulk listing are the files' sizes.
