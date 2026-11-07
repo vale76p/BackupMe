@@ -154,12 +154,9 @@ public final class BackupEngine {
                 let size = ByteCountFormatter.string(fromByteCount: noRoom.bytes, countStyle: .file)
                 sourceErrors.append("Spazio esaurito nella destinazione: \(noRoom.count) file (\(size)) non \(noRoom.count == 1 ? "salvato" : "salvati") in questo backup")
             }
-            let error = sourceErrors.isEmpty ? nil : sourceErrors.joined(separator: "\n")
             // bounded like the excluded list: 400k cloud files offline would mean MBs in every report and manifest
-            if warnings.count > Self.excludedLimit {
-                let more = warnings.count - Self.excludedLimit
-                warnings = Array(warnings.prefix(Self.excludedLimit)) + ["… e altri \(more) avvisi"]
-            }
+            let error = sourceErrors.isEmpty ? nil : Self.bounded(sourceErrors, "errori").joined(separator: "\n")
+            warnings = Self.bounded(warnings, "avvisi")
             func report(_ id: String?) -> BackupReport {
                 BackupReport(snapshotID: id, date: now, duration: Date().timeIntervalSince(start), fileCount: fileCount,
                              newBytes: newBytes, warnings: warnings, error: id == nil ? (error ?? "Nessun file da salvare") : error,
@@ -181,9 +178,10 @@ public final class BackupEngine {
             }
             var date = now
             while repository.snapshotExists(Snapshot.id(for: date)) { date += 1 } // one manifest per second, never overwritten
-            // the manifest says the backup is partial too: the kit and other Macs read only that
+            // the manifest says the backup is partial too: the kit and other Macs read only that. Not the damaged
+            // older backup: it is about another one, this backup is complete without it
             let snapshot = Snapshot(date: date, sources: sources.map(\.path), entries: entries,
-                                    warnings: Array(sourceErrors.prefix(Self.excludedLimit)) + warnings)
+                                    warnings: Self.bounded(sourceErrors + warnings.filter { !$0.hasPrefix(Self.damagedPrefix) }, "avvisi"))
             try repository.writeSnapshot(snapshot) // written last: a backup without manifest does not exist
             cache.lastManifest = (digest, snapshot.id)
             try? cache.save()
@@ -192,6 +190,12 @@ public final class BackupEngine {
     }
 
     static let excludedLimit = 200
+
+    /// At most `excludedLimit` lines, then one saying how many more there were.
+    static func bounded(_ lines: [String], _ what: String) -> [String] {
+        guard lines.count > excludedLimit else { return lines }
+        return Array(lines.prefix(excludedLimit)) + ["… e altri \(lines.count - excludedLimit) \(what)"]
+    }
 
     private struct Scan {
         var source: String
