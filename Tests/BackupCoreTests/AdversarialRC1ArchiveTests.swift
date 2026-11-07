@@ -154,4 +154,23 @@ import Testing
         _ = try Repository(destination: dest, computerName: "Mac") // an archive from before is fixed
         #expect(try mode() == 0o700)
     }
+
+    // MARK: B2: manifest names
+
+    @Test func dotNamedManifestsAreNotSnapshots() throws {
+        write("dati", to: src.appending(path: "a.txt"))
+        let repo = try Repository(destination: dest, computerName: "Mac")
+        let id = try #require(try backup(repo).snapshotID)
+        for name in [".json.lzfse", "..json.lzfse", "...json.lzfse"] {
+            write("rotto", to: repo.root.appending(path: "snapshots/\(name)"))
+        }
+        #expect(try repo.snapshotIDs() == [id])
+        // "Controlla ora" then "Elimina…", as the app does: ".." used to name the support folder in the cache
+        let support = tmp(), refs = support.appending(path: "refs"), history = support.appending(path: "cronologia.json")
+        write("{}", to: history)
+        let check = try checkArchive(repository: repo, cache: HashCache(url: tmp().appending(path: "c.json")))
+        #expect(check.unreadableSnapshots.isEmpty)
+        _ = try deleteDamagedSnapshots(check.unreadableSnapshots, repository: repo, refsCache: refs)
+        #expect(fm.fileExists(atPath: history.path))
+    }
 }

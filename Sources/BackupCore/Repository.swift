@@ -347,6 +347,8 @@ public final class Repository {
         try fm.contentsOfDirectory(atPath: snapshotsDir.path)
             .filter { $0.hasSuffix(".json.lzfse") }
             .map { String($0.dropLast(11)) }
+            // a planted "...json.lzfse" is the id "..": joined to a path (the references cache), it names the parent
+            .filter { (try? Self.checkComponent($0)) != nil }
             .sorted()
     }
 
