@@ -320,8 +320,10 @@ struct DestinationCard: View {
     }
 
     nonisolated private static func available(_ path: String) -> Int64? {
-        (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
-            .volumeAvailableCapacityForImportantUsage
+        let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
+        // exFAT and FAT32 say 0 for important usage, as Repository.availableCapacity knows
+        if let important = values?.volumeAvailableCapacityForImportantUsage, important > 0 { return important }
+        return values?.volumeAvailableCapacity.map(Int64.init)
     }
 
     private static func load(_ path: String) async -> Info {
@@ -341,8 +343,14 @@ private struct SpaceSection: View {
     @State private var usage: (bytes: Int64, count: Int)?
     @State private var usageNote: String?
     @State private var volumes = 0
+    /// The destination's disk as last read: only its coming or going reads the size again, not any disk's.
+    @State private var connected: Bool?
+    /// The destination is there and holds no archive of this Mac: a cap deletes nothing.
+    @State private var noArchive = false
     /// A cap waiting for the confirmation below.
     @State private var pendingCap: Double?
+    /// Bumped when the confirmation closes: after Annulla the field shows the cap again, not the number typed.
+    @State private var capField = 0
 
     var body: some View {
         Section("Spazio") {
@@ -371,6 +379,7 @@ private struct SpaceSection: View {
                                   format: .number)
                             .labelsHidden().frame(width: 80).multilineTextAlignment(.trailing)
                             .accessibilityLabel("Tetto in GB")
+                            .id(capField)
                         Text("GB").foregroundStyle(.secondary)
                     }
                 }
@@ -378,42 +387,53 @@ private struct SpaceSection: View {
         }
         // after every backup too, like the destination card above: the two "occupati" must agree
         .task(id: "\(model.settings.destination ?? "")\u{0}\(model.lastSuccess?.timeIntervalSince1970 ?? 0)\u{0}\(volumes)") { await refresh() }
-        .onVolumeChange { volumes += 1 }
+        .onVolumeChange {
+            let now = model.settings.destination.map { Repository.isAvailable(destination: URL(fileURLWithPath: $0)) }
+            if now != connected { connected = now; volumes += 1 } // set at once: a second event doesn't start another read
+        }
         .confirmationDialog("Eliminare i backup più vecchi?",
-                            isPresented: Binding(get: { pendingCap != nil }, set: { if !$0 { pendingCap = nil } })) {
+                            isPresented: Binding(get: { pendingCap != nil }, set: { if !$0 { pendingCap = nil; capField += 1 } })) {
             Button("Applica il tetto di \(Self.gb(pendingCap ?? 0))", role: .destructive) {
                 model.settings.capGB = pendingCap
                 pendingCap = nil
             }
             Button("Annulla", role: .cancel) {}
         } message: {
-            Text("Occupati \(ByteCountFormatter.string(fromByteCount: usage?.bytes ?? 0, countStyle: .file)): alla prossima pulizia verranno eliminati i backup più vecchi, finché l'archivio non sta in \(Self.gb(pendingCap ?? 0)). L'ultimo backup resta sempre.")
+            let cap = Self.gb(pendingCap ?? 0)
+            if let usage {
+                Text("Occupati \(ByteCountFormatter.string(fromByteCount: usage.bytes, countStyle: .file)): alla prossima pulizia verranno eliminati i backup più vecchi, finché l'archivio non sta in \(cap). L'ultimo backup resta sempre.")
+            } else {
+                Text("Lo spazio occupato ora non si legge: se l'archivio supera \(cap), alla prossima pulizia verranno eliminati i backup più vecchi. L'ultimo backup resta sempre.")
+            }
         }
     }
 
     private static func gb(_ cap: Double) -> String { ByteCountFormatter.string(fromByteCount: Int64(min(cap, 1_000_000) * 1e9), countStyle: .file) }
 
-    /// A cap lowered below what the backups take deletes the oldest ones at the next backup: asked first.
+    /// A cap lowered below what the backups take deletes the oldest ones at the next backup: asked first. Also when
+    /// the size can't be read now (disk unplugged, still counting, cloud offline): the archive may well be over it.
     private func setCap(_ cap: Double?) {
-        if let cap, let usage, Double(usage.bytes) > cap * 1e9, cap < (model.settings.capGB ?? .infinity) {
-            pendingCap = cap
-        } else {
-            model.settings.capGB = cap
-        }
+        guard let cap, cap < (model.settings.capGB ?? .infinity) else { model.settings.capGB = cap; return }
+        let over = usage.map { Double($0.bytes) > cap * 1e9 } ?? (model.settings.destination != nil && !noArchive)
+        if over { pendingCap = cap } else { model.settings.capGB = cap }
     }
 
     private func refresh() async {
         usage = nil
         usageNote = nil
-        guard let dest = model.settings.destination else { usageNote = "Nessuna destinazione"; return }
+        noArchive = false
+        guard let dest = model.settings.destination else { connected = nil; usageNote = "Nessuna destinazione"; return }
         let archive = AppPaths.archiveName, url = URL(fileURLWithPath: dest)
+        let isConnected = await Task.detached(priority: .utility) { Repository.isAvailable(destination: url) }.value
+        guard !Task.isCancelled else { return } // a newer read has started
+        connected = isConnected
+        guard isConnected else { usageNote = DestinationCard.notConnected(dest); return }
         let result = await Task.detached(priority: .utility) { () -> (Int64, Int)? in
             guard let repo = try? Repository(destination: url, computerName: archive, create: false) else { return nil }
             return ((try? repo.poolSize()) ?? 0, (try? repo.snapshotIDs().count) ?? 0)
         }.value
-        if let result { usage = (result.0, result.1); return }
-        let connected = await Task.detached(priority: .utility) { Repository.isAvailable(destination: url) }.value
-        usageNote = connected ? "Nessun backup ancora" : DestinationCard.notConnected(dest)
+        guard !Task.isCancelled else { return }
+        if let result { usage = (result.0, result.1) } else { noArchive = true; usageNote = "Nessun backup ancora" }
     }
 }
 
@@ -461,7 +481,7 @@ private struct ScheduleSection: View {
             Text("Anche con Risparmio energetico, batteria sotto il 20% o Mac caldo. Mai oltre un giorno.")
         }
         .disabled(model.settings.paused)
-        .help("«Esegui backup ora» parte sempre, tranne durante il controllo completo dell'archivio.")
+        .help("«Esegui backup ora» parte sempre, tranne durante il controllo completo dell'archivio o un ripristino.")
         Section {
             Picker(selection: $model.settings.notify) {
                 Text("Solo problemi").tag(AppSettings.NotifyLevel.errors)
