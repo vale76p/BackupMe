@@ -2,7 +2,9 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString`, e `CFBundleVersion` +1 a ogni rilascio).
 
-## [Non rilasciato]
+## [1.0.0-rc2] - 2026-11-07
+
+Seconda candidata alla 1.0: quanto è arrivato dopo la rc1. Nell'app la versione resta 1.0.0, con la build 20. La 1.0 finale dipende dalla prova reale (#24), da fare su questa.
 
 ### Aggiunto
 - **Impostazioni › Avanzate › Prova ora** (Ripristino senza l'app) prova `RIPRISTINO.command` come su un Mac senza BackupMe: controlla la versione, ripristina l'ultimo backup in una cartella temporanea, confronta ogni file con il backup e poi la cancella. Prima di partire dice quanti file e quanto spazio servono.
