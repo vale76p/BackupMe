@@ -187,8 +187,8 @@ Il testo sopra è il design approvato prima di scrivere il codice. Questo è que
 
 - **Nome della cartella dell'archivio**: non è più `<nome computer>` ma `<nome del Mac>-<id8>`, dove `id8` sono i primi 8 caratteri dell'UUID hardware (0.6.3: dopo Migration Assistant due Mac potevano scrivere nello stesso archivio). Gli archivi nuovi sono `<nome del Mac>-<id8>-<utente>`, così due account dello stesso Mac non condividono l'archivio; un nome già salvato resta quello (`AppPaths.archiveName` in `Sources/BackupMe/Settings.swift`). Rinominare il Mac non crea un archivio nuovo.
 - **Proprietario in `repo.json`**: i campi `owner` (uid) e `ownerName` (nome breve dell'account). Un altro account dello stesso Mac non può scrivere in un archivio che non è suo; un archivio senza proprietario va al primo account che lo rivendica (`Sources/BackupCore/ArchiveOwner.swift`).
-- **Cartella dell'archivio con permessi `0700`**: leggibile solo dall'account che la scrive, anche su un disco condiviso o un NAS; un archivio creato prima viene corretto (`Repository.archiveDirectory`).
-- **Lock**: non contiene PID e host e non va rimosso a mano. È un `flock(2)` sul file `lock`, che il sistema rilascia quando il processo muore, quindi non restano lock vecchi.
+- **Cartella dell'archivio con permessi `0700`**: leggibile solo dall'account che la scrive, sui dischi che rispettano i proprietari dei file (exFAT, FAT32 e molte condivisioni SMB no); un archivio creato prima viene corretto (`Repository.archiveDirectory`).
+- **Lock**: non contiene PID e host e non va rimosso a mano. È un `flock(2)` sul file `lock`, che il sistema rilascia quando il processo muore, quindi non restano lock vecchi. Sui dischi senza `flock` (alcuni exFAT e SMB) si procede senza lock.
 - **Oggetti `.raw`**: accanto a `<hash>.lzfse` ci sono `<hash>.raw`, salvati così come sono quando la compressione risparmia meno del 5% o il file è di almeno 32 MB. Questi si copiano in streaming (con un clone APFS se si può) e non stanno mai in memoria per intero.
 - **Checksum dell'indice** (0.9.2): ogni manifest nuovo comincia con `"check"`, lo SHA-256 del resto del JSON, così un indice danneggiato non viene letto come valido.
 - **Formato più recente** (0.9.0): un archivio con `format` maggiore di quello che l'app conosce resta sfogliabile, ma l'app non lo scrive e non lo pulisce. Anche il kit di ripristino si ferma.
@@ -212,7 +212,7 @@ Il testo sopra è il design approvato prima di scrivere il codice. Questo è que
 
 ### Funzioni aggiunte
 
-- **Kit di ripristino** (0.6.0): `RIPRISTINO.command` e `LEGGIMI.txt` in `<destinazione>/BackupMe/`. Il ripristino funziona senza l'app e senza Xcode, solo con JavaScript for Automation e `shasum`. Lo script verifica ogni file, controlla il checksum dell'indice, chiede due conferme e non sovrascrive mai. Ha una versione propria (oggi 8) e una versione vecchia non sostituisce un kit più nuovo.
+- **Kit di ripristino** (0.6.0): `RIPRISTINO.command` e `LEGGIMI.txt` in `<destinazione>/BackupMe/`. Il ripristino funziona senza l'app e senza Xcode, solo con JavaScript for Automation e `shasum`. Lo script verifica ogni file, controlla il checksum dell'indice, chiede due conferme e non sovrascrive mai. Ha una versione propria (9 nella 1.0) e una versione vecchia non sostituisce un kit più nuovo.
 - **Verifica a campione** (0.6.0): una volta al giorno si rileggono a caso fino a 100 MB dell'archivio, più l'indice più recente e uno scelto a caso. Un file danneggiato viene riparato dalla copia attuale, se esiste; altrimenti arriva un avviso. Non cancella mai niente.
 - **Controllo completo** (0.8.0): *Impostazioni › Avanzate › Controlla ora* rilegge indici e oggetti usati, ripara dove può, e permette di eliminare i backup con l'indice illeggibile (0.9.3).
 - **File singoli e profilo completo** (0.7.0): si salvano anche singoli file, oltre alle cartelle, e la cartella Inizio intera.
