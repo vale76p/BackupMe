@@ -2,10 +2,18 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString` solo numerico, `BackupMeVersionLabel` col nome completo mostrato nel menu, es. `1.0.0-rc2`, e `CFBundleVersion` +1 a ogni rilascio).
 
-## [Non rilasciato]
+## [1.0.0-rc3] - 2026-11-07
+
+Terza candidata alla 1.0: quanto è arrivato dopo la rc2. Nell'app la versione resta 1.0.0, con la build 21. La 1.0 finale dipende dalla prova reale (#24).
+
+### Aggiunto
+- Il menu mostra la versione completa (`1.0.0-rc3`), presa da `BackupMeVersionLabel` in `Info.plist`.
 
 ### Cambiato
 - Il profilo completo non salva più le cache e i download degli strumenti di sviluppo, che li riscaricano da soli: `~/.cache`, `~/.npm`, i pacchetti di Cargo, Gradle, Maven e Go, le versioni installate di Rust, Node e Python, le estensioni di VS Code e Cursor, i modelli di Ollama e altri. Compaiono in Impostazioni tra le escluse in automatico; per salvarne una aggiungila in Cartelle.
+
+### Sicurezza
+- Sostituisci si rifiuta se l'elemento è in una cartella cloud (OneDrive, Google Drive, Dropbox, iCloud Drive…) o ne contiene una, e propone Ripristina accanto o Ripristina in…: alcuni client eliminano subito i file invece di spostarli nel Cestino.
 
 ## [1.0.0-rc2] - 2026-11-07
 
