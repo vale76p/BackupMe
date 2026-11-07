@@ -83,9 +83,9 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         var deletedObjects = 0
         var missingObjects = 0
         // with hourly backups one leaves the last 24 hours every hour: collecting their objects each time reads every
-        // manifest's references. `gcDue` (once a day) lets the orphans wait; a cap needs the space now, unless the
-        // archive fits with them
-        let collect = (!deleted.isEmpty && (gcDue || !fits)) || forceGC
+        // manifest's references. `gcDue` (once a day) lets the orphans wait while the archive fits with them; over the
+        // cap they go now, also when nothing left in this run (orphans of an earlier one), and the references are counted
+        let collect = (!deleted.isEmpty && gcDue) || !fits || forceGC
         if collect, !gcSkipped {
             var reachable = users.map { Set($0.keys) } ?? []
             if users == nil { for id in ids { reachable.formUnion(try references(of: id, in: repository, cache: refsCache)) } }
