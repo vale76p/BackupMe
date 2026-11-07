@@ -62,7 +62,17 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     /// Progress of the full archive check, nil when none is running; backups wait until it ends.
     var checkProgress: Double?
     /// Kept here, not in the Sfoglia window: closing the window must not allow a second restore at the same time.
-    var restoring = false
+    var restoring = false {
+        didSet { if !restoring, deferral == Self.restoreDeferral { deferral = nil } }
+    }
+    static let restoreDeferral = SystemServices.Deferral(reason: "Ripristino in corso", until: "Alla fine del ripristino")
+    static let stuckCheckDeferral = SystemServices.Deferral(reason: "Controllo dell'archivio bloccato",
+                                                            until: "Quando si sblocca, o riavvia BackupMe")
+    /// Why no backup can start now even by hand: a check stuck on a read still holds the lock, or a restore runs
+    /// (cleanup could delete the backup being restored).
+    private var blockedDeferral: SystemServices.Deferral? {
+        checkWorkerActive ? Self.stuckCheckDeferral : restoring ? Self.restoreDeferral : nil
+    }
     /// The last full check's outcome, in words, and whether the archive was healthy.
     var checkResult: (text: String, healthy: Bool)?
     /// Backups the last full check couldn't read, which Impostazioni › Avanzate offers to delete.
@@ -161,6 +171,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 return
             }
         }
+        // said in the panel and in "Prossimo backup", whether a backup is due or not, instead of nothing happening
+        if let blocked = blockedDeferral, !isRunning, !settings.paused, settings.isConfigured { deferral = blocked; return }
         guard !settings.paused, settings.isConfigured, !isRunning,
               isBackupDue(lastSuccess: lastSuccess, intervalHours: settings.intervalHours, now: now),
               lastAttempt.map({ now.timeIntervalSince($0) >= Self.retryAfterFailure || $0 > now }) ?? true else {
@@ -178,8 +190,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     func backupNow() {
-        // not during a restore either: cleanup could delete the backup being restored
-        guard !isRunning, !workerActive, !checkWorkerActive, checkProgress == nil, !restoring else { return }
+        guard !isRunning, !workerActive, checkProgress == nil else { return }
+        // "Esegui ora" or "Riprova" must not do nothing in silence
+        if let blocked = blockedDeferral { deferral = blocked; return }
         guard settings.isConfigured else {
             status = .failed(Self.notConfigured)
             return
@@ -309,6 +322,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             }
             await MainActor.run {
                 self.checkWorkerActive = false
+                if self.deferral == Self.stuckCheckDeferral { self.deferral = nil }
                 switch result {
                 case .failure(let error):
                     self.checkResult = ("Eliminazione non riuscita: \(Self.describe(error))", false)
@@ -543,7 +557,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RepositoryError.damagedSnapshot(let id):
             return "\(damaged) il backup del \(Snapshot.date(fromID: id)?.formatted(date: .abbreviated, time: .shortened) ?? id) non si legge"
         case RepositoryError.otherOwner:
-            return "L'archivio in questa destinazione è di un altro utente di questo Mac: scegli un'altra cartella di destinazione per i tuoi backup"
+            return "L'archivio in questa destinazione appartiene a un altro account di questo Mac: scegli un'altra cartella di destinazione per i tuoi backup"
         case RepositoryError.newerFormat(let f):
             return "L'archivio è stato creato da una versione più recente di BackupMe (formato \(f)): aggiorna l'app per continuare i backup"
         case BackupError.sourceOverlapsDestination(let p): return "\((p as NSString).abbreviatingWithTildeInPath) è dentro la destinazione dei backup"

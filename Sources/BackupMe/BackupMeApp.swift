@@ -132,7 +132,7 @@ extension AppModel {
             // no changes: the run reused the previous manifest, so the backup list shows nothing new; say why
             if let r = lastReport, r.error == nil, let id = r.snapshotID, let saved = Snapshot.date(fromID: id),
                saved < r.date.addingTimeInterval(-2) {
-                return "Nessuna modifica da \(f.string(from: saved)) · controllato \(r.date.formatted(date: .omitted, time: .shortened))"
+                return "Nessuna modifica · ultimo backup \(f.string(from: saved)) · controllato \(r.date.formatted(date: .omitted, time: .shortened))"
             }
             return "Ultimo backup: \(f.string(from: last))"
         }
@@ -246,8 +246,8 @@ struct MenuContent: View {
             .glassButton(prominent: true)
             .controlSize(.extraLarge)
             .keyboardShortcut(.defaultAction)
-            // a backup can't start while the full check holds the archive
-            .disabled(model.checkProgress != nil && !model.isRunning && model.settings.isConfigured)
+            // a backup can't start while the full check holds the archive, or during a restore
+            .disabled((model.checkProgress != nil || model.restoring) && !model.isRunning && model.settings.isConfigured)
 
             GlassGroup(spacing: 8) {
                 HStack(spacing: 8) {
@@ -268,7 +268,7 @@ struct MenuContent: View {
 
     private var primaryTitle: String {
         !model.settings.isConfigured ? "Configura BackupMe…" : model.isRunning ? "Interrompi backup"
-            : model.checkProgress != nil ? "Controllo dell'archivio…" : "Esegui backup ora"
+            : model.checkProgress != nil ? "Controllo dell'archivio…" : model.restoring ? "Ripristino in corso…" : "Esegui backup ora"
     }
 
     private var primaryIcon: String {
