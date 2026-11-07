@@ -2,6 +2,12 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString` solo numerico, `BackupMeVersionLabel` col nome completo mostrato nel menu, es. `1.0.0-rc2`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [Non rilasciato]
+
+### Aggiunto
+- **Aggiungi profilo completo…** apre un foglio prima di salvare la cartella Inizio: le cartelle escluse in automatico, il totale che il backup salverà (numero di file e dimensione) e le cartelle di oltre 100 MB, ognuna con le sue sottocartelle più grandi e una casella Escludi, più la scelta a mano di altre cartelle o file da escludere. Niente cambia finché non premi Aggiungi profilo.
+- **Impostazioni › Esclusioni › Cartelle più grandi salvate**: con il profilo completo, Analizza mostra lo stesso totale e le stesse cartelle con le esclusioni di adesso, da escludere con una casella. L'analisi legge solo i dati dei file e non rallenta i backup.
+
 ## [1.0.0-rc3] - 2026-11-07
 
 Terza candidata alla 1.0: quanto è arrivato dopo la rc2. Nell'app la versione resta 1.0.0, con la build 21. La 1.0 finale dipende dalla prova reale (#24).

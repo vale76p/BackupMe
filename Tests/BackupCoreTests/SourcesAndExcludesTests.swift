@@ -70,6 +70,31 @@ import Testing
         #expect(!paths.contains { $0.hasPrefix(".npm") || $0.hasPrefix(".cargo/registry") || $0.hasPrefix("go/pkg/mod") })
     }
 
+    /// The size scan counts what the backup would save, by top folder and the folders inside it.
+    @Test func sizeScanMatchesTheBackup() throws {
+        write("12345", to: base.appending(path: ".local/share/uv/a"))
+        write("123", to: base.appending(path: ".local/share/b"))
+        write("1", to: base.appending(path: ".local/c"))
+        write("1234567890", to: base.appending(path: "Movies/film.mov"))
+        write("xx", to: base.appending(path: ".zshrc"))
+        write("dep", to: base.appending(path: "app/node_modules/x.js"))
+        write("crate", to: base.appending(path: ".cargo/registry/serde.crate"))
+        write("Signature: 8a477f597d28d172789f06886806bc55", to: base.appending(path: ".tool/cache/CACHEDIR.TAG"))
+        let rules = ExcludeRules(patterns: ExcludeRules.defaults,
+                                 paths: ExcludeRules.automatic(destination: nil, home: base.path).map(\.path))
+        let scan = try #require(SizeScan.measure(base.path, rules: rules))
+        let (_, s, _) = try run([base], dest: tmp(), rules: rules)
+        #expect(scan.files == s.entries.filter { $0.kind == .file }.count)
+        #expect(scan.files == 5 && scan.bytes == 21)
+        let local = try #require(scan.folders.first { $0.path.hasSuffix("/.local") })
+        #expect(scan.folders.map { ($0.path as NSString).lastPathComponent } == ["Movies", ".local"])
+        #expect(local.files == 3 && local.bytes == 9)
+        #expect(local.children.map(\.bytes) == [8], "a file at the second level counts in its top folder only")
+        #expect(scan.remaining(excluding: [local.children[0].path]) == (3, 13))
+        #expect(scan.remaining(excluding: [local.path, local.children[0].path]) == (2, 12), "a folder inside an excluded one isn't subtracted twice")
+        #expect(SizeScan.measure(base.path, rules: rules, isCancelled: { true }) == nil)
+    }
+
     @Test func cloudFoldersFound() throws {
         let home = base.path
         for name in ["OneDrive-Personal", "OneDrive-Acme", "Dropbox", "Dropbox (28-12-22 10:05) Archive",

@@ -70,6 +70,7 @@ struct SettingsView: View {
 struct FoldersSection: View {
     @Bindable var model: AppModel
     @State private var error: String?
+    @State private var showProfile = false
     private static let home = NSHomeDirectory()
 
     var body: some View {
@@ -106,8 +107,11 @@ struct FoldersSection: View {
             HStack {
                 Button("Aggiungi cartelle o file…", systemImage: "plus", action: addSources)
                 if !model.settings.sources.contains(Self.home) {
-                    Button("Aggiungi profilo completo", systemImage: "person.crop.circle") { add([URL(fileURLWithPath: Self.home)]) }
-                        .help("Tutta la cartella Inizio, file e cartelle; Libreria e Cestino esclusi")
+                    Button("Aggiungi profilo completo…", systemImage: "person.crop.circle") { showProfile = true }
+                        .help("Tutta la cartella Inizio, file e cartelle; Libreria, Cestino e cache esclusi")
+                        .sheet(isPresented: $showProfile) {
+                            ProfileSheet(model: model) { add([URL(fileURLWithPath: Self.home)]) }
+                        }
                 }
             }
         } header: {
@@ -592,6 +596,11 @@ private struct ExcludesSection: View {
     @State private var error: String?
     @State private var pathError: String?
     @State private var confirmDefaults = false
+    @State private var scan: SizeScan?
+    /// Bumped by "Analizza": each value runs one scan, cancelled if the pane goes away.
+    @State private var scanRequest = 0
+    @State private var scanning = false
+    private static let home = NSHomeDirectory()
     private static let suggestions = ["*.log", "*.tmp", ".cache", "coverage", ".next", ".terraform", "*.xcarchive"]
 
     var body: some View {
@@ -599,6 +608,7 @@ private struct ExcludesSection: View {
         pathsSection
         sizeSection
         automaticSection
+        sizesSection
         lastBackupSection
         unreadableSection
     }
@@ -757,38 +767,54 @@ private struct ExcludesSection: View {
 
     // MARK: automatic
 
-    /// Automatic exclusions inside a saved folder; one inside another listed one (Library holds CloudStorage) is left out.
-    private var automatic: [ExcludeRules.Automatic] {
-        let s = model.settings
-        // only what exists here: no line for a cloud service this Mac doesn't have
-        let inside = ExcludeRules.automatic(destination: s.destination).filter { a in
-            FileManager.default.fileExists(atPath: a.path) && s.sources.contains { a.path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
-        }
-        return inside.filter { a in !inside.contains { a.path.hasPrefix($0.path + "/") } }
-    }
-
     private var automaticSection: some View {
         Section {
-            let list = automatic
+            let list = model.settings.automaticExclusions()
             if list.isEmpty {
                 Text("Nessuna: nessun elemento salvato contiene la destinazione, la Libreria, il Cestino o le cache degli strumenti.")
                     .foregroundStyle(.secondary)
             }
-            ForEach(list, id: \.self) { a in
-                HStack {
-                    Image(systemName: "lock.fill").foregroundStyle(.secondary).frame(width: 20)
-                    VStack(alignment: .leading) {
-                        Text((a.path as NSString).lastPathComponent)
-                        Text(a.reason).font(.caption).foregroundStyle(.secondary)
-                        Text((a.path as NSString).abbreviatingWithTildeInPath)
-                            .font(.caption).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
-                    }
-                }
-            }
+            ForEach(list, id: \.self) { AutomaticRow(item: $0) }
         } header: {
             Text("Escluse in automatico")
         } footer: {
             Text("Una cartella aggiunta in Cartelle viene sempre salvata, anche se è qui dentro: per esempio una cartella della Libreria.")
+        }
+    }
+
+    // MARK: biggest folders
+
+    /// The specific paths as a set, for the boxes of the size list: a new one goes at the end, the order stays.
+    private var excludedSet: Binding<Set<String>> {
+        Binding(get: { Set(model.settings.excludedPaths) }, set: { new in
+            let kept = model.settings.excludedPaths.filter(new.contains)
+            model.settings.excludedPaths = kept + new.subtracting(kept).sorted()
+        })
+    }
+
+    @ViewBuilder private var sizesSection: some View {
+        if model.settings.sources.contains(Self.home) {
+            Section {
+                if let scan { FolderSizeList(scan: scan, excluded: excludedSet) }
+                HStack {
+                    if scanning {
+                        ProgressView().controlSize(.small)
+                        Text("Analisi della cartella Inizio…").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(scan == nil ? "Analizza" : "Analizza di nuovo") { scanRequest += 1 }.disabled(scanning)
+                }
+            } header: {
+                Text("Cartelle più grandi salvate")
+            } footer: {
+                Text("Quanto salva il profilo completo con le esclusioni di adesso, e le sue cartelle di oltre 100 MB. Spunta Escludi per lasciarne fuori una.")
+            }
+            .task(id: scanRequest) {
+                guard scanRequest > 0 else { return }
+                scanning = true
+                if let result = await SizeScan.measureInBackground(Self.home, rules: model.settings.excludeRules) { scan = result }
+                scanning = false
+            }
         }
     }
 
@@ -1026,7 +1052,7 @@ private struct ArchiveCheckSection: View {
     }
 }
 
-private struct ErrorRow: View {
+struct ErrorRow: View {
     let text: String
     var body: some View {
         Label(text, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)

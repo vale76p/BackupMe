@@ -67,6 +67,16 @@ struct AppSettings: Codable, Equatable {
                      maxFileSize: maxFileGB.map { Int64(min($0, 1_000_000) * 1e9) })
     }
 
+    /// Automatic exclusions inside a saved folder, only those on this Mac: no line for a cloud service it doesn't
+    /// have. One inside another listed one (Library holds CloudStorage) is left out. `adding`: a source about to be saved.
+    func automaticExclusions(adding extra: String? = nil) -> [ExcludeRules.Automatic] {
+        let saved = sources + [extra].compactMap { $0 }
+        let inside = ExcludeRules.automatic(destination: destination).filter { a in
+            FileManager.default.fileExists(atPath: a.path) && saved.contains { a.path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
+        }
+        return inside.filter { a in !inside.contains { a.path.hasPrefix($0.path + "/") } }
+    }
+
     /// The source that already holds `path` and backs it up, unless a rule leaves it out there.
     func source(containing path: String) -> String? {
         let skipped = excludeRules.paths
