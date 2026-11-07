@@ -60,15 +60,19 @@ public final class Restorer {
             throw RestoreError.containsArchive(target.path)
         }
         // beside or in place of the original: no folder on the way may have become a link since the backup
+        var missing: [(URL, String)] = []
         if mode == .besideOriginal || mode == .replace {
             var dir = sourceRoot
             for part in path.split(separator: "/").dropLast() {
                 dir = dir.appending(path: String(part))
                 if (try? fm.destinationOfSymbolicLink(atPath: dir.path)) != nil { throw RestoreError.linkInPath(dir.path) }
+                if (try? fm.attributesOfItem(atPath: dir.path)) == nil { missing.append((dir, String(part))) }
             }
         }
         let parent = target.deletingLastPathComponent()
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        // folders on the way that are gone: created decomposed, like everything Foundation writes
+        for (dir, part) in missing { Self.keepSavedName(dir, part) }
         let staging = parent.appending(path: ".backupme-restore-\(UUID().uuidString)")
         var trashed = false
         do {
@@ -140,11 +144,15 @@ public final class Restorer {
 
     /// Foundation writes names decomposed ("u" + "¨"): the saved name was most likely composed ("ü"). The same
     /// name for the Finder, another one for git, rsync or a Linux server. rename(2) keeps the bytes it is given.
+    /// Through a temporary name: on case-sensitive APFS a rename between two forms of one name does nothing.
+    /// exFAT and FAT32 store every name decomposed whatever they are given: the item goes back to its first name.
     static func keepSavedName(_ url: URL, _ name: String) {
         let decomposed = name.decomposedStringWithCanonicalMapping
         guard !name.utf8.elementsEqual(decomposed.utf8) else { return }
         let dir = url.deletingLastPathComponent().path
-        _ = rename(dir + "/" + decomposed, dir + "/" + name)
+        let step = dir + "/.backupme-name-\(UUID().uuidString)"
+        guard rename(dir + "/" + decomposed, step) == 0 else { return }
+        if renameExclusive(step, dir + "/" + name) != 0 { _ = rename(step, dir + "/" + decomposed) }
     }
 
     /// Full nanosecond precision (FileManager keeps only microseconds, which made restored files look "modificato").
@@ -167,10 +175,22 @@ public final class Restorer {
             let name = n == 1 ? target : (ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
             // a String path: rename(2) keeps the bytes of the name as given
             let candidate = dir.path + "/" + name
-            if renamex_np(staging.path, candidate, UInt32(RENAME_EXCL)) == 0 { return URL(fileURLWithPath: candidate) }
+            if Self.renameExclusive(staging.path, candidate) == 0 { return URL(fileURLWithPath: candidate) }
             guard errno == EEXIST, renameIfTaken else { break }
         }
         throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EEXIST)
+    }
+
+    /// rename(2) that fails with EEXIST instead of replacing `to`. exFAT and FAT32 reject RENAME_EXCL with ENOTSUP.
+    static func renameExclusive(_ from: String, _ to: String) -> Int32 {
+        if renamex_np(from, to, UInt32(RENAME_EXCL)) == 0 { return 0 }
+        guard errno == ENOTSUP || errno == EOPNOTSUPP else { return -1 }
+        // shortcut: an item created at `to` between the check and the rename would be replaced (an empty folder) or
+        // make it fail; these filesystems offer nothing exclusive for folders, upgrade if one ever does
+        var st = stat()
+        if lstat(to, &st) == 0 { errno = EEXIST; return -1 }
+        guard errno == ENOENT else { return -1 }
+        return rename(from, to)
     }
 
     private func makeWritable(_ url: URL) throws {
@@ -224,11 +244,30 @@ public final class Restorer {
         public var changedFiles: Int
         /// HEAD or refs differ from the backup: commits or branches newer than it would go to the Trash too.
         public var repositoryChanged: Bool
+        /// Files created after the backup, which it lacks: they go to the Trash with the folder.
+        public var newFiles = 0
     }
 
     /// What replacing `source` with `snapshot` would set aside beyond the backup. Reads file metadata only.
-    public static func replaceCheck(_ snapshot: Snapshot, source: String) -> ReplaceCheck {
+    /// `rules`: what the backup excludes, which the message already names as going to the Trash.
+    public static func replaceCheck(_ snapshot: Snapshot, source: String,
+                                    rules: ExcludeRules = ExcludeRules(patterns: [])) -> ReplaceCheck {
         var check = ReplaceCheck(changedFiles: 0, repositoryChanged: false)
+        let saved = Set(snapshot.entries.lazy.filter { $0.source == source }.map(\.path))
+        // a source that is a symlink was backed up through the link: walk the real folder
+        let root = (source as NSString).resolvingSymlinksInPath
+        if let walk = FileManager.default.enumerator(atPath: root) {
+            for case let path as String in walk {
+                let isDir = walk.fileAttributes?[.type] as? FileAttributeType == .typeDirectory
+                // .git internals: covered by the refs below
+                if path == ".git" || rules.excludes(name: (path as NSString).lastPathComponent, isDirectory: isDir, path: path)
+                    || rules.paths.contains(root + "/" + path) {
+                    if isDir { walk.skipDescendants() }
+                    continue
+                }
+                if !isDir, !saved.contains(path) { check.newFiles += 1 }
+            }
+        }
         for e in snapshot.entries where e.source == source && e.kind == .file {
             let isRef = e.path == ".git/HEAD" || e.path == ".git/packed-refs" || e.path.hasPrefix(".git/refs/")
             guard isRef || !e.path.hasPrefix(".git/") else { continue } // other git internals: covered by the refs

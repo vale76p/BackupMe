@@ -417,6 +417,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
 
     func replaceCheck(source: String) async -> Restorer.ReplaceCheck? {
         guard showsStatus, let snapshot = selected else { return nil }
-        return await Task.detached(priority: .userInitiated) { Restorer.replaceCheck(snapshot, source: source) }.value
+        let rules = app.settings.excludeRules
+        return await Task.detached(priority: .userInitiated) { Restorer.replaceCheck(snapshot, source: source, rules: rules) }.value
     }
 }
