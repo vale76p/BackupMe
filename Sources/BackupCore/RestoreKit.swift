@@ -5,7 +5,7 @@ import Foundation
 enum RestoreKit {
     /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
-    static let version = 7
+    static let version = 8
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit. `base`: the BackupMe folder,
     /// opened without following links; a link under a kit file's name is replaced, never read or written through.
@@ -72,6 +72,8 @@ enum RestoreKit {
     link simbolici, permessi, date di modifica) e controlla il contenuto di ogni file.
     Non sovrascrive mai niente: se una cartella esiste già usa un nome nuovo ("progetto 2").
     Non modifica l'archivio.
+    Se il backup è parziale (una cartella non leggibile, spazio esaurito) il riepilogo lo dice e
+    lo script termina con un errore: per le cartelle che mancano scegli un backup precedente.
 
     Con OneDrive i file vengono scaricati mentre lo script li legge: serve la connessione.
 
@@ -110,9 +112,10 @@ function size(n) {
 }
 function freeSpace(p) {
   while (!exists(p)) p = ObjC.unwrap($(p).stringByDeletingLastPathComponent)
-  var key = 'NSURLVolumeAvailableCapacityForImportantUsageKey'
-  var v = ObjC.deepUnwrap($.NSURL.fileURLWithPath(p).resourceValuesForKeysError($([key]), null))
-  return v && typeof v[key] === 'number' ? v[key] : undefined
+  // exFAT and FAT32 report 0 for the "important usage" capacity: the plain one then
+  var keys = ['NSURLVolumeAvailableCapacityForImportantUsageKey', 'NSURLVolumeAvailableCapacityKey']
+  var v = ObjC.deepUnwrap($.NSURL.fileURLWithPath(p).resourceValuesForKeysError($(keys), null)) || {}
+  return v[keys[0]] > 0 ? v[keys[0]] : typeof v[keys[1]] === 'number' ? v[keys[1]] : undefined
 }
 function exists(p) { return fm.fileExistsAtPath(p) }
 function list(p) { return (ObjC.deepUnwrap(fm.contentsOfDirectoryAtPathError(p, null)) || []).sort() }
@@ -125,23 +128,22 @@ function snapshots(archive) {
 }
 function depth(e) { return e.path === '' ? 0 : e.path.split('/').length }
 
-// Refuses anything that could write outside the destination: absolute paths, "." or "..", duplicates,
-// and entries whose parent is not a folder of the backup (e.g. a symlink pointing elsewhere).
-// Names that differ only by case or Unicode form are one name on APFS: refused too, or a symlink could stand
-// in for a folder of the same name.
+// The first entry of a saved folder that could write outside the destination: absolute paths, "." or "..",
+// duplicates, and entries whose parent is not a folder of the backup (e.g. a symlink pointing elsewhere).
+// undefined when there is none. Names that differ only by case or Unicode form are one name on APFS: not refused
+// here (a Linux repository has Makefile and makefile), the writes below never go through the second one.
 function validate(tree) {
-  var dirs = new Set(), seen = new Set(), folded = new Set()
-  tree.forEach(e => {
-    var p = e.path, parts = p.split('/'), key = typeof p === 'string' ? p.normalize('NFD').toLowerCase() : ''
-    var ok = typeof p === 'string' && !seen.has(p) && !folded.has(key) && ['file', 'directory', 'symlink'].indexOf(e.kind) >= 0
+  var dirs = new Set(), seen = new Set()
+  for (var e of tree) {
+    var p = e.path, parts = typeof p === 'string' ? p.split('/') : []
+    var ok = typeof p === 'string' && !seen.has(p) && ['file', 'directory', 'symlink'].indexOf(e.kind) >= 0
       && (p === '' ? e.kind === 'directory' || e.kind === 'file' // a saved folder or a single saved file
           : !parts.some(x => x === '' || x === '.' || x === '..') && dirs.has(parts.slice(0, -1).join('/')))
       && (e.kind !== 'file' || /^[0-9a-f]{64}$/.test(e.hash))
-    if (!ok) fail('Backup non valido, niente è stato scritto. Voce rifiutata: ' + JSON.stringify(p))
+    if (!ok) return JSON.stringify(p)
     seen.add(p)
-    folded.add(key)
     if (e.kind === 'directory') dirs.add(p)
-  })
+  }
 }
 
 // SHA-256 of many files with one shasum call; undefined for a file it could not read.
@@ -208,21 +210,28 @@ function run(argv) {
 
   // check everything before writing anything
   // names are compared as APFS does (case and Unicode form ignored): "App" and "app" are the same folder
-  var plans = [], taken = new Set(), key = s => s.normalize('NFD').toLowerCase()
+  var plans = [], taken = new Set(), key = s => s.normalize('NFD').toLowerCase(), missing = [], refused = []
   snapshot.sources.forEach(source => {
     var tree = snapshot.entries.filter(e => e.source === source).sort((a, b) => depth(a) - depth(b))
-    if (!tree.length) return
-    validate(tree)
+    // a folder the backup couldn't read (see the warnings): an older backup may have it
+    if (!tree.length) { missing.push(source); return }
+    // only this saved folder is skipped: the others are still restored
+    var bad = validate(tree)
+    if (bad !== undefined) { refused.push(source + ' (voce non valida: ' + bad + ')'); return }
+    var folded = new Set(), collisions = 0
+    tree.forEach(e => { if (folded.has(key(e.path))) collisions++; folded.add(key(e.path)) })
     var name = source.split('/').filter(x => x).pop() || 'Backup'
     if (name === '.' || name === '..') name = 'Backup'
     var target = dest + '/' + name
     for (var n = 2; exists(target) || taken.has(key(target)); n++) target = dest + '/' + name + ' ' + n
     taken.add(key(target))
     var sizes = tree.filter(e => e.kind === 'file').map(e => e.size || 0)
-    plans.push({ source: source, name: name, target: target, tree: tree,
+    plans.push({ source: source, name: name, target: target, tree: tree, collisions: collisions,
                  files: sizes.length, bytes: sizes.reduce((a, b) => a + b, 0) })
   })
-  if (!plans.length) fail('Il backup ' + id + ' non contiene cartelle né file')
+  var notes = missing.map(s => 'NON è in questo backup: ' + s + ', scegli un backup precedente')
+    .concat(refused.map(s => 'Backup non valido per questa cartella, non viene scritta: ' + s))
+  if (!plans.length) fail((notes.length ? notes.join('\n') + '\n' : '') + 'Il backup ' + id + ' non contiene cartelle né file da ripristinare')
 
   // say what will happen, then ask twice: nothing is written before both answers
   var count = plans.reduce((a, p) => a + p.files, 0), bytes = plans.reduce((a, p) => a + p.bytes, 0)
@@ -235,7 +244,12 @@ function run(argv) {
     out('  ' + p.source + '\n    → ' + p.target)
     if (p.target !== dest + '/' + p.name) out('      (esiste già "' + p.name + '": quello esistente non viene toccato)')
     out('      ' + p.files + ' file, ' + size(p.bytes))
+    if (p.collisions) out('      ' + p.collisions + (p.collisions === 1 ? ' nome differisce' : ' nomi differiscono')
+      + ' solo per maiuscole o accenti da un altro: su un disco che non li distingue non viene ripristinato')
   })
+  if (notes.length) out('\n' + notes.join('\n'))
+  var warnings = Array.isArray(snapshot.warnings) ? snapshot.warnings : []
+  if (warnings.length) out('\nAvvisi del backup (' + warnings.length + '): alcuni file potrebbero mancare\n  ' + warnings.join('\n  '))
   out('\nIn tutto: ' + count + ' file, ' + size(bytes) + '. Spazio libero nella destinazione: '
     + (free === undefined ? 'sconosciuto' : size(free)) + '.')
   if (free !== undefined && free < bytes) out('ATTENZIONE: lo spazio libero non basta, il ripristino si fermerebbe a metà.')
@@ -291,7 +305,8 @@ function run(argv) {
 
   // Foundation writes names decomposed ("u" + "¨"); the saved ones are most likely composed ("ü"): the same for the
   // Finder, another name for git, rsync or a Linux server. perl's rename keeps the bytes it reads from stdin
-  // (arguments would be decomposed too)
+  // (arguments would be decomposed too). Through a temporary name: on case-sensitive APFS a rename between two
+  // forms of one name does nothing; never onto another item, put back if the second step fails
   var renames = []
   plans.forEach(plan => plan.tree.forEach(e => {
     if (!e.dest) return
@@ -301,7 +316,8 @@ function run(argv) {
   if (renames.length) {
     var t = $.NSTask.alloc.init, input = $.NSPipe.pipe
     t.launchPath = '/usr/bin/perl'
-    t.arguments = $(['-e', 'local $/ = "\\0"; my @p = <STDIN>; chomp @p; while (@p) { my ($a, $b) = splice(@p, 0, 2); rename($a, $b) }'])
+    t.arguments = $(['-e', 'local $/ = "\\0"; my @p = <STDIN>; chomp @p; while (@p) { my ($a, $b) = splice(@p, 0, 2); '
+      + 'my $t = "$a.backupme-nome"; next if -e $t || !rename($a, $t); rename($t, $a) if -e $b || !rename($t, $b) }'])
     t.standardInput = input
     t.launch
     input.fileHandleForWriting.writeData($(renames.join('\0') + '\0').dataUsingEncoding($.NSUTF8StringEncoding))
@@ -331,6 +347,8 @@ function run(argv) {
   all.filter(e => e.kind === 'directory').reverse().forEach(finish)
 
   plans.forEach(p => out('Ripristinato: ' + p.target))
+  // a partial backup is no success: said again at the end, and in the exit status for a script
+  problems = problems.concat(notes, warnings.length ? ['il backup è parziale, vedi gli avvisi del backup sopra'] : [])
   if (problems.length) fail('\nProblemi (' + problems.length + '):\n' + problems.join('\n'))
 }
 """#

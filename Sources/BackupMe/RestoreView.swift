@@ -242,7 +242,8 @@ struct RestoreView: View {
         var info: [String: (newBytes: Int64, warnings: Int)] = [:]
         for r in model.app.history {
             guard let id = r.snapshotID, let made = Snapshot.date(fromID: id), abs(made.timeIntervalSince(r.date)) < 2 else { continue }
-            info[id] = (r.newBytes, r.warnings.count)
+            // a partial backup (a folder unreadable, no room for some files) is marked too
+            info[id] = (r.newBytes, r.warnings.count + (r.error?.split(separator: "\n").count ?? 0))
         }
         return info
     }
@@ -666,6 +667,9 @@ struct RestoreView: View {
             if check.changedFiles > 0 {
                 text += "\n\n\(check.changedFiles == 1 ? "1 file è cambiato" : "\(check.changedFiles) file sono cambiati") dopo il backup: le versioni di oggi finiranno nel Cestino."
             }
+            if check.newFiles > 0 {
+                text += "\n\n\(check.newFiles == 1 ? "1 file è stato creato" : "\(check.newFiles) file sono stati creati") dopo il backup e non \(check.newFiles == 1 ? "c'è" : "ci sono"): \(check.newFiles == 1 ? "finirà" : "finiranno") nel Cestino."
+            }
             if check.repositoryChanged {
                 text += "\n\nIl repository git ha commit o branch più recenti del backup: finiranno nel Cestino con la cartella."
             }
@@ -712,13 +716,19 @@ struct RestoreView: View {
         for s in present where names.filter({ $0 == (s as NSString).lastPathComponent }).count > 1 {
             subfolders[s] = ((s as NSString).deletingLastPathComponent as NSString).lastPathComponent
         }
+        // a partial backup lists a folder it couldn't read: say so before a folder is chosen, not after
+        if !missing.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Non tutto è in questo backup"
+            alert.informativeText = "Non sono in questo backup, che è parziale: "
+                + missing.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: ", ")
+                + ". Per riaverle scegli un backup precedente."
+            alert.addButton(withTitle: "Ripristina il resto…")
+            alert.addButton(withTitle: "Annulla")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
         chooseFolder { dir in
             model.restore(snapshotID: id, items: present.map { (source: $0, path: "") }, mode: .into(dir), subfolders: subfolders)
-            // a partial backup lists a folder it couldn't read: say so instead of a nameless error
-            if !missing.isEmpty {
-                model.error = ("Non tutto è in questo backup", "Non sono in questo backup, che è parziale: "
-                               + missing.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: ", "))
-            }
         }
     }
 
