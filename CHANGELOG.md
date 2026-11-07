@@ -4,6 +4,9 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la n
 
 ## [Non rilasciato]
 
+### Aggiunto
+- **Impostazioni › Avanzate › Prova ora** (Ripristino senza l'app) prova `RIPRISTINO.command` come su un Mac senza BackupMe: controlla la versione, ripristina l'ultimo backup in una cartella temporanea, confronta ogni file con il backup e poi la cancella. Prima di partire dice quanti file e quanto spazio servono.
+
 ### Cambiato
 - `scripts/build-app.sh --install` compila, installa e apre l'app, e basta. È l'app, all'avvio, a registrarsi come servizio di login e a passare sotto launchd (riavvio dopo un crash già dalla prima esecuzione), e ad aggiornare `RIPRISTINO.command` nella destinazione. Il programma `KitUpdater` non c'è più.
 

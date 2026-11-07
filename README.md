@@ -83,7 +83,7 @@ I file non si leggono direttamente da OneDrive: si ripristinano con **Sfoglia ba
 sh "<destinazione>/BackupMe/RIPRISTINO.command"
 ```
 
-Senza argomenti elenca computer e backup; con `<computer> <id del backup> <cartella>` ricrea le cartelle salvate dentro `<cartella>`, verificando ogni file e senza sovrascrivere niente.
+Senza argomenti elenca computer e backup; con `<computer> <id del backup> <cartella>` ricrea le cartelle salvate dentro `<cartella>`, verificando ogni file e senza sovrascrivere niente. Per sapere se funziona prima di averne bisogno: **Impostazioni › Avanzate › Prova ora** lo esegue sull'ultimo backup, in una cartella temporanea che poi cancella.
 
 ## Se qualcosa va storto
 

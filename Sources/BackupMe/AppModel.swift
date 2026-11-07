@@ -87,6 +87,11 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     private var otherCheckProblems = false
     private var checkCancel = OSAllocatedUnfairLock(initialState: false)
     private var lastCheckProgressUptime = ProcessInfo.processInfo.systemUptime
+    /// "Prova il kit di ripristino": the backup it would restore, waiting for the user's yes.
+    var pendingKitTest: KitTestPlan?
+    var kitTestRunning = false
+    var kitTestResult: (text: String, ok: Bool)?
+    private var kitTestCancel = OSAllocatedUnfairLock(initialState: false)
     var isRunning: Bool { if case .running = status { true } else { false } }
     var lastReport: BackupReport? { history.last }
 
@@ -311,6 +316,66 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     func cancelCheck() { checkCancel.withLock { $0 = true } }
+
+    /// First step of "Prova il kit di ripristino": the latest backup and its size, so the user knows what the test
+    /// restores (and downloads, from a cloud folder) before saying yes.
+    func prepareKitTest() {
+        guard !kitTestRunning, let dest = settings.destination else { return }
+        kitTestResult = nil
+        let archive = AppPaths.archiveName
+        Task.detached(priority: .userInitiated) {
+            let plan = Result {
+                try kitTestPlan(repository: Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false))
+            }
+            await MainActor.run {
+                switch plan {
+                case .success(let p?): self.pendingKitTest = p
+                case .success(nil): self.kitTestResult = ("Nessun backup da provare: fai prima un backup", false)
+                case .failure(let e): self.kitTestResult = (Self.describe(e), false)
+                }
+            }
+        }
+    }
+
+    /// RIPRISTINO.command restores the backup into a temporary folder, as on a Mac without BackupMe; every file is
+    /// compared with the index, then the folder is deleted.
+    func runKitTest(_ plan: KitTestPlan) {
+        pendingKitTest = nil
+        guard !kitTestRunning, let dest = settings.destination else { return }
+        kitTestRunning = true
+        let flag = OSAllocatedUnfairLock(initialState: false)
+        kitTestCancel = flag
+        let archive = AppPaths.archiveName
+        Log.restore.info("Prova del kit di ripristino sul backup \(plan.snapshotID) avviata")
+        Task.detached(priority: .utility) {
+            let activity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled], reason: "Prova del kit di ripristino")
+            defer { ProcessInfo.processInfo.endActivity(activity) }
+            let work = FileManager.default.temporaryDirectory.appending(path: "BackupMe-prova-kit-\(UUID().uuidString)")
+            let result = Result {
+                let repo = try Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false)
+                return try testRestoreKit(repository: repo, snapshotID: plan.snapshotID, into: work) { flag.withLock { $0 } }
+            }
+            await MainActor.run {
+                self.kitTestRunning = false
+                switch result {
+                case .success(let t) where t.passed:
+                    let when = Snapshot.date(fromID: t.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? t.snapshotID
+                    self.kitTestResult = ("RIPRISTINO.command versione \(t.installed ?? 0) funziona: ripristinati e verificati \(t.files) file del backup del \(when)", true)
+                    Log.restore.info("Prova del kit di ripristino riuscita: \(t.files) file verificati")
+                case .success(let t):
+                    self.kitTestResult = (t.problems.joined(separator: "\n"), false)
+                    Log.restore.error("Prova del kit di ripristino non riuscita: \(t.problems.joined(separator: " | "))")
+                case .failure(BackupError.cancelled):
+                    self.kitTestResult = ("Prova interrotta", false)
+                case .failure(let e):
+                    self.kitTestResult = (Self.describe(e), false)
+                    Log.restore.error("Prova del kit di ripristino non riuscita: \(Self.describe(e))")
+                }
+            }
+        }
+    }
+
+    func cancelKitTest() { kitTestCancel.withLock { $0 = true } }
 
     private func finishCheck(_ result: Result<ArchiveCheck, Error>) {
         switch result {

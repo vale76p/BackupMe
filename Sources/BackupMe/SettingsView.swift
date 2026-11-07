@@ -58,7 +58,9 @@ struct SettingsView: View {
         case .retention: RetentionSection(model: model)
         case .excludes: ExcludesSection(model: model)
         case .log: LogViewSection()
-        case .advanced: ArchiveCheckSection(model: model)
+        case .advanced:
+            ArchiveCheckSection(model: model)
+            KitTestSection(model: model)
         }
     }
 }
@@ -941,6 +943,44 @@ private struct LogViewSection: View {
 
     /// Off the main thread: up to 2 MB of log to read, behind any write still queued.
     private func reload() { Task { lines = await Task.detached(priority: .userInitiated) { Log.lines() }.value } }
+}
+
+private struct KitTestSection: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        Section {
+            if model.kitTestRunning {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Ripristino di prova con RIPRISTINO.command…")
+                    Spacer()
+                    Button("Interrompi", action: model.cancelKitTest)
+                }
+            } else {
+                LabeledContent("Kit di ripristino") {
+                    Button("Prova ora") { model.prepareKitTest() }
+                        .disabled(model.isRunning || model.checkProgress != nil || model.restoring || model.settings.destination == nil)
+                }
+            }
+            if let r = model.kitTestResult {
+                Label(r.text, systemImage: r.ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(r.ok ? Color.green : Color.red)
+            }
+        } header: {
+            Text("Ripristino senza l'app")
+        } footer: {
+            Text("Esegue RIPRISTINO.command come su un Mac senza BackupMe: controlla la versione, ripristina l'ultimo backup in una cartella temporanea, confronta ogni file con il backup e poi la cancella.")
+        }
+        .confirmationDialog("Provare il kit di ripristino?",
+                            isPresented: Binding(get: { model.pendingKitTest != nil }, set: { if !$0 { model.pendingKitTest = nil } }),
+                            presenting: model.pendingKitTest) { plan in
+            Button("Prova") { model.runKitTest(plan) }
+        } message: { plan in
+            let when = Snapshot.date(fromID: plan.snapshotID)?.formatted(date: .abbreviated, time: .shortened) ?? plan.snapshotID
+            Text("Ripristina il backup del \(when) (\(plan.files) file, \(plan.bytes.formatted(.byteCount(style: .file)))) in una cartella temporanea di questo Mac, poi la cancella. Serve altrettanto spazio libero; se la destinazione è nel cloud con i file su richiesta, li scarica.")
+        }
+    }
 }
 
 private struct ArchiveCheckSection: View {
