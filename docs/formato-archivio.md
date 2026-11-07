@@ -43,13 +43,14 @@ Scritto alla creazione come `{"format":1,"id":"<UUID>","created":<secondi>}`. Po
 
 - **Archivio**: il campo `id` di `repo.json` (UUID).
 - **Backup (snapshot)**: data UTC nel formato `yyyy-MM-dd'T'HH-mm-ss'Z'`, locale `en_US_POSIX`, per esempio `2026-11-05T10-00-00Z` (`Snapshot.id(for:)`). Se esiste già un manifest con quell'id si aggiunge un secondo: un manifest al secondo, mai sovrascritto.
+  Un backup che non trova niente di cambiato e ha ancora il digest dell'ultimo manifest non ne scrive uno nuovo: riporta l'id di quello precedente.
 - **Oggetto**: SHA-256 del contenuto originale (non compresso), 64 cifre esadecimali minuscole (`Repository.isHash`).
 
 ## Oggetti
 
 `objects/<prime 2 cifre>/<sha256>.<ext>`. Lo stesso contenuto si salva una volta sola, qualunque sia il numero di file, cartelle e backup che lo usano.
 
-- **`.lzfse`**: il contenuto compresso con `NSData.compressed(using: .lzfse)`. Si usa per i file sotto 32 MiB (`Repository.streamThreshold`) quando la compressione fa risparmiare più del 5% (compresso `< 95%` dell'originale).
+- **`.lzfse`**: il contenuto compresso con `NSData.compressed(using: .lzfse)`. Si usa per i file sotto 32 MiB (`Repository.streamThreshold`) quando la compressione fa risparmiare più del 5% (compresso `< data.count * 95 / 100` in aritmetica intera, quindi la soglia è arrotondata per difetto).
 - **`.raw`**: il contenuto byte per byte. Si usa per i file vuoti, per quelli poco comprimibili e per tutti quelli da 32 MiB in su, che vengono copiati in streaming (con un clone APFS se si può) e verificati prima della rinomina.
 - In lettura si cerca prima `.lzfse`, poi `.raw`; il contenuto decompresso deve avere lo SHA-256 del nome, altrimenti `corruptObject`. Un oggetto danneggiato non viene mai cancellato in lettura.
 - Permessi: `0644` per gli oggetti scritti dalla memoria (i `.lzfse` e i `.raw` sotto 32 MiB); quelli copiati in streaming tengono i permessi del file d'origine.
@@ -58,7 +59,7 @@ Scritto alla creazione come `{"format":1,"id":"<UUID>","created":<secondi>}`. Po
 
 `snapshots/<id>.json.lzfse` è un JSON UTF-8 compresso con LZFSE (`NSData`). Il manifest si scrive per ultimo: un backup senza manifest non esiste e i suoi oggetti li toglie la pulizia. È immutabile: si crea con una rinomina esclusiva e non si sovrascrive mai (`writeSnapshot`).
 
-**Codifica.** `JSONEncoder` con `.sortedKeys` e date `.secondsSince1970` (numeri, con decimali), senza spazi. I campi facoltativi a `nil` non compaiono.
+**Codifica.** `JSONEncoder` con `.sortedKeys` e date `.secondsSince1970` (numeri, con decimali), senza spazi. I campi facoltativi a `nil` non compaiono. La `/` è scritta come `\/` (comportamento predefinito di `JSONEncoder`): il checksum copre i byte esatti del file, quindi chi lo verifica fa l'hash dei byte letti, senza ricodificare il JSON.
 
 **Checksum.** Dal JSON codificato si toglie la `{` iniziale; il resto è il *corpo*. Il file contiene:
 
