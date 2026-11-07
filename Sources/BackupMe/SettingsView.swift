@@ -375,7 +375,9 @@ private struct SpaceSection: View {
 
 private struct ScheduleSection: View {
     @Bindable var model: AppModel
-    @State private var launchAtLogin = SystemServices.launchAtLogin
+    // shown off when System Settings turned it off: the plist alone starts nothing
+    @State private var launchAtLogin = SystemServices.launchAtLogin && !SystemServices.loginItemDisabled
+    @State private var loginDisabled = SystemServices.loginItemDisabled
     @State private var loginError: String?
 
     // every text sits in a row or a one-line footer: the whole pane fits the window without scrolling
@@ -395,8 +397,21 @@ private struct ScheduleSection: View {
                         loginError = error.localizedDescription
                         launchAtLogin = SystemServices.launchAtLogin
                     }
+                    loginDisabled = SystemServices.loginItemDisabled
                 }
             if let loginError { ErrorRow(text: loginError) }
+            if loginDisabled {
+                HStack {
+                    ErrorRow(text: "Spento in Impostazioni di Sistema › Elementi login: al login BackupMe non parte")
+                    Spacer()
+                    Button("Apri Elementi login") { SystemServices.openLoginItemsSettings() }
+                }
+                // back from System Settings: switched on there, the warning goes and the toggle follows
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    loginDisabled = SystemServices.loginItemDisabled
+                    if !loginDisabled { launchAtLogin = SystemServices.launchAtLogin }
+                }
+            }
         }
         Section {
             Toggle("Rimanda quando il Mac è a batteria", isOn: $model.settings.onlyOnPower)
@@ -748,7 +763,8 @@ private struct ExcludesSection: View {
                       systemImage: "icloud")
                     .help("File e cartelle che il servizio cloud tiene solo online (per esempio iCloud con «Ottimizza spazio»): scaricarli a ogni backup costerebbe ore e gigabyte. Sono nel backup solo se un backup precedente li aveva già salvati.")
             }
-            if let n = model.lastReport?.warnings.count, n > 0 {
+            // the archive problems stay after "Cancella avvisi": not counted among those it clears
+            if let n = model.lastReport?.warnings.filter({ w in !AppModel.criticalPrefixes.contains(where: w.hasPrefix) }).count, n > 0 {
                 HStack {
                     Text(n == 1 ? "1 avviso nell'ultimo backup" : "\(n) avvisi nell'ultimo backup")
                     Spacer()

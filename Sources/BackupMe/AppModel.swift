@@ -49,6 +49,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
     /// True until the backup task really ends: after a "stuck" timeout it may still hold the archive lock.
     private var workerActive = false
+    /// The same for the full check and the deletion of damaged backups, which hold the lock too.
+    private var checkWorkerActive = false
     /// The last archive problem (damaged, incomplete, recreated, cleanup failed): it stays in the badge until a
     /// full check finds the archive healthy, not only for the one backup that noticed it.
     var archiveProblem = UserDefaults.standard.string(forKey: "archiveProblem") {
@@ -97,6 +99,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 try? FileManager.default.moveItem(at: AppPaths.history, to: AppPaths.history.appendingPathExtension("illeggibile"))
             }
         }
+        // the last attempt's failure, still unsolved: the icon must not turn green just because the app restarted
+        if let err = lastReport?.error, err != Self.describe(BackupError.cancelled) { status = .failed(err) }
         if settings.isConfigured, configuredSince == nil { configuredSince = Date() }
         if !UserDefaults.standard.bool(forKey: "loginAgentConfigured") {
             // a backup service should run without being opened by hand: on by default
@@ -149,7 +153,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 // a read blocked in the check must not stop the backups for good
                 cancelCheck()
                 checkProgress = nil
-                checkResult = ("Controllo bloccato da più di 2 ore: interrotto, i backup riprendono", false)
+                checkResult = ("Controllo bloccato da più di 2 ore: interrotto, i backup riprendono appena si sblocca, o riavvia BackupMe", false)
                 Log.backup.error("Controllo completo dell'archivio bloccato da più di 2 ore: interrotto")
             } else {
                 // said in the panel instead of skipping the backup in silence
@@ -174,7 +178,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     func backupNow() {
-        guard !isRunning, !workerActive, checkProgress == nil else { return }
+        // not during a restore either: cleanup could delete the backup being restored
+        guard !isRunning, !workerActive, !checkWorkerActive, checkProgress == nil, !restoring else { return }
         guard settings.isConfigured else {
             status = .failed(Self.notConfigured)
             return
@@ -220,8 +225,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
 
     /// Reads back every backup and every file of this Mac's archive, from Impostazioni › Avanzate.
     func checkArchiveNow() {
-        guard !isRunning, !workerActive, checkProgress == nil, let dest = settings.destination else { return }
+        guard !isRunning, !workerActive, !checkWorkerActive, checkProgress == nil, let dest = settings.destination else { return }
         checkProgress = 0
+        checkWorkerActive = true
         checkResult = nil
         damagedBackups = []
         deferral = nil
@@ -248,6 +254,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 }
             }
             await MainActor.run {
+                self.checkWorkerActive = false
                 self.checkProgress = nil
                 self.deferral = nil
                 self.finishCheck(result)
@@ -290,14 +297,18 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     func deleteDamagedBackups() {
-        guard !isRunning, !workerActive, checkProgress == nil, let dest = settings.destination, !damagedBackups.isEmpty else { return }
+        guard !isRunning, !workerActive, !checkWorkerActive, checkProgress == nil, let dest = settings.destination,
+              !damagedBackups.isEmpty else { return }
         let ids = damagedBackups, archive = AppPaths.archiveName
+        checkWorkerActive = true
         Task.detached(priority: .userInitiated) {
             let result = Result {
                 let repo = try Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false)
+                try repo.withLock { try repo.claim(owner: getuid()) }
                 return try BackupCore.deleteDamagedSnapshots(ids, repository: repo, refsCache: AppPaths.refsCache(archive, destination: repo.root.path))
             }
             await MainActor.run {
+                self.checkWorkerActive = false
                 switch result {
                 case .failure(let error):
                     self.checkResult = ("Eliminazione non riuscita: \(Self.describe(error))", false)
@@ -340,18 +351,20 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     /// synced or its client doesn't report upload state: then there is nothing reliable to say.
     nonisolated static func uploadProblem(destination: String, archive: String, now: Date) -> String? {
         guard let repo = try? Repository(destination: URL(fileURLWithPath: destination), computerName: archive, create: false),
-              let ids = try? repo.snapshotIDs(), let newest = ids.last else { return nil }
+              let ids = try? repo.snapshotIDs(), !ids.isEmpty else { return nil }
         let keys: Set<URLResourceKey> = [.isUbiquitousItemKey, .ubiquitousItemIsUploadedKey, .ubiquitousItemUploadingErrorKey]
         let stale: TimeInterval = 3 * 86400
+        var oldestPending: Date?
         for id in ids.reversed() {
             // archive layout (README): snapshots/<id>.json.lzfse
             let url = repo.root.appending(path: "snapshots/\(id).json.lzfse")
             guard let v = try? url.resourceValues(forKeys: keys), v.isUbiquitousItem == true,
                   let uploaded = v.ubiquitousItemIsUploaded else { return nil }
             if let err = v.ubiquitousItemUploadingError { return "Il caricamento non riesce: \(err.localizedDescription)" }
-            guard uploaded else { continue }
-            // the newest uploaded backup: a problem only when newer ones have waited for days
-            guard id != newest, let date = Snapshot.date(fromID: id), now.timeIntervalSince(date) > stale else { return nil }
+            guard uploaded else { oldestPending = Snapshot.date(fromID: id) ?? oldestPending; continue }
+            // the newest uploaded backup: a problem only when the oldest one after it has waited for days, not when it
+            // is just old (days without changes, then one backup not uploaded yet)
+            guard let pending = oldestPending, now.timeIntervalSince(pending) > stale, let date = Snapshot.date(fromID: id) else { return nil }
             return "L'ultimo backup caricato nel cloud è del \(date.formatted(date: .abbreviated, time: .shortened))"
         }
         guard let oldest = ids.first.flatMap(Snapshot.date(fromID:)), now.timeIntervalSince(oldest) > stale else { return nil }
@@ -369,10 +382,13 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         let repo: Repository
         do {
             repo = try Repository(destination: URL(fileURLWithPath: s.destination ?? ""), computerName: archive)
+            // before any write or cleanup: another account's archive is refused, not shared
+            try repo.withLock { try repo.claim(owner: getuid()) }
         } catch {
             return (failed(error), nil, false)
         }
         var report: BackupReport
+        var thrown: Error?
         let cache = HashCache(url: AppPaths.hashCache(archive))
         do {
             let engine = BackupEngine(repository: repo, cache: cache, excludes: s.excludeRules,
@@ -380,6 +396,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             report = try engine.run(sources: s.sources.map { URL(fileURLWithPath: $0) }, now: start,
                                     progress: progress, isCancelled: isCancelled)
         } catch {
+            thrown = error
             report = failed(error)
             // a write that fails names an archive folder ("in “2e”") or nothing at all: say where and why
             if !(error is RepositoryError || error is BackupError) {
@@ -415,14 +432,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 report.warnings.append("Verifica dell'archivio non riuscita: \(describe(error))")
             }
         }
-        // stopped on purpose (or by the 2-hour timeout): no cleanup, which would delete every object this run
-        // already copied and make the next attempt start over
-        if report.error == describe(BackupError.cancelled) { return (report, nil, verified) }
-        // a partial backup (a source unreadable, deleted or renamed) must not let retention replace complete
-        // snapshots with it: the last complete one is pinned. Unknown or not in this archive: skip cleanup.
-        let partial = report.error != nil && report.snapshotID != nil
-        let pin = partial ? lastComplete.flatMap { repo.snapshotExists($0) ? $0 : nil } : nil
-        guard !partial || pin != nil else { return (report, nil, verified) }
+        // interrupted, archive locked, or partial with no complete backup to pin: no cleanup (see cleanupDecision)
+        guard case .prune(let pinned) = cleanupDecision(thrown: thrown, report: report,
+                                                        lastComplete: lastComplete.flatMap { repo.snapshotExists($0) ? $0 : nil })
+        else { return (report, nil, verified) }
         do {
             // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
             let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
@@ -432,8 +445,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             // a failed run may have left orphan objects: collect them (this also frees space when the disk is full)
             let result = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
                                    refsCache: AppPaths.refsCache(archive, destination: repo.root.path), forceGC: report.snapshotID == nil,
-                                   // the backup just made too: with a clock gone wrong it may not look like the newest
-                                   pinned: Set([pin, report.snapshotID].compactMap { $0 }), gcDue: gcDue)
+                                   pinned: pinned, gcDue: gcDue)
             if result.collected { UserDefaults.standard.set(Date(), forKey: "lastGC") }
             Log.backup.debug("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) oggetti eliminati, archivio \(result.poolSize) byte, oltre il tetto: \(result.overCap), rinviata: \(result.gcSkipped), oggetti mancanti: \(result.missingObjects)")
             if result.archiveReplaced {
@@ -530,6 +542,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RepositoryError.corruptObject(let h): return "Archivio danneggiato (oggetto \(h.prefix(12)))"
         case RepositoryError.damagedSnapshot(let id):
             return "\(damaged) il backup del \(Snapshot.date(fromID: id)?.formatted(date: .abbreviated, time: .shortened) ?? id) non si legge"
+        case RepositoryError.otherOwner:
+            return "L'archivio in questa destinazione è di un altro utente di questo Mac: scegli un'altra cartella di destinazione per i tuoi backup"
         case RepositoryError.newerFormat(let f):
             return "L'archivio è stato creato da una versione più recente di BackupMe (formato \(f)): aggiorna l'app per continuare i backup"
         case BackupError.sourceOverlapsDestination(let p): return "\((p as NSString).abbreviatingWithTildeInPath) è dentro la destinazione dei backup"
@@ -543,6 +557,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RestoreError.containsArchive(let p):
             return "«\((p as NSString).lastPathComponent)» contiene l'archivio dei backup: Sostituisci lo manderebbe nel Cestino. Usa Ripristina accanto o Ripristina in…"
         case let e where BackupEngine.posixCode(e) == ELOOP: return linkInArchive
+        // a missing object is named by its hash, which means nothing to anyone
+        case let e as CocoaError where e.code == .fileNoSuchFile && e.filePath.map(Repository.isHash) == true:
+            return "Manca un file nell'archivio: prova un'altra versione o Impostazioni › Avanzate › Controlla ora"
         default: return error.localizedDescription
         }
     }

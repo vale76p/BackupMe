@@ -136,6 +136,14 @@ enum SystemServices {
 
     static var launchAtLogin: Bool { FileManager.default.fileExists(atPath: agentPlist.path) }
 
+    /// Turned off in Impostazioni di Sistema › Generali › Elementi login: the plist is still there but launchd
+    /// ignores it, so nothing starts at login (not even the 3-day alert, which the app itself sends).
+    static var loginItemDisabled: Bool {
+        launchAtLogin && SMAppService.statusForLegacyPlist(at: agentPlist) == .requiresApproval
+    }
+
+    static func openLoginItemsSettings() { SMAppService.openSystemSettingsLoginItems() }
+
     /// This copy when it is installed in an Applications folder (an update put in /Applications must not leave the
     /// login agent on an old copy in ~/Applications); otherwise the installed one, so a run from the build folder
     /// doesn't take over the login.

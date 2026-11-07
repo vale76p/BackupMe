@@ -111,6 +111,7 @@ extension AppModel {
         guard !settings.paused else { return "Backup automatici sospesi" }
         if isRunning { return "In corso" }
         if let deferral { return deferral.until }
+        if case .failed = status { return "Nuovo tentativo tra al massimo 15 minuti" } // retryAfterFailure
         guard let last = lastSuccess else { return "Entro un minuto" }
         let next = last.addingTimeInterval(Double(settings.intervalHours) * 3600)
         return next < Date() ? "A breve" : next.formatted(date: .abbreviated, time: .shortened)
@@ -131,7 +132,7 @@ extension AppModel {
             // no changes: the run reused the previous manifest, so the backup list shows nothing new; say why
             if let r = lastReport, r.error == nil, let id = r.snapshotID, let saved = Snapshot.date(fromID: id),
                saved < r.date.addingTimeInterval(-2) {
-                return "Nessuna modifica dal \(f.string(from: saved)) · controllato \(r.date.formatted(date: .omitted, time: .shortened))"
+                return "Nessuna modifica da \(f.string(from: saved)) · controllato \(r.date.formatted(date: .omitted, time: .shortened))"
             }
             return "Ultimo backup: \(f.string(from: last))"
         }
