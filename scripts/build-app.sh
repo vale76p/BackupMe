@@ -70,6 +70,30 @@ if [[ "${1:-}" == "--install" ]]; then
     mv "$NEXT" "$HOME/Applications/BackupMe.app"
     echo "Installed $HOME/Applications/BackupMe.app"
     if [[ -n "$OLD" && "$OLD" != "$NEW" ]]; then echo "Aggiornamento da $OLD a $NEW"; fi
+    EXE="$HOME/Applications/BackupMe.app/Contents/MacOS/BackupMe"
+    # first install: the login agent the app writes at its first launch (SystemServices.setLaunchAtLogin), written
+    # now so launchd supervises it from the start. Not when the app has run and the user turned it off
+    if [[ ! -f "$AGENT" ]] && ! defaults read com.vale76p.BackupMe loginAgentConfigured >/dev/null 2>&1; then
+        mkdir -p "$(dirname "$AGENT")"
+        cat > "$AGENT" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.vale76p.BackupMe</string>
+    <key>ProgramArguments</key><array><string></string></array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+    <key>ProcessType</key><string>Interactive</string>
+</dict>
+</plist>
+EOF
+    fi
+    # before bootstrap: an agent still on another copy (/Applications) would start that one, not this update
+    if [[ -f "$AGENT" ]]; then
+        { plutil -replace ProgramArguments -array "$AGENT" && plutil -insert ProgramArguments.0 -string "$EXE" "$AGENT"; } \
+            || echo "warning: servizio di login non aggiornato, lo corregge l'app al primo avvio" >&2
+    fi
     # under launchd when the login agent is on, so KeepAlive restarts it after a crash from now on, not only
     # after the next login; otherwise a plain launch (backups must keep running after pkill above)
     if [[ -f "$AGENT" ]] && launchctl bootstrap "gui/$(id -u)" "$AGENT" 2>/dev/null; then
