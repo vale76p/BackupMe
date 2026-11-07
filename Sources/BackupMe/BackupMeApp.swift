@@ -212,7 +212,8 @@ struct MenuContent: View {
                     HStack(spacing: 6) {
                         Text("BackupMe").font(.headline)
                         // nil under `swift run`, which has no Info.plist
-                        if let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
+                        // the full label (1.0.0-rc2): CFBundleShortVersionString only takes digits
+                        if let v = (Bundle.main.infoDictionary?["BackupMeVersionLabel"] ?? Bundle.main.infoDictionary?["CFBundleShortVersionString"]) as? String {
                             Text("v\(v)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
                         }
                         if model.settings.paused {
