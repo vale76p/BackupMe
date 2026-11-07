@@ -46,12 +46,7 @@ public final class Repository {
         destinationFD = open(destination.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard destinationFD >= 0 else { throw Self.posixError() }
         let info = root.appending(path: "repo.json")
-        // browsing a newer archive is allowed; writing to it or cleaning it up could damage what this version
-        // doesn't understand
-        if create, let data = try? Data(contentsOf: info),
-           let found = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["format"] as? Int, found > Self.format {
-            throw RepositoryError.newerFormat(found)
-        }
+        if create, let found = newerFormat { throw RepositoryError.newerFormat(found) }
         guard create else {
             guard fm.fileExists(atPath: info.path) else { throw RepositoryError.destinationMissing(root.path) }
             return
@@ -77,6 +72,15 @@ public final class Repository {
     /// The archive's identity, from repo.json: a different one means the archive was made again from nothing.
     public var archiveID: String? {
         (try? Data(contentsOf: root.appending(path: "repo.json"))).flatMap(Self.id(in:))
+    }
+
+    /// repo.json's format when it is newer than this version's. Browsing such an archive is allowed; writing to it
+    /// or cleaning it up could damage what this version doesn't understand.
+    private var newerFormat: Int? {
+        guard let data = try? Data(contentsOf: root.appending(path: "repo.json")),
+              let found = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["format"] as? Int,
+              found > Self.format else { return nil }
+        return found
     }
 
     private static func id(in data: Data) -> String? {
@@ -414,6 +418,8 @@ public final class Repository {
     /// Each Mac writes only its own archive folder, so a machine-local lock is enough.
     @discardableResult
     public func withLock<T>(_ body: () throws -> T) throws -> T {
+        // every write goes through here, also from an archive opened with `create: false` ("Controlla ora", "Elimina…")
+        if let found = newerFormat { throw RepositoryError.newerFormat(found) }
         let archive = try archiveDirectory()
         defer { close(archive) }
         // close-on-exec: a process started meanwhile would otherwise inherit the descriptor and hold the lock.
