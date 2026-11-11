@@ -22,7 +22,7 @@ public struct PruneResult: Equatable, Sendable {
 
 /// Applies retention, then deletes oldest snapshots while the pool exceeds `capBytes` (never the newest),
 /// then removes objects no manifest references. Object cleanup runs only when a snapshot was deleted or
-/// `forceGC` is set (after a failed backup that may have left orphan objects).
+/// `forceGC` is set. The app never forces it: the orphans of a failed backup are what the next attempt reuses.
 ///
 /// `refsCache` is a local folder remembering which objects each manifest uses (manifests are immutable), so
 /// manifests on OneDrive are read once. It also detects cached manifests that disappeared without this code

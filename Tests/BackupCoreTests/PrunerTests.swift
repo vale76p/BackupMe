@@ -57,6 +57,26 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: tmpFile.path))
     }
 
+    /// What the app relies on since it stopped forcing collection after a failed backup: ordinary cleanup leaves
+    /// the objects of a run without a manifest, the next backup uses them without copying, and the cap still wins.
+    @Test func objectsOfFailedRunSurviveCleanupAndAreReused() throws {
+        let repo = try backup(["a.txt": Data("a".utf8)], at: t0)
+        let copied = random(4000)
+        _ = try repo.putObject(copied, hash: sha256Hex(copied)) // a run that failed before writing its manifest
+        let kept = try prune(repository: repo, policy: keepAll, capBytes: nil, now: t0)
+        #expect(!kept.collected && kept.deletedObjects == 0 && repo.hasObject(sha256Hex(copied)))
+
+        try copied.write(to: src.appending(path: "b.bin"))
+        let next = try BackupEngine(repository: repo, cache: HashCache(url: cacheURL), excludes: ExcludeRules(patterns: []))
+            .run(sources: [src], now: t0.addingTimeInterval(3600))
+        #expect(next.newBytes == 0 && next.error == nil)
+
+        let orphan = random(4000)
+        _ = try repo.putObject(orphan, hash: sha256Hex(orphan))
+        let over = try prune(repository: repo, policy: keepAll, capBytes: 6000, now: t0.addingTimeInterval(3600))
+        #expect(over.collected && !repo.hasObject(sha256Hex(orphan)) && repo.hasObject(sha256Hex(copied)))
+    }
+
     @Test func capDeletesOldestUntilUnder() throws {
         var repo: Repository!
         for i in 0..<3 { repo = try backup(["f\(i).bin": random(1_000_000)], at: t0.addingTimeInterval(Double(i) * 3600)) }

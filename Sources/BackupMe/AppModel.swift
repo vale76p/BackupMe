@@ -563,11 +563,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             // objects of the backups that leave are collected once a day, not at every hourly backup
             let lastGC = UserDefaults.standard.object(forKey: "lastGC") as? Date
             let gcDue = lastGC.map { Date().timeIntervalSince($0) > 86400 || $0 > Date() } ?? true
-            // a failed run may have left orphan objects: collect them (this also frees space when the disk is full)
+            // never forced after a failed run: what it copied is what the next attempt needs, and deleting it was
+            // thousands of files removed from the cloud and uploaded again. Over the cap they are collected anyway
             let result = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
-                                   refsCache: AppPaths.refsCache(archive, destination: repo.root.path), forceGC: report.snapshotID == nil,
+                                   refsCache: AppPaths.refsCache(archive, destination: repo.root.path),
                                    pinned: pinned, gcDue: gcDue)
             if result.collected { UserDefaults.standard.set(Date(), forKey: "lastGC") }
+            // in the Registro at any log level: the count to compare with a cloud service's "many files deleted" alert
+            if result.deletedObjects > 0 {
+                Log.backup.info("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) file eliminati dall'archivio")
+            }
             Log.backup.debug("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) oggetti eliminati, archivio \(result.poolSize) byte, oltre il tetto: \(result.overCap), rinviata: \(result.gcSkipped), oggetti mancanti: \(result.missingObjects)")
             if result.archiveReplaced {
                 report.warnings.append("\(Self.recreated) nella destinazione c'è un archivio nuovo e i backup precedenti non ci sono più. Se non l'hai cancellato tu, controlla la cartella: un servizio cloud può averlo spostato o rinominato")
