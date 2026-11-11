@@ -172,15 +172,15 @@ import Testing
 
     @Test func newerFormatIsNeverWritten() throws {
         let id = try fresh()
-        write(#"{"format":2,"id":"x"}"#, to: root.appending(path: "repo.json"))
+        write(#"{"format":3,"id":"x"}"#, to: root.appending(path: "repo.json"))
         let stray = root.appending(path: "objects/ab/x.raw.tmp")
         write("mezzo", to: stray)
         try? fm.removeItem(at: root.appending(path: "lock"))
         func listing() -> [String] { (fm.enumerator(atPath: dest.path)?.allObjects as? [String] ?? []).sorted() }
         let before = listing()
-        #expect(throws: RepositoryError.newerFormat(2)) { _ = try Repository(destination: dest, computerName: "Mac") }
+        #expect(throws: RepositoryError.newerFormat(3)) { _ = try Repository(destination: dest, computerName: "Mac") }
         let repo = try Repository(destination: dest, computerName: "Mac", create: false)
-        #expect(throws: RepositoryError.newerFormat(2)) { _ = try upgradeCheck(repository: repo) }
+        #expect(throws: RepositoryError.newerFormat(3)) { _ = try upgradeCheck(repository: repo) }
         #expect(listing() == before)
         #expect(fm.fileExists(atPath: stray.path) && fm.fileExists(atPath: manifest(id).path))
     }

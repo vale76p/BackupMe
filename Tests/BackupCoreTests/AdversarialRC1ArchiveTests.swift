@@ -152,12 +152,12 @@ import Testing
     @Test func newerFormatRefusesEveryWrite() throws {
         write("dati", to: src.appending(path: "a.txt"))
         let id = try #require(try backup(try Repository(destination: dest, computerName: "Mac")).snapshotID)
-        try Data(#"{"format":2,"id":"x"}"#.utf8).write(to: dest.appending(path: "BackupMe/Mac/repo.json"))
+        try Data(#"{"format":3,"id":"x"}"#.utf8).write(to: dest.appending(path: "BackupMe/Mac/repo.json"))
         let repo = try Repository(destination: dest, computerName: "Mac", create: false)
         let cache = HashCache(url: tmp().appending(path: "c.json"))
-        #expect(throws: RepositoryError.newerFormat(2)) { try checkArchive(repository: repo, cache: cache) }
-        #expect(throws: RepositoryError.newerFormat(2)) { try deleteDamagedSnapshots([id], repository: repo, refsCache: nil) }
-        #expect(throws: RepositoryError.newerFormat(2)) {
+        #expect(throws: RepositoryError.newerFormat(3)) { try checkArchive(repository: repo, cache: cache) }
+        #expect(throws: RepositoryError.newerFormat(3)) { try deleteDamagedSnapshots([id], repository: repo, refsCache: nil) }
+        #expect(throws: RepositoryError.newerFormat(3)) {
             try prune(repository: repo, policy: RetentionPolicy(), capBytes: nil, now: t0, forceGC: true)
         }
         #expect(try repo.snapshotIDs() == [id], "browsing still works")

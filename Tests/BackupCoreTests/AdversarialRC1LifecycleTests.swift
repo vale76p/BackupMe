@@ -71,7 +71,7 @@ import Testing
         let json = try info(r)
         #expect(json?["owner"] as? Int == 501)
         #expect(json?["ownerName"] as? String == "anna")
-        #expect(json?["format"] as? Int == Repository.format)
+        #expect(json?["format"] as? Int == 1) // 2 only once it has a container
         #expect(throws: RepositoryError.otherOwner) { try r.claim(owner: 502, name: "bruno") }
     }
 

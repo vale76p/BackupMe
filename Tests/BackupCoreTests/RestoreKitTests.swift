@@ -174,10 +174,10 @@ import Testing
     @Test func newerFormatIsRefused() throws {
         let id = try backup()
         let info = kit.appending(path: "Mac/repo.json")
-        try Data(#"{"format":2,"id":"x"}"#.utf8).write(to: info)
+        try Data(#"{"format":3,"id":"x"}"#.utf8).write(to: info)
         let r = try sh(["Mac", id, tmp().path, "--si"])
-        #expect(r.status != 0 && r.out.contains("formato 2"), "\(r.out)")
-        #expect(throws: RepositoryError.newerFormat(2)) { try Repository(destination: dest, computerName: "Mac") }
+        #expect(r.status != 0 && r.out.contains("formato 3"), "\(r.out)")
+        #expect(throws: RepositoryError.newerFormat(3)) { try Repository(destination: dest, computerName: "Mac") }
         #expect(try Repository(destination: dest, computerName: "Mac", create: false).archiveID == "x", "browsing still works")
     }
 

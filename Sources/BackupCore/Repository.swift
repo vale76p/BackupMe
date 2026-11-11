@@ -20,12 +20,23 @@ public enum RepositoryError: Error, Equatable {
 /// Archive layout: <destination>/BackupMe/<archive name>/{repo.json, objects/, snapshots/, lock}
 /// Objects are stored as `<hash>.lzfse` (compressed) or `<hash>.raw` (incompressible or large files).
 public final class Repository {
-    /// The archive layout this version reads and writes (repo.json "format").
-    public static let format = 1
+    /// The highest archive layout this version reads and writes (repo.json "format"): 2 has containers.
+    public static let format = 2
+    /// Stored forms below this go into containers (`packBelow` of the app); a container is published at about this size.
+    public static let packThreshold = 4 << 20, packTarget = 32 << 20
     public let root: URL
-    private let fm = FileManager.default
-    private var knownObjects: Set<String>?
+    let fm = FileManager.default
+    var knownObjects: Set<String>?
     private let computer: String
+    /// Objects whose stored form is smaller than this go into a container; 0 never puts anything in one.
+    let packBelow: Int
+    /// Hashes `hasObject` answers false for: scheduled for deletion, never reused by a new backup.
+    public var condemned: Set<String> = []
+    /// The container being filled, in memory until `flushPack`.
+    var openPack = Data()
+    var openEntries: [PackEntry] = []
+    /// Every published container's entries by hash, the greatest id winning; nil until first needed.
+    var packed: [String: (pack: String, entry: PackEntry)]?
     private var destinationFD: Int32 = -1
 
     deinit { if destinationFD >= 0 { close(destinationFD) } }
@@ -39,7 +50,8 @@ public final class Repository {
     /// The restore kit files this opening rewrote (missing, older, modified or damaged), in words.
     public private(set) var restoreKitChanges: [String] = []
 
-    public init(destination: URL, computerName: String, create: Bool = true) throws {
+    public init(destination: URL, computerName: String, create: Bool = true, packBelow: Int = 0) throws {
+        self.packBelow = packBelow
         guard Self.isAvailable(destination: destination) else { throw RepositoryError.destinationMissing(destination.path) }
         let safeName = computerName.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
         try Self.checkComponent(safeName)
@@ -66,7 +78,8 @@ public final class Repository {
         let damaged = (try? Data(contentsOf: info)).map { Self.id(in: $0) == nil } ?? false
         if damaged || !fm.fileExists(atPath: info.path) {
             repairedInfo = damaged
-            let json = #"{"format":\#(Self.format),"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
+            // 1 until the first container (`flushPack`): without one, older versions still read the whole archive
+            let json = #"{"format":1,"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
             try atomicWrite(Data(json.utf8), to: info, sync: .file)
         }
         // the BackupMe folder opened again without following links: a link swapped in since is never written through
@@ -156,10 +169,22 @@ public final class Repository {
     /// A SHA-256 as the archive names objects: 64 lowercase hex digits.
     public static func isHash(_ s: String) -> Bool { s.utf8.count == 64 && s.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }
 
-    /// Every stored object with its size on disk, from one listing of the archive.
-    /// `sampleDirs`: only that many of the 256 fan-out folders, picked at random (a sample, without listing the
-    /// whole archive).
+    /// Every stored object with its size: a file's size on disk, an object in a container its stored length (the
+    /// file when it has both forms). `sampleDirs`: only that many of the 256 fan-out folders, picked at random, and
+    /// one container (a sample, without listing the whole archive).
     public func objectSizes(sampleDirs: Int? = nil) throws -> [String: Int64] {
+        var result: [String: Int64] = [:]
+        if sampleDirs == nil {
+            for (hash, copy) in try packIndex() { result[hash] = Int64(copy.entry.length) }
+        } else if let id = try packIDs().randomElement() {
+            for e in try packEntries(id) { result[e.hash] = Int64(e.length) }
+        }
+        result.merge(try looseObjectSizes(sampleDirs: sampleDirs)) { $1 }
+        return result
+    }
+
+    /// Single-file objects only, with their size on disk, from one listing of objects/.
+    public func looseObjectSizes(sampleDirs: Int? = nil) throws -> [String: Int64] {
         var result: [String: Int64] = [:]
         var dirs = try fm.contentsOfDirectory(atPath: objectsDir.path)
         if let n = sampleDirs { dirs = Array(dirs.shuffled().prefix(n)) }
@@ -170,7 +195,7 @@ public final class Repository {
     }
 
     public func allObjectHashes() throws -> Set<String> {
-        var result = Set<String>()
+        var result = Set(try packIndex().keys)
         for dir in try fm.contentsOfDirectory(atPath: objectsDir.path) {
             for (hash, _) in objects(in: dir) { result.insert(hash) }
         }
@@ -197,9 +222,10 @@ public final class Repository {
     }
 
     public func hasObject(_ hash: String) -> Bool {
+        if condemned.contains(hash) { return false }
         // shortcut: the first call lists the whole archive (a set of every hash, ~100 MB with a million objects);
         // check the object's file instead if that listing is too slow on a network destination
-        if knownObjects == nil { knownObjects = (try? allObjectHashes()) ?? [] }
+        if knownObjects == nil { knownObjects = ((try? allObjectHashes()) ?? []).union(openEntries.map(\.hash)) }
         return knownObjects!.contains(hash)
     }
 
@@ -212,11 +238,20 @@ public final class Repository {
         close(fanout)
     }
 
-    /// Stores in-memory content; kept raw when compression saves less than 5%. Returns the bytes written.
-    public func putObject(_ data: Data, hash: String) throws -> Int64 {
+    /// The form an object is stored in: kept raw when compression saves less than 5%.
+    static func storedForm(_ data: Data) -> (body: Data, compressed: Bool) {
         let compressed = data.isEmpty ? nil : try? (data as NSData).compressed(using: .lzfse) as Data
         let useCompressed = compressed.map { $0.count < data.count * 95 / 100 } ?? false
-        let body = useCompressed ? compressed! : data
+        return (useCompressed ? compressed! : data, useCompressed)
+    }
+
+    /// Stores in-memory content, in the open container when its stored form is below `packBelow`. Returns the bytes written.
+    public func putObject(_ data: Data, hash: String) throws -> Int64 {
+        let (body, useCompressed) = Self.storedForm(data)
+        if body.count < packBelow {
+            try addToOpenPack(body, hash: hash, compressed: useCompressed)
+            return Int64(body.count)
+        }
         let url = objectURL(hash, useCompressed ? "lzfse" : "raw")
         try prepareFanout(url)
         try atomicWrite(body, to: url, sync: .file)
@@ -268,43 +303,63 @@ public final class Repository {
         return size
     }
 
-    /// Reads and verifies an object. A mismatch throws but never deletes: the copy may still be syncing,
-    /// and OneDrive version history can only help while the file is still there.
+    /// The content of a stored form, nil when it doesn't decode to `hash`.
+    static func decoded(_ raw: Data, compressed: Bool, hash: String) -> Data? {
+        let data = !compressed || raw.isEmpty ? raw : (try? (raw as NSData).decompressed(using: .lzfse)) as Data?
+        return data.flatMap { sha256Hex($0) == hash ? $0 : nil }
+    }
+
+    /// Reads and verifies an object: its file, else the copy in the container with the greatest id, else any other
+    /// copy; the first that verifies. A mismatch throws but never deletes: the copy may still be syncing,
+    /// and OneDrive version history can only help while the file is still there. A read that fails throws its error.
     public func readObject(_ hash: String) throws -> Data {
-        guard let url = existingObjectURL(hash) else { throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: hash]) }
-        let raw = try Data(contentsOf: url)
-        let data = url.pathExtension == "raw" || raw.isEmpty ? raw : (try? (raw as NSData).decompressed(using: .lzfse)) as Data?
-        guard let data, sha256Hex(data) == hash else { throw RepositoryError.corruptObject(hash) }
-        return data
+        var damaged = false
+        if let url = existingObjectURL(hash) {
+            if let data = Self.decoded(try Data(contentsOf: url), compressed: url.pathExtension == "lzfse", hash: hash) { return data }
+            damaged = true
+        }
+        if let best = try packIndex()[hash] {
+            if let data = try readPacked(hash, best.entry, in: best.pack) { return data }
+            damaged = true
+            for id in try packIDs().reversed() {
+                for e in try readableEntries(id) where e.hash == hash && (id != best.pack || e.offset != best.entry.offset) {
+                    if let data = try readPacked(hash, e, in: id) { return data }
+                }
+            }
+        }
+        guard damaged else { throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: hash]) }
+        throw RepositoryError.corruptObject(hash)
     }
 
     /// True if the object's content matches its hash; large raw objects are hashed as a stream.
     func verifyObject(_ hash: String) throws -> Bool {
-        guard let url = existingObjectURL(hash) else { throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: hash]) }
-        let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
-        if url.pathExtension == "raw", size >= Self.streamThreshold { return try streamHash(url) == hash }
+        if let url = existingObjectURL(hash), url.pathExtension == "raw",
+           ((try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0) >= Self.streamThreshold {
+            return try streamHash(url) == hash
+        }
         do { _ = try readObject(hash) } catch RepositoryError.corruptObject { return false }
         return true
     }
 
     /// Rewrites a corrupt object from a file with the same content, under the same name so it replaces the bad
-    /// copy atomically. Nothing changes unless `source` hashes to `hash`. True if the object now verifies.
+    /// copy atomically; one only in containers becomes a file, the container untouched. Nothing changes unless
+    /// `source` hashes to `hash`. True if the object now verifies.
     func repairObject(_ hash: String, from source: URL) throws -> Bool {
-        guard let url = existingObjectURL(hash) else { return false }
-        if url.pathExtension == "raw" {
-            guard try putObjectFile(from: source, hash: hash) != nil else { return false }
-        } else {
+        let url = existingObjectURL(hash)
+        guard url != nil || packOf(hash) != nil else { return false }
+        if let url, url.pathExtension == "lzfse" {
             let data = try Data(contentsOf: source)
             guard sha256Hex(data) == hash else { return false }
             try atomicWrite(try (data as NSData).compressed(using: .lzfse) as Data, to: url, sync: .file)
+        } else {
+            guard try putObjectFile(from: source, hash: hash) != nil else { return false }
         }
         return try verifyObject(hash)
     }
 
     /// Writes an object's content to `destination` (which must not exist), verifying its hash.
     public func restoreObject(_ hash: String, to destination: URL) throws {
-        guard let url = existingObjectURL(hash) else { throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: hash]) }
-        if url.pathExtension == "raw" {
+        if let url = existingObjectURL(hash), url.pathExtension == "raw" {
             let parent = try parentDirectory(of: url)
             defer { close(parent) }
             // never through a link planted as the object: it would come back as a link to a file outside the archive
@@ -337,8 +392,9 @@ public final class Repository {
         try readObject(hash).write(to: destination, options: .withoutOverwriting)
     }
 
+    /// Deletes the object's file; a copy in a container stays.
     public func deleteObject(_ hash: String) throws {
-        knownObjects?.remove(hash)
+        if packed?[hash] == nil { knownObjects?.remove(hash) }
         // by descriptor, opened without following links: a fan-out folder swapped for a link deletes nothing outside
         guard Self.isHash(hash), let fanout = try? parentDirectory(of: objectURL(hash, "raw")) else { return }
         defer { close(fanout) }
@@ -362,7 +418,7 @@ public final class Repository {
                 removed += 1
             }
         }
-        return removed
+        return removed + (try removePackLeftovers())
     }
 
     /// Free space on the destination's volume, nil when the volume doesn't say.
@@ -381,7 +437,7 @@ public final class Repository {
     }()
 
     public func poolSize() throws -> Int64 {
-        try objectSizes().values.reduce(0, +) + snapshotSizes().values.reduce(0, +)
+        try looseObjectSizes().values.reduce(0, +) + packIDs().reduce(0) { $0 + packSize($1) } + snapshotSizes().values.reduce(0, +)
     }
 
     // MARK: snapshots
@@ -533,7 +589,7 @@ public final class Repository {
 
     enum Sync { case file, device }
 
-    private static func posixError() -> POSIXError {
+    static func posixError() -> POSIXError {
         POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 
@@ -551,7 +607,7 @@ public final class Repository {
         return fd
     }
 
-    private func archiveDirectory(create: Bool = false) throws -> Int32 {
+    func archiveDirectory(create: Bool = false) throws -> Int32 {
         guard destinationFD >= 0 else { throw POSIXError(.EBADF) }
         let base = try Self.childDirectory("BackupMe", in: destinationFD, create: create)
         defer { close(base) }
