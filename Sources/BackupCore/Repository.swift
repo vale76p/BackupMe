@@ -13,6 +13,8 @@ public enum RepositoryError: Error, Equatable {
     case damagedSnapshot(String)
     /// The archive belongs to another account of this Mac (repo.json "owner"): see `claim(owner:)`.
     case otherOwner
+    /// A container or its index that doesn't parse or doesn't match its checksum: what it holds can't be trusted.
+    case damagedPack(String)
 }
 
 /// Archive layout: <destination>/BackupMe/<archive name>/{repo.json, objects/, snapshots/, lock}
