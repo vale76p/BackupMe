@@ -104,6 +104,8 @@ public final class BackupEngine {
         if let err = Self.validate(sources: sources, repositoryRoot: repository.root.deletingLastPathComponent()) { throw err }
         let start = Date()
         return try repository.withLock {
+            // an index that can't be read fails the backup: taken for "nothing stored", the whole source would be stored again
+            try repository.loadPackIndex()
             // a run that fails or is cancelled keeps the hashes it computed: they are valid without a manifest
             defer { try? cache.save(dropUnseen: false) }
             // an interrupted, failed or unchanged run still publishes what it copied
@@ -178,6 +180,8 @@ public final class BackupEngine {
             if let last = cache.lastManifest, last.digest == digest, repository.snapshotExists(last.id) {
                 // the newest backup must be restorable: a damaged one is written again below
                 if repository.snapshotIsIntact(last.id) {
+                    // the deferred flush swallows its error: objects not published would be reported as saved
+                    try repository.flushPack()
                     try? cache.save()
                     return report(last.id)
                 }

@@ -82,8 +82,10 @@ public final class Repository {
         let damaged = (try? Data(contentsOf: info)).map { Self.id(in: $0) == nil } ?? false
         if damaged || !fm.fileExists(atPath: info.path) {
             repairedInfo = damaged
-            // 1 until the first container (`flushPack`): without one, older versions still read the whole archive
-            let json = #"{"format":1,"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
+            // 1 until the first container (`flushPack`): without one, older versions still read the whole archive. 2 when
+            // packs/ holds one: a damaged repo.json written again must not hide its containers from an older kit
+            let format = (try? packIDs().isEmpty) == false ? Self.format : 1
+            let json = #"{"format":\#(format),"id":"\#(UUID().uuidString)","created":\#(Date().timeIntervalSince1970)}"#
             try atomicWrite(Data(json.utf8), to: info, sync: .file)
         }
         // the BackupMe folder opened again without following links: a link swapped in since is never written through
