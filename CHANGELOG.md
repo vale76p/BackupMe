@@ -2,7 +2,9 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString` solo numerico, `BackupMeVersionLabel` col nome completo mostrato nel menu, es. `1.0.0-rc2`, e `CFBundleVersion` +1 a ogni rilascio).
 
-## Non rilasciata
+## [1.0.0] - 2026-11-12
+
+Prima versione di produzione. Rispetto alla rc4 l'archivio passa al formato 2: i file piccoli stanno nei contenitori e la pulizia ha un tetto orario, perché i client cloud non segnalino più eliminazioni in massa. Gli archivi esistenti si aprono come sono e si convertono a poco a poco.
 
 ### Aggiunto
 - **Contenitori.** I file piccoli si salvano insieme in contenitori da circa 32 MiB (`packs/`) invece di un file ciascuno: sul cloud sono molti meno file. L'archivio passa al formato 2 quando nasce il primo contenitore; il formato è descritto in `docs/formato-archivio.md`. Una versione precedente non scrive in un archivio di formato 2 né lo ripristina per intero. **Controlla ora** segnala anche i contenitori danneggiati.
