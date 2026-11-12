@@ -27,9 +27,12 @@ private func verify(_ objects: [(key: String, value: Int64)], in repository: Rep
         r.checked += 1
         r.bytes += size
         progress(Double(i + 1) / Double(objects.count))
-        // a pool per object: every read would otherwise stay in memory until the whole check ends
-        if try autoreleasepool(invoking: { try repository.verifyObject(hash) }) { continue }
-        if let p = cache.path(for: hash), (try? repository.repairObject(hash, from: URL(fileURLWithPath: p))) == true {
+        // a pool per object: every read would otherwise stay in memory until the whole check ends. The copy checked is the
+        // one the kit reads first: a damaged one the app would read past is still a file the kit marks damaged
+        if try autoreleasepool(invoking: { try repository.firstCopyVerifies(hash) }) { continue }
+        if try autoreleasepool(invoking: { try repository.rewriteFromAnotherCopy(hash) }) {
+            r.repaired.append(hash)
+        } else if let p = cache.path(for: hash), (try? repository.repairObject(hash, from: URL(fileURLWithPath: p))) == true {
             r.repaired.append(hash)
         } else {
             r.corrupt.append(hash)

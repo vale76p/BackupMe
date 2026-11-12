@@ -142,6 +142,31 @@ import Testing
         #expect(s.entries.filter { $0.kind == .file }.count == 4)
     }
 
+    /// The copy that counts, in a newer container, damaged after it was written: the check saves the content again as a
+    /// file, which the kit reads first.
+    @Test func checkRepairsADamagedCopyThatCountsForTheKit() throws {
+        write("uno", to: src.appending(path: "a.txt")); write("due", to: src.appending(path: "b.txt"))
+        let repo = try Repository(destination: dest, computerName: "Mac", packBelow: Repository.packThreshold)
+        let id = try #require(try BackupEngine(repository: repo, cache: HashCache(url: tmp().appending(path: "c.json")),
+                                               excludes: ExcludeRules(patterns: [])).run(sources: [src]).snapshotID)
+        let h = sha256Hex(Data("uno".utf8))
+        try repo.repack([h])
+        let newer = try #require(try repo.packIDs().last), url = repo.root.appending(path: "packs/\(newer).pack")
+        var bytes = try Data(contentsOf: url)
+        bytes[try #require(try repo.packEntries(newer).first).offset] ^= 0xff
+        try bytes.write(to: url)
+        // a cache that knows no source file: the content comes from the older copy
+        let check = try checkArchive(repository: try Repository(destination: dest, computerName: "Mac", create: false),
+                                     cache: HashCache(url: tmp().appending(path: "vuota.json")))
+        #expect(check.isHealthy && check.objects.repaired == [h], "\(check)")
+        #expect(objectFile(repo, h) != nil)
+        #expect(try repo.packIDs().count == 2)
+        let out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", id, out.path, "--si"])
+        #expect(r.status == 0, "\(r.out)")
+        #expect(fm.contents(atPath: out.appending(path: "progetto/a.txt").path) == Data("uno".utf8))
+    }
+
     @Test func kitReportsAnUnreadableContainerIndex() throws {
         let (repo, id) = try mixedBackup()
         let pack = try #require(try repo.packIDs().first)

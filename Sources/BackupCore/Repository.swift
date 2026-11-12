@@ -348,6 +348,33 @@ public final class Repository {
         return true
     }
 
+    /// Whether the copy read first, by the restore kit as by `readObject`, verifies: the object's file when there is one,
+    /// else the copy in the container that counts. A copy that can't be read throws.
+    func firstCopyVerifies(_ hash: String) throws -> Bool {
+        // no container copy: the file is the only form, large raw ones hashed as a stream
+        guard let best = try packIndex()[hash] else { return try verifyObject(hash) }
+        if let url = existingObjectURL(hash) {
+            return Self.decoded(try Data(contentsOf: url), compressed: url.pathExtension == "lzfse", hash: hash) != nil
+        }
+        return try readPacked(hash, best.entry, in: best.pack) != nil
+    }
+
+    /// When the copy read first doesn't verify and another copy does, saves that content again as the object's file, which
+    /// the app and the restore kit read first; a container is never touched. True if the file now verifies.
+    func rewriteFromAnotherCopy(_ hash: String) throws -> Bool {
+        // without a copy in a container the file was the only one
+        guard packOf(hash) != nil else { return false }
+        let data: Data
+        do { data = try readObject(hash) } catch RepositoryError.corruptObject { return false }
+        // in the damaged file's own form, which it replaces: a file of the other form would still be read after it
+        let lzfse = existingObjectURL(hash).map { $0.pathExtension == "lzfse" } ?? Self.storedForm(data).compressed
+        let url = objectURL(hash, lzfse ? "lzfse" : "raw")
+        try prepareFanout(url)
+        try atomicWrite(lzfse ? try (data as NSData).compressed(using: .lzfse) as Data : data, to: url, sync: .file)
+        knownObjects?.insert(hash)
+        return try firstCopyVerifies(hash)
+    }
+
     /// Rewrites a corrupt object from a file with the same content, under the same name so it replaces the bad
     /// copy atomically; one only in containers becomes a file, the container untouched. Nothing changes unless
     /// `source` hashes to `hash`. True if the object now verifies.
