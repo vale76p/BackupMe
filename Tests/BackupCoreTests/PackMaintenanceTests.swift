@@ -485,11 +485,15 @@ import Testing
         #expect(try open().snapshotIDs() == other.open().snapshotIDs())
     }
 
+    /// As the app over two weeks, with a space cap that binds and half a day of a client that doesn't upload: the files
+    /// that leave the destination are those reported, never over 50 in an hour, and every kept backup stays restorable.
     @Test func aFortnightOfHourlyBackupsStaysUnderFiftyAnHour() throws {
         var files = named((0..<40).map { _ in random(500) })
-        var ledger = DeletionLedger(), calls: [(at: Date, files: Int)] = [], reachedZero = false, lastGC: Date?
+        var ledger = DeletionLedger(), calls: [(at: Date, files: Int)] = [], reachedZero = false, lastGC: Date?, bound = false
         var o = CleanupOptions()
         o.convert = true
+        let cap: Int64 = 300_000
+        func listing(_ repo: Repository) throws -> Set<String> { Set(try FileManager.default.subpathsOfDirectory(atPath: repo.root.path)) }
         for hour in 0..<(14 * 24) {
             let at = t0.addingTimeInterval(Double(hour) * 3600)
             var changed = hour == 0 ? files : [:]
@@ -498,25 +502,37 @@ import Testing
             // the first day without containers, as an archive made by an earlier version
             let (repo, report) = try backup(changed, at: at, packBelow: hour < 24 ? 0 : Repository.packThreshold,
                                             condemned: condemnedObjects(refsCache: refs), adding: hour > 0)
+            // the client not uploading for half a day: the app allows no deletion, and no container is confirmed
+            let behind = (200..<212).contains(hour)
+            o.confirmed = behind ? { _ in false } : nil
             // after the backup, then after each of 3 failed attempts 15 minutes apart
+            var before = try listing(repo)
             for attempt in 0..<4 {
                 let now = at.addingTimeInterval(Double(attempt) * 900)
-                o.maxDeletions = ledger.allowance(limit: 50, now: now)
+                o.maxDeletions = behind ? 0 : ledger.allowance(limit: 50, now: now)
                 // as the app: a day after the last collection
-                let r = try prune(repository: repo, policy: RetentionPolicy(), capBytes: nil, now: now, refsCache: refs,
+                let r = try prune(repository: repo, policy: RetentionPolicy(), capBytes: cap, now: now, refsCache: refs,
                                   gcDue: lastGC.map { now.timeIntervalSince($0) > day } ?? true, options: o)
+                let after = try listing(repo), gone = before.subtracting(after).count
+                before = after
+                #expect(gone == r.deletedFiles, "ora \(hour), tentativo \(attempt): \(r)")
                 if r.collected { lastGC = now }
                 ledger.record(r.deletedFiles, at: now)
-                calls.append((now, r.deletedFiles))
+                calls.append((now, gone))
                 if r.smallFilesLeft == 0 { reachedZero = true }
+                if r.overCap { bound = true }
             }
             #expect(try restores(repo, report.snapshotID, files))
+            if hour % 24 == 23 {
+                let check = try checkArchive(repository: repo, cache: HashCache(url: cacheURL))
+                #expect(check.isHealthy, "giorno \(hour / 24): \(check)")
+            }
         }
         for c in calls {
             let hour = calls.filter { $0.at <= c.at && c.at.timeIntervalSince($0.at) <= 3600 }.reduce(0) { $0 + $1.files }
             #expect(hour <= 50)
         }
-        #expect(reachedZero)
+        #expect(reachedZero && bound)
         #expect(calls.reduce(0) { $0 + $1.files } > 0)
     }
 
@@ -524,5 +540,123 @@ import Testing
         let t = Date(timeIntervalSince1970: 1_700_000_000)
         #expect(conversionEnd(startCount: 1000, startDate: t, left: 1000, now: t.addingTimeInterval(86400)) == nil)
         #expect(conversionEnd(startCount: 1000, startDate: t, left: 750, now: t.addingTimeInterval(86400)) == t.addingTimeInterval(4 * 86400))
+    }
+}
+
+/// The final review's fixes.
+extension PackMaintenanceTests {
+    /// A condemned object a new backup stored again leaves the saved plan: the backups after it reuse it.
+    @Test func condemnedObjectStoredAgainIsReusedAfterTheCleanup() throws {
+        let x = Data("contenuto X".utf8)
+        try backup(["x.txt": x], at: t0)
+        let repo = try backup(["y.txt": Data("y".utf8)], at: t0.addingTimeInterval(day)).repo
+        _ = try clean(repo, keepNewestOnly, at: t0.addingTimeInterval(day), max: 1)
+        try #require(condemnedObjects(refsCache: refs) == [sha256Hex(x)])
+        let at = t0.addingTimeInterval(day + 3600)
+        let (again, first) = try backup(["z.txt": x], at: at, condemned: condemnedObjects(refsCache: refs))
+        #expect(first.newBytes > 0)
+        _ = try clean(again, keepNewestOnly, at: at, gcDue: false)
+        let second = try backup(["z.txt": x], at: at.addingTimeInterval(3600), condemned: condemnedObjects(refsCache: refs)).report
+        #expect(second.newBytes == 0)
+    }
+
+    @Test func anUnreadableIndexFailsTheBackup() throws {
+        let p = Repository.packThreshold
+        let repo = try backup(["a.txt": Data("a".utf8)], at: t0, packBelow: p).repo
+        let idx = repo.root.appending(path: "packs/\(try #require(try repo.packIDs().first)).idx").path
+        let before = try FileManager.default.subpathsOfDirectory(atPath: repo.root.path).sorted()
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: idx)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: idx) }
+        #expect(throws: (any Error).self) {
+            try backup(["a.txt": Data("a".utf8), "b.txt": Data("nuovo".utf8)], at: t0.addingTimeInterval(3600), packBelow: p)
+        }
+        #expect(try FileManager.default.subpathsOfDirectory(atPath: repo.root.path).sorted() == before)
+    }
+
+    /// Over the cap with a plan and no collection due: no manifest's references are read, the plan goes on within the budget.
+    @Test func overTheCapWithAPlanWaitsForTheCollection() throws {
+        let repo = try backup(["a.txt": Data("a".utf8)], at: t0).repo
+        for _ in 0..<3 { let d = random(4000); _ = try repo.putObject(d, hash: sha256Hex(d)) }
+        _ = try clean(repo, keepAll, at: t0, max: 0, forceGC: true) // the plan
+        let cap = try repo.poolSize() - 6000
+        // read, its references would throw
+        let id = try #require(try repo.snapshotIDs().first), intact = try Data(contentsOf: manifest(repo, id))
+        try Data("garbage".utf8).write(to: manifest(repo, id))
+        try FileManager.default.removeItem(at: refs.appending(path: id))
+        let hourly = try clean(repo, keepAll, at: t0, max: 1, cap: cap, gcDue: false)
+        #expect(!hourly.collected && hourly.capPending && hourly.overCap && hourly.deletedFiles == 1, "\(hourly)")
+        #expect(try hourly.poolSize == repo.poolSize() + 4000)
+        try intact.write(to: manifest(repo, id))
+        #expect(try clean(repo, keepAll, at: t0, max: 1, cap: cap).collected)
+    }
+
+    /// Condemned small files waiting for budget are not left to convert: the count reaches 0 with the conversion.
+    @Test func condemnedSmallFilesDoNotCountAsLeftToConvert() throws {
+        try backup(["a.txt": Data("a".utf8)], at: t0, packBelow: Repository.packThreshold)
+        let h = try orphan(try open(), "orfano piccolo")
+        let r = try clean(try open(packBelow: Repository.packThreshold), keepAll, at: t0, max: 0, convert: true)
+        #expect(r.collected && r.smallFilesLeft == 0, "\(r)")
+        #expect(objectFile(try open(), h) != nil)
+    }
+
+    @Test func aFailedFlushLeavesNoManifest() throws {
+        let p = Repository.packThreshold
+        let repo = try backup(["a.txt": Data("a".utf8)], at: t0, packBelow: p).repo
+        let ids = try repo.snapshotIDs(), packs = repo.root.appending(path: "packs").path
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: packs)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: packs) }
+        #expect(throws: (any Error).self) {
+            try backup(["b.txt": Data("nuovo".utf8)], at: t0.addingTimeInterval(3600), packBelow: p, adding: true)
+        }
+        #expect(try repo.snapshotIDs() == ids)
+    }
+
+    @Test func aManifestBackFromAwayProtectsItsObjects() throws {
+        let x = Data("contenuto X".utf8)
+        let first = try backup(["x.txt": x], at: t0).report
+        let repo = try backup(["y.txt": Data("y".utf8)], at: t0.addingTimeInterval(3600)).repo
+        _ = try clean(repo, keepAll, at: t0.addingTimeInterval(3600)) // both manifests remembered
+        let m = manifest(repo, try #require(first.snapshotID)), away = tmp().appending(path: "m")
+        try FileManager.default.moveItem(at: m, to: away)
+        let later = t0.addingTimeInterval(4 * day)
+        #expect(try clean(repo, keepAll, at: later).gcSkipped)
+        // three days later it is taken as gone: a plan made without it condemns X
+        let plan = try clean(repo, keepAll, at: later.addingTimeInterval(3 * day + 1), max: 0, forceGC: true)
+        #expect(plan.collected && condemnedObjects(refsCache: refs).contains(sha256Hex(x)))
+        try FileManager.default.moveItem(at: away, to: m)
+        let r = try clean(repo, keepAll, at: later.addingTimeInterval(3 * day + 3600), gcDue: false)
+        #expect(r.deletedFiles == 0 && objectFile(repo, sha256Hex(x)) != nil)
+        #expect(try restores(repo, first.snapshotID, ["x.txt": x]))
+    }
+
+    /// Without `repository.condemned` a new backup reuses an entry of a container the plan holds dead.
+    @Test func aDeadContainerReusedByANewBackupStays() throws {
+        let p = Repository.packThreshold, x = Data("contenuto X".utf8)
+        try backup(["x.txt": x], at: t0, packBelow: p)
+        let repo = try backup(["y.txt": Data("y".utf8)], at: t0.addingTimeInterval(day), packBelow: p).repo
+        let dead = try #require(try repo.packIDs().first)
+        _ = try clean(repo, keepNewestOnly, at: t0.addingTimeInterval(day), max: 1) // the expired manifest only
+        #expect(condemnedObjects(refsCache: refs) == [sha256Hex(x)])
+        let (again, report) = try backup(["z.txt": x], at: t0.addingTimeInterval(day + 3600), packBelow: p)
+        #expect(report.newBytes == 0)
+        _ = try clean(again, keepNewestOnly, at: t0.addingTimeInterval(day + 3600), gcDue: false)
+        #expect(try again.packIDs().contains(dead))
+        #expect(try restores(try open(), report.snapshotID, ["z.txt": x]))
+    }
+
+    @Test func conversionSkipsACorruptSmallFile() throws {
+        let files = named((0..<4).map { _ in random(2000) })
+        try backup(files, at: t0)
+        let repo = try open(packBelow: Repository.packThreshold)
+        let bad = sha256Hex(try #require(files["f0"])), url = try #require(objectFile(repo, bad))
+        var bytes = try Data(contentsOf: url)
+        bytes[0] ^= 0xff
+        try bytes.write(to: url)
+        for _ in 0..<3 { _ = try clean(repo, keepAll, at: t0, convert: true) }
+        let again = try open()
+        #expect(try Data(contentsOf: url) == bytes && again.packOf(bad) == nil)
+        for (name, d) in files where name != "f0" {
+            #expect(again.packOf(sha256Hex(d)) != nil && objectFile(again, sha256Hex(d)) == nil, "\(name)")
+        }
     }
 }

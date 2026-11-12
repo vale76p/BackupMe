@@ -268,4 +268,35 @@ extension FormatFixtureTests {
         let packed = Set(try ids.flatMap { try repo.packEntries($0).map(\.hash) })
         #expect(Set(s.entries.compactMap(\.hash)).isSuperset(of: packed) && s.entries.compactMap(\.hash).contains { !packed.contains($0) })
     }
+
+    /// The third backup of 2.0, whose files live in the container (a compressed record among them), through the current
+    /// kit and through `Restorer`: the same files, each the content its manifest names.
+    @Test func thirdBackupOf20RestoresFromTheContainer() throws {
+        let (dest, _) = try copy("2.0"), name = Self.archive("2.0")
+        let repo = try Repository(destination: dest, computerName: name, create: false)
+        let s = try repo.readSnapshot(Self.extraID), id = try #require(try repo.packIDs().first)
+        let hashes = Set(s.entries.compactMap(\.hash))
+        try #require(try repo.packEntries(id).contains { $0.compressed && hashes.contains($0.hash) })
+        let app = tmp()
+        for src in s.sources { try Restorer(repository: repo).restore(s, source: src, path: "", mode: .into(app)) }
+        #expect(Repository.updateRestoreKit(destination: dest) != .noArchive)
+        let kit = tmp().appending(path: "ripristino")
+        let r = try runKit(dest.appending(path: "BackupMe/RIPRISTINO.command"), name, Self.extraID, into: kit)
+        #expect(r.status == 0, "\(r.out)")
+        // dates against the manifest, not between the two: the kit sets them to the microsecond
+        #expect(Set(try fm.subpathsOfDirectory(atPath: kit.path)) == Set(try fm.subpathsOfDirectory(atPath: app.path)))
+        for e in s.entries {
+            let rel = (e.source as NSString).lastPathComponent + (e.path.isEmpty ? "" : "/" + e.path)
+            for root in [app.path, kit.path] {
+                let st = try #require(FileStat(path: root + "/" + rel), "\(root)/\(rel)")
+                #expect(st.kind == e.kind, "\(root)/\(rel)")
+                switch e.kind {
+                case .file: #expect(fm.contents(atPath: root + "/" + rel).map(sha256Hex) == e.hash, "\(root)/\(rel)")
+                case .symlink: #expect(try fm.destinationOfSymbolicLink(atPath: root + "/" + rel) == e.linkTarget)
+                case .directory: break
+                }
+                if e.kind != .symlink { #expect(st.mode == e.mode && abs(st.mtime.timeIntervalSince(e.mtime)) < 1e-5, "\(root)/\(rel)") }
+            }
+        }
+    }
 }
