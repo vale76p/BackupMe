@@ -37,23 +37,27 @@ extension Repository {
     }
 
     /// The copy of `hash` described by `e`, nil when it doesn't verify (a container cut short reads as damaged).
-    /// The record header before it must describe it: if not, the index is rebuilt from the container and the read
-    /// tried once more.
+    /// The content hash decides; only when it doesn't verify and the record header doesn't describe `e` either is
+    /// the index taken as wrong: rebuilt from the container, and the read tried once more.
     func readPacked(_ hash: String, _ e: PackEntry, in id: String) throws -> Data? {
         let packs = try packsDirectory()
         defer { close(packs) }
-        // nil: the header doesn't describe `e`; .some(nil): it does, and the bytes don't verify
-        func read(_ e: PackEntry) throws -> Data?? {
-            guard e.offset >= Pack.magic.count + Pack.headerSize else { return nil }
+        func read(_ e: PackEntry) throws -> (data: Data?, described: Bool) {
+            guard e.offset >= Pack.magic.count + Pack.headerSize else { return (nil, false) }
             let raw = try readPackFile("\(id).pack", in: packs, at: e.offset - Pack.headerSize, length: Pack.headerSize + e.length)
-            guard raw.count >= Pack.headerSize, raw.prefix(32).map({ String(format: "%02x", $0) }).joined() == e.hash,
-                  raw[32] == (e.compressed ? 1 : 0), raw[33..<37].reduce(0, { $0 << 8 | Int($1) }) == e.length else { return nil }
-            return .some(Self.decoded(Data(raw.dropFirst(Pack.headerSize)), compressed: e.compressed, hash: hash))
+            guard raw.count >= Pack.headerSize else { return (nil, false) }
+            if let data = Self.decoded(Data(raw.dropFirst(Pack.headerSize)), compressed: e.compressed, hash: hash) { return (data, true) }
+            return (nil, raw.prefix(32).map({ String(format: "%02x", $0) }).joined() == e.hash && raw[32] == (e.compressed ? 1 : 0)
+                && raw[33..<37].reduce(0, { $0 << 8 | Int($1) }) == e.length)
         }
-        if let checked = try read(e) { return checked }
-        // an index that doesn't describe its container: rebuilt (a container that doesn't parse is a damaged copy)
-        guard let rebuilt = try? rebuildIndex(id, in: packs), let fixed = rebuilt.first(where: { $0.hash == hash }) else { return nil }
-        return try read(fixed) ?? nil
+        let first = try read(e)
+        if let data = first.data { return data }
+        if first.described { return nil } // the record is where the index says: a damaged copy
+        let rebuilt: [PackEntry]
+        // a container that doesn't parse is a damaged copy; one that can't be read throws its error
+        do { rebuilt = try rebuildIndex(id, in: packs) } catch RepositoryError.damagedPack { return nil }
+        guard let fixed = rebuilt.first(where: { $0.hash == hash }), fixed != e else { return nil }
+        return try read(fixed).data
     }
 
     /// Ids of the published containers, ascending.
@@ -81,11 +85,17 @@ extension Repository {
         do { data = try readPackFile("\(id).idx", in: packs) } catch let e as POSIXError where [.ENOENT, .ELOOP, .EFTYPE].contains(e.code) {
             return try rebuildIndex(id, in: packs)
         }
+        guard let entries = try? Pack.decodeIndex(data, id: id) else { return try rebuildIndex(id, in: packs) }
         // only the container's size, never its bytes: on OneDrive files-on-demand any read downloads the whole
-        // container. Its records are checked when an object is read (`readPacked`)
-        guard let entries = try? Pack.decodeIndex(data, id: id),
-              (entries.map { $0.offset + $0.length }.max() ?? Pack.magic.count) == Int(st.st_size) else { return try rebuildIndex(id, in: packs) }
-        return entries
+        // container. Its records are checked when an object is read (`readPacked`). Written not to overflow on a
+        // crafted index
+        let size = Int(st.st_size)
+        func inside(_ e: PackEntry) -> Bool { e.offset <= size && e.length <= size - e.offset }
+        if entries.allSatisfy(inside), (entries.map { $0.offset + $0.length }.max() ?? Pack.magic.count) == size { return entries }
+        do { return try rebuildIndex(id, in: packs) } catch RepositoryError.damagedPack {
+            // a container cut short: what its index still locates inside it reads back, each copy checked by its hash
+            return entries.filter(inside)
+        }
     }
 
     /// A damaged container hides only its own objects: `packEntries` still reports it to the verification, the

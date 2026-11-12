@@ -15,6 +15,13 @@ import Testing
 
     func packURL(_ r: Repository, _ id: String, _ ext: String = "pack") -> URL { r.root.appending(path: "packs/\(id).\(ext)") }
 
+    /// Every file in packs/ with its bytes: what a read must leave as it is.
+    func packFiles(_ r: Repository) throws -> [String: Data] {
+        let dir = r.root.appending(path: "packs")
+        return Dictionary(uniqueKeysWithValues: try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            .map { ($0, try Data(contentsOf: dir.appending(path: $0))) })
+    }
+
     func flip(_ url: URL, at offset: Int) throws {
         var data = try Data(contentsOf: url)
         data[offset] ^= 0xff
@@ -56,12 +63,9 @@ import Testing
         try r.flushPack()
         let ids = try r.packIDs()
         try #require(ids.count == 2)
-        let idx = packURL(r, ids[0], "idx"), packsDir = r.root.appending(path: "packs")
+        let idx = packURL(r, ids[0], "idx")
         let scanned = try Pack.scan(try Data(contentsOf: packURL(r, ids[0])), id: ids[0])
-        func packs() throws -> [String: Data] {
-            Dictionary(uniqueKeysWithValues: try FileManager.default.contentsOfDirectory(atPath: packsDir.path)
-                .map { ($0, try Data(contentsOf: packsDir.appending(path: $0))) })
-        }
+        func packs() throws -> [String: Data] { try packFiles(r) }
         func readsAll(_ r: Repository) throws -> Bool {
             try r.readObject(a) == Data("uno".utf8) && r.readObject(c) == Data("tre".utf8) && r.readObject(b) == Data("dodici".utf8)
         }
@@ -84,6 +88,39 @@ import Testing
         var swapped = scanned
         (swapped[0].offset, swapped[1].offset) = (scanned[1].offset, scanned[0].offset)
         try rebuilt(Pack.encodeIndex(swapped))
+    }
+
+    @Test func damagedRecordHeaderWithIntactContentStillReads() throws {
+        let r = try repo(packBelow: 100)
+        let h = try put(r, "intatto")
+        try r.flushPack()
+        let id = try #require(try r.packIDs().first)
+        let e = try #require(try r.packEntries(id).first)
+        try flip(packURL(r, id), at: e.offset - Pack.headerSize) // a byte of the hash in the record header
+        try flip(packURL(r, id), at: e.offset - 5)               // the encoding byte
+        let before = try packFiles(r)
+        #expect(try repo(packBelow: 100).readObject(h) == Data("intatto".utf8))
+        let again = try repo(packBelow: 100)
+        #expect(try again.withLock { try again.readObject(h) } == Data("intatto".utf8))
+        #expect(try packFiles(r) == before) // the index that locates it is not replaced by a scan of the header
+    }
+
+    @Test func containerCutShortKeepsWhatItsIndexLocates() throws {
+        let r = try repo(packBelow: 100)
+        let a = try put(r, "primo"), b = try put(r, "secondo")
+        try r.flushPack()
+        let pack = packURL(r, try #require(try r.packIDs().first))
+        try Data(contentsOf: pack).dropLast(1).write(to: pack) // cut in its last record, the index intact
+        let before = try packFiles(r)
+        for locked in [false, true] {
+            let again = try repo(packBelow: 100)
+            func reads() throws {
+                #expect(try again.readObject(a) == Data("primo".utf8))
+                #expect(throws: (any Error).self) { try again.readObject(b) }
+            }
+            if locked { try again.withLock { try reads() } } else { try reads() }
+        }
+        #expect(try packFiles(r) == before)
     }
 
     @Test func openingAndAskingNeverReadsAContainer() throws {
@@ -190,6 +227,15 @@ import Testing
             Issue.record("an unreadable container was read")
         } catch {
             #expect(error as? RepositoryError != .corruptObject(h))
+        }
+        // without its index: the rebuild can't read the container either, and that is not damage
+        try FileManager.default.removeItem(at: packURL(r, pack.deletingPathExtension().lastPathComponent, "idx"))
+        let again = try repo(packBelow: 100)
+        do {
+            _ = try again.withLock { try again.readObject(h) }
+            Issue.record("an unreadable container was read")
+        } catch {
+            #expect((error as? POSIXError)?.code == .EACCES, "\(error)")
         }
     }
 
