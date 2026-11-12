@@ -106,6 +106,8 @@ public final class BackupEngine {
         return try repository.withLock {
             // a run that fails or is cancelled keeps the hashes it computed: they are valid without a manifest
             defer { try? cache.save(dropUnseen: false) }
+            // an interrupted, failed or unchanged run still publishes what it copied
+            defer { try? repository.flushPack() }
             var sourceErrors: [String] = []
             var scans: [Scan] = []
             cloudOnly = 0

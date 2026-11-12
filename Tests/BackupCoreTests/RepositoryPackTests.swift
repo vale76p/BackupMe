@@ -254,6 +254,41 @@ import Testing
         #expect(try r.packIDs().isEmpty && !r.hasObject(h))
     }
 
+    func engine(_ r: Repository, _ cache: URL) -> BackupEngine {
+        BackupEngine(repository: r, cache: HashCache(url: cache), excludes: ExcludeRules(patterns: []))
+    }
+
+    @Test func mixedArchiveRestoresBothBackups() throws {
+        let src = tmp().appending(path: "progetto", directoryHint: .isDirectory), cache = tmp().appending(path: "cache.json")
+        write("uno", to: src.appending(path: "a.txt")); write("due", to: src.appending(path: "b.txt")); write("", to: src.appending(path: "vuoto.txt"))
+        let r1 = try repo(packBelow: 0)
+        let s1 = try #require(try engine(r1, cache).run(sources: [src], now: Date(timeIntervalSince1970: 1_700_000_000)).snapshotID)
+        let loose = try r1.allObjectHashes()
+        write("uno modificato", to: src.appending(path: "a.txt")); write("tre", to: src.appending(path: "c.txt"))
+        let r2 = try repo(packBelow: 4 << 20)
+        let s2 = try #require(try engine(r2, cache).run(sources: [src], now: Date(timeIntervalSince1970: 1_700_000_100)).snapshotID)
+        #expect(try r2.looseObjectSizes().keys.sorted() == loose.sorted() && r2.packIDs().count == 1)
+        for (id, files) in [(s1, ["a.txt": "uno", "b.txt": "due", "vuoto.txt": ""]),
+                            (s2, ["a.txt": "uno modificato", "b.txt": "due", "c.txt": "tre", "vuoto.txt": ""])] {
+            let out = tmp(), snap = try r2.readSnapshot(id)
+            let dir = try Restorer(repository: r2).restore(snap, source: src.path, path: "", mode: .into(out))
+            for (name, text) in files { #expect(try String(contentsOf: dir.appending(path: name), encoding: .utf8) == text) }
+        }
+    }
+
+    @Test func interruptedBackupKeepsWhatItCopied() throws {
+        let src = tmp().appending(path: "progetto", directoryHint: .isDirectory), cache = tmp().appending(path: "cache.json")
+        for i in 0..<20 { write("contenuto \(i)", to: src.appending(path: "f\(String(format: "%02d", i)).txt")) }
+        let r = try repo(packBelow: 4 << 20)
+        var ticks = 0
+        #expect(throws: BackupError.cancelled) {
+            try engine(r, cache).run(sources: [src], progress: { _ in ticks += 1 }, isCancelled: { ticks >= 11 }) // the source folder itself is the first tick, then 10 files
+        }
+        #expect(try r.packIDs().count == 1)
+        let again = try engine(r, cache).run(sources: [src], now: Date(timeIntervalSince1970: 1_700_000_100))
+        #expect(again.newBytes == (10..<20).reduce(0) { $0 + Int64("contenuto \($1)".utf8.count) })
+    }
+
     @Test(arguments: ["ExFAT", "MS-DOS"]) func containerOnFATFilesystems(fs: String) throws {
         let dir = tmp(), mount = dir.appending(path: "vol"), image = dir.appending(path: "vol.dmg")
         func hdiutil(_ args: String...) throws -> Int32 {

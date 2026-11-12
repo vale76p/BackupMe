@@ -469,6 +469,8 @@ public final class Repository {
 
     /// Never overwrites an existing manifest: cached references assume manifests are immutable.
     public func writeSnapshot(_ s: Snapshot) throws {
+        // the manifest is the last write: every object it names is published first
+        try flushPack()
         // a pool: the JSON and its compressed copy (hundreds of MB with a million files) are freed here, not at the end of the run
         try autoreleasepool {
             let enc = JSONEncoder()
