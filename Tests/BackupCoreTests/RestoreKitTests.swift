@@ -115,6 +115,43 @@ import Testing
         #expect(try String(contentsOf: out.appending(path: "nota.txt"), encoding: .utf8) == "solo questo")
     }
 
+    /// As RepositoryPackTests.mixedArchiveRestoresBothBackups, the empty file only in the container: the second backup.
+    func mixedBackup() throws -> (Repository, String) {
+        let cache = tmp().appending(path: "cache.json")
+        func engine(_ r: Repository) -> BackupEngine { BackupEngine(repository: r, cache: HashCache(url: cache), excludes: ExcludeRules(patterns: [])) }
+        write("uno", to: src.appending(path: "a.txt")); write("due", to: src.appending(path: "b.txt"))
+        let r1 = try Repository(destination: dest, computerName: "Mac")
+        _ = try engine(r1).run(sources: [src], now: Date(timeIntervalSince1970: 1_700_000_000))
+        write("uno modificato", to: src.appending(path: "a.txt")); write("tre", to: src.appending(path: "sub/c.txt"))
+        write("", to: src.appending(path: "vuoto.txt"))
+        let r2 = try Repository(destination: dest, computerName: "Mac", packBelow: Repository.packThreshold)
+        let id = try #require(try engine(r2).run(sources: [src], now: Date(timeIntervalSince1970: 1_700_000_100)).snapshotID)
+        let empty = sha256Hex(Data())
+        #expect(r2.packOf(empty) != nil && objectFile(r2, empty) == nil && objectFile(r2, sha256Hex(Data("due".utf8))) != nil)
+        return (r2, id)
+    }
+
+    @Test func kitRestoresAMixedArchive() throws {
+        let (repo, id) = try mixedBackup()
+        let s = try repo.readSnapshot(id), out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", id, out.path, "--si"])
+        #expect(r.status == 0, "\(r.out)")
+        for e in s.entries where e.kind == .file {
+            #expect(fm.contents(atPath: out.appending(path: "progetto/\(e.path)").path) == fm.contents(atPath: src.appending(path: e.path).path), "\(e.path)")
+        }
+        #expect(s.entries.filter { $0.kind == .file }.count == 4)
+    }
+
+    @Test func kitReportsAnUnreadableContainerIndex() throws {
+        let (repo, id) = try mixedBackup()
+        let pack = try #require(try repo.packIDs().first)
+        write("non è LZFSE", to: repo.root.appending(path: "packs/\(pack).idx"))
+        let out = tmp().appending(path: "ripristino")
+        let r = try sh(["Mac", id, out.path, "--si"])
+        #expect(r.status != 0 && r.out.contains("indice di contenitore illeggibile") && r.out.contains("non ripristinato: \(out.path)/progetto/vuoto.txt"), "\(r.out)")
+        #expect(fm.contents(atPath: out.appending(path: "progetto/b.txt").path) == Data("due".utf8), "the files of their own are restored")
+    }
+
     @Test func scriptRefusesPathsOutsideDestination() throws {
         let repo = try Repository(destination: dest, computerName: "Mac")
         let data = Data("fuori".utf8)

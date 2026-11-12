@@ -5,7 +5,7 @@ import Foundation
 enum RestoreKit {
     /// Bumped whenever the script or the readme change. Two Macs sharing a destination may run different
     /// BackupMe versions: the older one must not keep overwriting the newer kit (and re-uploading it).
-    static let version = 9
+    static let version = 10
 
     /// Rewrites a file only when its content differs and it isn't from a newer kit. `base`: the BackupMe folder,
     /// opened without following links; a link under a kit file's name is replaced, never read or written through.
@@ -59,6 +59,7 @@ enum RestoreKit {
         snapshots/   un indice per ogni backup (nome = data e ora UTC; JSON compresso LZFSE)
         objects/     il contenuto dei file, salvato una volta sola anche se è in cento backup
                      (nome = SHA-256 del contenuto; .lzfse compressi, .raw così come sono)
+        packs/       contenitori: tanti file piccoli in un file solo (.pack), con il loro indice (.idx)
         repo.json    informazioni sull'archivio
 
     I file non si leggono direttamente. Per riaverli usa BackupMe (Sfoglia backup…) oppure,
@@ -300,6 +301,29 @@ function run(argv) {
   // never overwrites: every call below fails if the item already exists. An item goes only into a folder this
   // run created itself: if a folder fails (it appeared meanwhile, or a name collides) nothing goes inside it
   var problems = [], files = [], made = new Set([dest])
+  // objects without a file of their own are in containers: loaded once, hash → [container, offset, length, lzfse]
+  var packs
+  function packed() {
+    if (packs) return packs
+    packs = {}
+    list(archive + '/packs').filter(n => /^[0-9a-f]{16}\.idx$/.test(n)).forEach(n => { // sorted: the last one wins
+      var idx = archive + '/packs/' + n, raw = $.NSData.dataWithContentsOfFile(idx)
+      raw = raw.isNil() ? raw : raw.decompressedDataUsingAlgorithmError(0, null)
+      var text = ObjC.unwrap($.NSString.alloc.initWithDataEncoding(raw, utf8))
+      // the first line is a checksum: the shasum check below covers what is restored
+      try { JSON.parse(text.slice(text.indexOf('\n') + 1)).forEach(r => { packs[r[0]] = [idx.slice(0, -4) + '.pack'].concat(r.slice(1)) }) }
+      catch (x) { problems.push('indice di contenitore illeggibile, i file che vi sono salvati non vengono ripristinati: ' + idx) }
+    })
+    return packs
+  }
+  // the stored bytes of a container record, those of its .raw or .lzfse file; nil-like when unreadable
+  function readAt(at) {
+    var h = $.NSFileHandle.fileHandleForReadingAtPath(at[0]), data = $()
+    if (h.isNil()) return data
+    try { h.seekToFileOffset(at[1]); data = h.readDataOfLength(at[2]) } catch (x) {}
+    h.closeFile
+    return Number(data.length) === at[2] ? data : $()
+  }
   plans.forEach(plan => plan.tree.forEach(e => {
     var p = e.path === '' ? plan.target : plan.target + '/' + e.path
     var parent = p.slice(0, p.lastIndexOf('/'))
@@ -308,12 +332,14 @@ function run(argv) {
     if (e.kind === 'directory') ok = fm.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(p, false, $(), null)
     else if (e.kind === 'symlink') ok = fm.createSymbolicLinkAtPathWithDestinationPathError(p, e.linkTarget || '', null)
     else {
-      var object = archive + '/objects/' + e.hash.slice(0, 2) + '/' + e.hash
-      if (exists(object + '.lzfse')) {
-        var data = $.NSData.dataWithContentsOfFile(object + '.lzfse')
-        data = data.isNil() ? data : data.decompressedDataUsingAlgorithmError(0, null)
+      var object = archive + '/objects/' + e.hash.slice(0, 2) + '/' + e.hash, data = null, lzfse = true, at
+      if (exists(object + '.lzfse')) data = $.NSData.dataWithContentsOfFile(object + '.lzfse')
+      else if (exists(object + '.raw')) ok = fm.copyItemAtPathToPathError(object + '.raw', p, null)
+      else if ((at = packed()[e.hash])) { data = readAt(at); lzfse = at[3] === 1 }
+      if (data) {
+        data = data.isNil() || !lzfse ? data : data.decompressedDataUsingAlgorithmError(0, null)
         ok = !data.isNil() && data.writeToFileOptionsError(p, 2, null) // 2 = senza sovrascrivere
-      } else ok = fm.copyItemAtPathToPathError(object + '.raw', p, null)
+      }
       if (ok) files.push(e)
     }
     if (ok) e.dest = p

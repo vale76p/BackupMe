@@ -161,6 +161,22 @@ import Testing
         expectIdentical(out.path, src.path, "\(version) kit originale", composedNames: version != "0.8.0")
     }
 
+    /// An archive with containers is refused by the kit of 1.0-rc1 (version 9), which can't read them.
+    @Test func version9KitRefusesFormat2() throws {
+        let (dest, _) = try copy("1.0-rc1"), name = Self.archive("1.0-rc1")
+        let base = dest.appending(path: "BackupMe")
+        let info = base.appending(path: "\(name)/repo.json")
+        let text = String(decoding: try Data(contentsOf: info), as: UTF8.self)
+        try #require(text.contains(#""format":1"#))
+        try Data(text.replacingOccurrences(of: #""format":1"#, with: #""format":2"#).utf8).write(to: info)
+        let kit = base.appending(path: "RIPRISTINO.command")
+        #expect(RestoreKit.installedVersion(try String(contentsOf: kit, encoding: .utf8)) == 9)
+        let out = tmp().appending(path: "ripristino")
+        let r = try runKit(kit, name, Self.ids[1], into: out)
+        #expect(r.status != 0 && r.out.contains("formato 2"), "\(r.out)")
+        #expect(!fm.fileExists(atPath: out.path))
+    }
+
     /// The bytes of the 1.0-rc1 archive against docs/formato-archivio.md.
     @Test func rc1BytesMatchTheFormatDocument() throws {
         let (dest, _) = try copy("1.0-rc1"), name = Self.archive("1.0-rc1")
