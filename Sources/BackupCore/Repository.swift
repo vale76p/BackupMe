@@ -397,14 +397,22 @@ public final class Repository {
         try readObject(hash).write(to: destination, options: .withoutOverwriting)
     }
 
-    /// Deletes the object's file; a copy in a container stays. Returns the files removed: cleanup counts them.
+    /// Deletes the object's files (both forms when it has two), at most `limit` of them; a copy in a container stays.
+    /// Returns the files removed, and whether one is still there: past `limit`, or one that couldn't be removed.
     @discardableResult
-    public func deleteObject(_ hash: String) throws -> Int {
-        if packed?[hash] == nil { knownObjects?.remove(hash) }
+    public func deleteObject(_ hash: String, limit: Int = .max) throws -> (removed: Int, kept: Bool) {
+        var removed = 0, kept = false
+        defer { if !kept, packed?[hash] == nil { knownObjects?.remove(hash) } }
         // by descriptor, opened without following links: a fan-out folder swapped for a link deletes nothing outside
-        guard Self.isHash(hash), let fanout = try? parentDirectory(of: objectURL(hash, "raw")) else { return 0 }
+        guard Self.isHash(hash), let fanout = try? parentDirectory(of: objectURL(hash, "raw")) else { return (0, false) }
         defer { close(fanout) }
-        return Self.extensions.reduce(0) { $0 + (unlinkat(fanout, "\(hash).\($1)", 0) == 0 ? 1 : 0) }
+        for ext in Self.extensions {
+            var st = stat()
+            if removed < limit {
+                if unlinkat(fanout, "\(hash).\(ext)", 0) == 0 { removed += 1 } else if errno != ENOENT { kept = true }
+            } else if fstatat(fanout, "\(hash).\(ext)", &st, AT_SYMLINK_NOFOLLOW) == 0 { kept = true }
+        }
+        return (removed, kept)
     }
 
     /// Returns how many were removed.

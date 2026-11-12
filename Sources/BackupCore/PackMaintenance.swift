@@ -52,9 +52,11 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
     for h in condemned where repository.packOf(h) == nil {
         guard left > 0 else { break }
         Activity.beat()
-        let removed = try repository.deleteObject(h)
-        gone.append(h)
-        if removed > 0 { objects += 1; files += removed; left -= removed }
+        // every file counts: an object stored in both forms costs 2, and one left by the budget waits in the plan
+        let (removed, kept) = try repository.deleteObject(h, limit: left)
+        files += removed
+        left -= removed
+        if !kept { gone.append(h); if removed > 0 { objects += 1 } }
     }
     condemned.subtract(gone)
 

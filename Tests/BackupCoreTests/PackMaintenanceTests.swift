@@ -85,6 +85,24 @@ import Testing
         #expect(orphans.filter { objectFile(repo, $0) != nil }.count == 1)
     }
 
+    /// Each file of an object counts: one stored in both forms costs 2, and the form the budget leaves waits in the plan.
+    @Test func bothFormsOfAnObjectCountAgainstTheBudget() throws {
+        let repo = try backup(["a.txt": Data("a".utf8)], at: t0).repo
+        let text = String(repeating: "si comprime bene ", count: 200), source = tmp().appending(path: "o.txt")
+        write(text, to: source)
+        let h = try orphan(repo, text)
+        _ = try repo.putObjectFile(from: source, hash: h)
+        let forms = ["lzfse", "raw"].map { repo.root.appending(path: "objects/\(h.prefix(2))/\(h).\($0)") }
+        try #require(forms.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        let first = try clean(repo, keepAll, at: t0, max: 1, forceGC: true)
+        #expect(first.deletedFiles == 1 && first.deletedObjects == 0)
+        #expect(forms.filter { FileManager.default.fileExists(atPath: $0.path) }.count == 1)
+        #expect(condemnedObjects(refsCache: refs).contains(h))
+        let second = try clean(repo, keepAll, at: t0, max: 1, gcDue: false)
+        #expect(second.deletedFiles == 1 && second.deletedObjects == 1 && objectFile(repo, h) == nil)
+        #expect(!condemnedObjects(refsCache: refs).contains(h))
+    }
+
     @Test func noPlanNoObjectDeletion() throws {
         let repo = try backup(["a.txt": Data("a".utf8)], at: t0).repo
         let h = try orphan(repo, "orfano")
