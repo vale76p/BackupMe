@@ -217,13 +217,31 @@ extension Repository {
     }
 
     /// Copies these objects into new containers, whatever form they have now. Each is read and verified first;
-    /// one that doesn't verify throws `corruptObject` before anything is written for it.
+    /// one that doesn't verify throws `corruptObject` before anything is written for it. What is published is read back
+    /// and verified; on any failure the containers this call published are removed and the error thrown.
     public func repack(_ hashes: [String]) throws {
-        for h in hashes {
-            let (body, compressed) = Self.storedForm(try readObject(h))
-            try addToOpenPack(body, hash: h, compressed: compressed)
+        try flushPack() // what a backup left open is not this call's to remove
+        let before = Set(try packIDs())
+        do {
+            for h in hashes {
+                let (body, compressed) = Self.storedForm(try readObject(h))
+                try addToOpenPack(body, hash: h, compressed: compressed)
+            }
+            try flushPack()
+            // an old copy may go only once the new one has been read back from the destination
+            var verified = Set<String>()
+            for id in try packIDs() where !before.contains(id) {
+                guard let entries = wholePackEntries(id), try entries.allSatisfy({ try readPacked($0.hash, $0, in: id) != nil })
+                else { throw RepositoryError.damagedPack(id) }
+                verified.formUnion(entries.map(\.hash))
+            }
+            guard verified.isSuperset(of: hashes) else { throw RepositoryError.damagedPack(try packIDs().last ?? "") }
+        } catch {
+            openPack = Data()
+            openEntries = []
+            for id in (try? packIDs()) ?? [] where !before.contains(id) { try? deletePack(id) }
+            throw error
         }
-        try flushPack()
     }
 
     /// `.tmp` leftovers in packs/ and indexes without their container; by descriptor, never through a link.

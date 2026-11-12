@@ -30,9 +30,11 @@ struct CleanupPlan: Codable {
 public func condemnedObjects(refsCache: URL) -> Set<String> { Set(CleanupPlan.read(refsCache)?.condemned ?? []) }
 
 /// Steps 5-11 of `prune`: deletes what `plan` condemns, never more than `left` files, and saves what is left to do.
-/// `ids`: the manifests still listed. Returns the single-file objects and the files deleted.
+/// `ids`: the manifests still listed. Returns the single-file objects and the files deleted, and the small single-file
+/// objects still there when `convert` counted them.
 func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository, refsCache: URL?, collected: Bool,
-                     left: inout Int, confirmed: (String) -> Bool) throws -> (objects: Int, files: Int) {
+                     capBytes: Int64?, convert: Bool, left: inout Int,
+                     confirmed: (String) -> Bool) throws -> (objects: Int, files: Int, smallLeft: Int?) {
     var plan = plan, condemned = Set(plan.condemned)
     // 5. a backup made since the collection may use a condemned object (one that wasn't told, or reused it anyway)
     let known = Set(plan.snapshots)
@@ -43,7 +45,7 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         }
     } catch {
         // a manifest that can't be read may use any of them: nothing is deleted until it reads or the next collection
-        return (0, 0)
+        return (0, 0, nil)
     }
 
     // 6. condemned objects with no copy in a container; one in a container is judged with its container below
@@ -78,16 +80,91 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         left -= 2
     }
 
-    // 9. compaction (Task 8)
+    // 9. compaction: nothing is deleted here, the old container is dead from now on and step 7 takes it
+    try repository.loadPackIndex()
+    var packs: [(id: String, live: [String], liveBytes: Int, dead: Int, small: Bool)] = []
+    for id in try repository.packIDs() {
+        guard let entries = repository.wholePackEntries(id) else { continue }
+        var seen = Set<String>()
+        let live = entries.filter { repository.packOf($0.hash) == id && !condemned.contains($0.hash) && seen.insert($0.hash).inserted }
+        guard !live.isEmpty else { continue } // dead: step 7's
+        let liveBytes = live.reduce(0) { $0 + $1.length }
+        packs.append((id, live.map(\.hash), liveBytes, entries.reduce(0) { $0 + $1.length } - liveBytes,
+                      repository.packSize(id) < Int64(Repository.packTarget / 4)))
+    }
+    let over = try packs.contains { $0.dead > 0 } && (capBytes.map { try repository.poolSize() > $0 } ?? false)
+    let smalls = packs.filter(\.small)
+    var picked: [(id: String, live: [String], liveBytes: Int, dead: Int, small: Bool)] = [], bytes = 0
+    for p in packs.filter({ $0.liveBytes < $0.dead || ($0.dead > 0 && over) }).sorted(by: { $0.dead > $1.dead })
+        + (smalls.count >= 8 ? smalls : []) where bytes < Repository.packTarget && !picked.contains(where: { $0.id == p.id }) {
+        picked.append(p)
+        bytes += p.liveBytes
+    }
+    while !picked.isEmpty {
+        do { try repository.repack(picked.flatMap(\.live)); break } catch RepositoryError.corruptObject(let h) {
+            // a container with a live object that doesn't read stays where it is
+            guard let i = picked.firstIndex(where: { $0.live.contains(h) }) else { break }
+            picked.remove(at: i)
+        } catch { break } // out of reach now (an offline file): tried again at the next call
+    }
 
-    // 10. conversion (Task 8)
+    // 10. conversion: small single-file objects copied into containers, then deleted as duplicates
+    var smallLeft: Int?
+    if convert && !plan.conversionDone {
+        try repository.loadPackIndex()
+        let loose = try repository.looseObjectSizes()
+        let small = loose.filter { $0.value < Int64(Repository.packThreshold) }
+        let doubles = loose.keys.filter { repository.packOf($0) != nil }
+        var doublesLeft = doubles.count, smallGone = 0
+        do {
+            for h in doubles {
+                guard left > 0 else { break }
+                // the copy that counts, relied on and read back now: a file written to repair a damaged copy is the good one
+                guard let copy = try repository.packIndex()[h], confirmed(copy.pack),
+                      try repository.readPacked(h, copy.entry, in: copy.pack) != nil else { continue }
+                Activity.beat()
+                let (removed, kept) = try repository.deleteObject(h, limit: left)
+                files += removed
+                left -= removed
+                if !kept { doublesLeft -= 1; smallGone += small[h] == nil ? 0 : 1; if removed > 0 { objects += 1 } }
+            }
+        } catch {} // out of reach now: the duplicates wait, and so does the next container
+        smallLeft = small.count - smallGone
+        let candidates = small.keys.filter { !condemned.contains($0) && repository.packOf($0) == nil }
+        if collected && doubles.isEmpty && candidates.isEmpty { plan.conversionDone = true }
+        // one container at a time: the next only once the copies of the last have left, and never over the cap
+        if doublesLeft == 0, !candidates.isEmpty, try capBytes.map({ try repository.poolSize() <= $0 }) ?? true {
+            let newest = (try? ids.last.map { try references(of: $0, in: repository, cache: refsCache) } ?? []) ?? []
+            var take: [String] = [], bytes: Int64 = 0
+            // the newest backup first: its files are the ones a restore asks for
+            for h in candidates.filter(newest.contains) + candidates.filter({ !newest.contains($0) })
+            where bytes + small[h]! <= Int64(Repository.packTarget) {
+                take.append(h)
+                bytes += small[h]!
+            }
+            while !take.isEmpty {
+                do { try repository.repack(take); break } catch RepositoryError.corruptObject(let h) {
+                    // never converted, never deleted: the others go on
+                    guard let i = take.firstIndex(of: h) else { break }
+                    take.remove(at: i)
+                } catch { break }
+            }
+        }
+    }
 
     // 11.
     if let refsCache, collected || !gone.isEmpty {
         plan.condemned = Array(condemned)
         try? JSONEncoder().encode(plan).write(to: CleanupPlan.url(in: refsCache), options: .atomic)
     }
-    return (objects, files)
+    return (objects, files, smallLeft)
+}
+
+/// When the conversion ends at the pace kept since `startDate`; nil when nothing has left yet.
+public func conversionEnd(startCount: Int, startDate: Date, left: Int, now: Date) -> Date? {
+    let done = startCount - left, elapsed = now.timeIntervalSince(startDate)
+    guard done > 0, elapsed > 0 else { return nil }
+    return startDate.addingTimeInterval(elapsed * Double(startCount) / Double(done))
 }
 
 extension Repository {

@@ -22,6 +22,8 @@ public struct PruneResult: Equatable, Sendable {
     public var deletedFiles = 0
     /// The cap loop stopped for the budget, not for lack of backups to delete.
     public var capPending = false
+    /// Single-file objects below `Repository.packThreshold` still there; nil when not counted.
+    public var smallFilesLeft: Int?
 }
 
 /// Applies retention, then deletes oldest snapshots while the pool exceeds `capBytes` (never the newest),
@@ -100,7 +102,7 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             users = counts
         }
 
-        var deleting = (objects: 0, files: 0)
+        var deleting: (objects: Int, files: Int, smallLeft: Int?) = (0, 0, nil)
         var missingObjects = 0
         // with hourly backups one leaves the last 24 hours every hour: collecting their objects each time reads every
         // manifest's references. `gcDue` (once a day) lets the orphans wait while the archive fits with them; over the
@@ -122,7 +124,7 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             if let plan {
                 let confirmed = options.confirmed ?? { repository.packIsConfirmed($0, now: now) }
                 deleting = try deleteCondemned(plan, ids: ids, repository: repository, refsCache: refsCache, collected: collect,
-                                               left: &left, confirmed: confirmed)
+                                               capBytes: capBytes, convert: options.convert, left: &left, confirmed: confirmed)
             }
             // leftovers of interrupted writes, not counted: what is left of a file that never was
             if collect { try repository.removeTemporaryFiles() }
@@ -136,7 +138,8 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         return PruneResult(deletedSnapshots: deleted, deletedObjects: deleting.objects, poolSize: size,
                            overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, vanished: tracked?.warn ?? false,
                            archiveReplaced: tracked?.replaced ?? false, collected: collect && !gcSkipped,
-                           missingObjects: missingObjects, deletedFiles: deleted.count + deleting.files, capPending: capPending)
+                           missingObjects: missingObjects, deletedFiles: deleted.count + deleting.files, capPending: capPending,
+                           smallFilesLeft: deleting.smallLeft)
     }
 }
 

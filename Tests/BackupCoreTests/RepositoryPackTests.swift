@@ -205,6 +205,26 @@ import Testing
         #expect(r.packOf(h) == "ffffffffffff0001")
     }
 
+    /// A copy is relied on only once read back: a container that doesn't read back as written is removed, and what was
+    /// left open by a repack that stopped is never published.
+    @Test func repackReadsBackWhatItPublished() throws {
+        let r = try repo(packBelow: 0)
+        let a = try put(r, "uno"), b = try put(r, "due")
+        #expect(throws: CocoaError.self) { try r.repack([a, String(repeating: "0", count: 64)]) }
+        try r.flushPack()
+        #expect(try r.packIDs().isEmpty)
+        try FileManager.default.createDirectory(at: r.root.appending(path: "packs"), withIntermediateDirectories: true)
+        try Pack.magic.write(to: packURL(r, "7fffffffffffff00"))
+        try Pack.encodeIndex([]).write(to: packURL(r, "7fffffffffffff00", "idx"))
+        // what reading the next one back will find: none of what was written
+        r.rebuiltIndexes["7fffffffffffff01"] = []
+        #expect(throws: RepositoryError.damagedPack("7fffffffffffff01")) { try r.repack([a, b]) }
+        #expect(try r.packIDs() == ["7fffffffffffff00"])
+        #expect(r.packOf(a) == nil && objectFile(r, a) != nil && objectFile(r, b) != nil)
+        try r.repack([a, b])
+        #expect(try r.packIDs() == ["7fffffffffffff00", "7fffffffffffff01"] && r.packOf(b) == "7fffffffffffff01")
+    }
+
     @Test func packsFolderSwappedForALinkIsRefused() throws {
         let r = try repo(packBelow: 100)
         let elsewhere = tmp()
