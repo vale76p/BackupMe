@@ -84,7 +84,7 @@ L'intestazione di un record è di 37 byte (`Pack.headerSize`); il contenitore fi
 <64 cifre esadecimali dello SHA-256 del corpo>\n<corpo>
 ```
 
-Il corpo è un JSON senza spazi, `[["<hash>",<offset>,<lunghezza>,<0|1>],…]`, una voce per record, in ordine di offset. `offset` è il punto del contenitore dove cominciano i byte salvati, subito dopo l'intestazione del record (quindi mai prima di 45), `lunghezza` è quella del record e l'ultimo valore la codifica. Un indice è valido se si decomprime, il checksum corrisponde, ogni voce sta dentro il contenitore e l'ultima finisce esattamente alla sua fine.
+Il corpo è un JSON senza spazi, `[["<hash>",<offset>,<lunghezza>,<0|1>],…]`, una voce per record, in ordine di offset. `offset` è il punto del contenitore dove cominciano i byte salvati, subito dopo l'intestazione del record (quindi mai prima di 45), `lunghezza` è quella dei byte salvati, senza l'intestazione del record, e l'ultimo valore la codifica. Un indice è valido se si decomprime, il checksum corrisponde, ogni voce sta dentro il contenitore e l'ultima finisce esattamente alla sua fine.
 
 **Id.** 16 cifre esadecimali minuscole: il maggiore tra l'id più alto che c'è già più uno e i millisecondi dal 1970 (`flushPack`). Gli id sono quindi strettamente crescenti, anche con l'orologio spostato indietro.
 
@@ -98,7 +98,13 @@ Il corpo è un JSON senza spazi, `[["<hash>",<offset>,<lunghezza>,<0|1>],…]`, 
 
 **Scrittura.** Le forme salvate sotto `packBelow` si accumulano nel contenitore aperto, che si pubblica a circa 32 MiB (`Repository.packTarget`) e comunque prima del manifest (`writeSnapshot`): un manifest non cita mai un oggetto che non è su disco. Prima il `.pack`, poi l'`.idx`.
 
-**Cancellazione** (`Pruner.swift`, `PackMaintenance.swift`). Un contenitore si cancella intero, e solo quando: il suo indice è integro (combacia con la dimensione); ogni contenitore che ha la copia che conta delle sue voci ancora in uso è confermato; e quelle copie sono state lette e verificate nella stessa chiamata. Prima l'`.idx`, poi il `.pack` (`deletePack`). Compattazione e conversione non cancellano mai da sole e si fermano senza rumore se qualcosa non si legge. La pulizia tiene fuori dall'archivio, in un file locale `cleanup` accanto alla cache dei riferimenti, l'elenco degli oggetti «condannati» (non usati all'ultima raccolta giornaliera): un backup nuovo non riusa mai un oggetto condannato, e prima di ogni cancellazione si tolgono dall'elenco quelli citati dai manifest più recenti. Il tetto orario alle cancellazioni è dell'app e non cambia il formato.
+**Cancellazione** (`prune` in `Pruner.swift`, `deleteCondemned` in `PackMaintenance.swift`). Ogni chiamata della pulizia ha un budget di file eliminabili (`maxDeletions`, senza limite se non è dato): un manifest o un file di oggetto costa 1, un contenitore costa 2 (`.idx` e `.pack`) e si cancella solo se restano almeno 2 file di budget. Un contenitore si cancella intero, e solo quando tutte queste condizioni valgono insieme:
+- è morto: nessuna sua voce è insieme la copia che conta e ancora in uso, cioè non condannata (`packOf`); un oggetto di cui non si sa dove sta la copia che conta si tiene per un dubbio;
+- il suo indice è integro, cioè combacia con la dimensione del contenitore (`wholePackEntries`): un indice che ne descrive solo una parte non dice niente del resto;
+- ogni contenitore che ha la copia che conta delle sue voci ancora in uso è confermato dal client cloud (`confirmed`), uno per uno;
+- quelle copie si rileggono dal loro contenitore e verificano nella stessa chiamata (`readsBack`).
+
+Si toglie prima l'`.idx`, poi il `.pack` (`deletePack`). Compattazione e conversione non cancellano mai da sole e si fermano senza rumore se qualcosa non si legge: copiano gli oggetti vivi in un contenitore nuovo, e il vecchio, morto, lo cancella la chiamata successiva. La pulizia tiene fuori dall'archivio, in un file locale `cleanup` accanto alla cache dei riferimenti, l'elenco degli oggetti «condannati» (non usati all'ultima raccolta giornaliera): un backup nuovo non riusa mai un oggetto condannato, e prima di ogni cancellazione si tolgono dall'elenco quelli citati dai manifest più recenti del piano. Il tetto orario alle cancellazioni (`maxDeletions` di ogni chiamata, calcolato dall'app) non cambia il formato.
 
 ## Manifest
 
