@@ -181,7 +181,8 @@ public final class Repository {
         if sampleDirs == nil {
             for (hash, copy) in try packIndex() { result[hash] = Int64(copy.entry.length) }
         } else if let id = try packIDs().randomElement() {
-            for e in try packEntries(id) { result[e.hash] = Int64(e.length) }
+            // a damaged container hides its objects, as in the full listing
+            for e in try readableEntries(id) { result[e.hash] = Int64(e.length) }
         }
         result.merge(try looseObjectSizes(sampleDirs: sampleDirs)) { $1 }
         return result

@@ -98,6 +98,15 @@ extension Repository {
         }
     }
 
+    /// Reads the container itself and scans it, rebuilding its index when it disagrees: `packEntries` alone trusts an
+    /// index that still decodes. Throws `damagedPack` for one that doesn't parse, the read's own error for one that can't be read.
+    func scanPack(_ id: String) throws {
+        let entries = try packEntries(id)
+        let packs = try packsDirectory()
+        defer { close(packs) }
+        if try Pack.scan(try readPackFile("\(id).pack", in: packs), id: id) != entries { _ = try rebuildIndex(id, in: packs) }
+    }
+
     /// A damaged container hides only its own objects: `packEntries` still reports it to the verification, the
     /// others stay readable, and a backup stores its objects again.
     func readableEntries(_ id: String) throws -> [PackEntry] {

@@ -45,8 +45,10 @@ public struct ArchiveCheck: Sendable {
     /// Objects some backup needs that aren't in the archive.
     public var missingObjects: Int
     public var objects: VerifyReport
+    /// Containers that don't parse: the objects in them are reported missing or are stored again by a backup.
+    public var damagedPacks: [String]
 
-    public var isHealthy: Bool { unreadableSnapshots.isEmpty && missingObjects == 0 && objects.corrupt.isEmpty }
+    public var isHealthy: Bool { unreadableSnapshots.isEmpty && missingObjects == 0 && objects.corrupt.isEmpty && damagedPacks.isEmpty }
 }
 
 /// Reads every manifest and every object they use back: what the daily sample does, for the whole archive. Corrupt objects
@@ -63,13 +65,20 @@ public func checkArchive(repository: Repository, cache: HashCache, isCancelled: 
             do { try autoreleasepool { needed.formUnion(try repository.readSnapshot(id).entries.compactMap(\.hash)) } }
             catch { unreadable.append(id) }
         }
+        var damagedPacks: [String] = []
+        for id in try repository.packIDs() {
+            if isCancelled() { throw BackupError.cancelled }
+            Activity.beat()
+            // a container that can't be read throws: not read is not damaged
+            do { try autoreleasepool { try repository.scanPack(id) } } catch RepositoryError.damagedPack { damagedPacks.append(id) }
+        }
         let sizes = try repository.objectSizes()
         let missing = needed.subtracting(sizes.keys).count
         // only what a backup uses: objects no manifest needs go at the next cleanup, reading them is a waste
         // (on a cloud folder, a download)
         let objects = try verify(sizes.filter { needed.contains($0.key) }.map { ($0.key, $0.value) }, in: repository, cache: cache,
                                  budgetBytes: .max, isCancelled: isCancelled, progress: progress)
-        return ArchiveCheck(snapshots: ids.count, unreadableSnapshots: unreadable, missingObjects: missing, objects: objects)
+        return ArchiveCheck(snapshots: ids.count, unreadableSnapshots: unreadable, missingObjects: missing, objects: objects, damagedPacks: damagedPacks)
     }
 }
 
@@ -127,6 +136,19 @@ public func upgradeCheck(repository: Repository) throws -> UpgradeReport {
         if !strays.isEmpty {
             r.attention.append("Elementi estranei in objects/ (\(strays.count)): collegamenti, cartelle o nomi che non sono di un file "
                 + "salvato, lasciati dove sono e mai seguiti: \(examples(strays))")
+        }
+
+        // containers: only <16 hex>.pack and .idx files; a missing packs/ is an archive without containers
+        let packs = repository.root.appending(path: "packs", directoryHint: .isDirectory)
+        let packStrays = ((try? fm.contentsOfDirectory(atPath: packs.path)) ?? []).sorted().filter { name in
+            guard !name.hasPrefix(".") else { return false }
+            let ext = (name as NSString).pathExtension
+            return !(["pack", "idx"].contains(ext) && Repository.isPackID((name as NSString).deletingPathExtension)
+                && (try? fm.attributesOfItem(atPath: packs.appending(path: name).path)[.type] as? FileAttributeType) == .typeRegular)
+        }.map { "packs/\($0)" }
+        if !packStrays.isEmpty {
+            r.attention.append("Elementi estranei in packs/ (\(packStrays.count)): collegamenti, cartelle o nomi che non sono di un contenitore, "
+                + "lasciati dove sono e mai seguiti: \(examples(packStrays))")
         }
 
         let snapshots = repository.root.appending(path: "snapshots", directoryHint: .isDirectory)
