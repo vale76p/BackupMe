@@ -2,6 +2,18 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString` solo numerico, `BackupMeVersionLabel` col nome completo mostrato nel menu, es. `1.0.0-rc2`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## Non rilasciata
+
+### Aggiunto
+- **Contenitori.** I file piccoli si salvano insieme in contenitori da circa 32 MiB (`packs/`) invece di un file ciascuno: sul cloud sono molti meno file. L'archivio passa al formato 2 quando nasce il primo contenitore; il formato è descritto in `docs/formato-archivio.md`. Una versione precedente non scrive in un archivio di formato 2 né lo ripristina per intero.
+- **Tetto alle eliminazioni.** La pulizia elimina al massimo 50 file all'ora dalla destinazione, perché OneDrive e gli altri client non segnalino eliminazioni in massa. Si abbassa con `defaults write com.vale76p.BackupMe deletionsPerHour -int 30`. Se la pulizia fallisce, conta come speso tutto il numero concesso a quella chiamata. Non si elimina niente finché il client cloud dichiara non caricato l'ultimo indice o un contenitore; un client che non dice nulla non blocca mai la pulizia.
+- **Conversione graduale.** I file piccoli degli archivi esistenti passano nei contenitori a poco a poco, dentro lo stesso tetto; **Impostazioni › Destinazione** mostra quanti ne restano. Un file o un contenitore si elimina solo dopo aver riletto e verificato le copie che restano.
+- Il kit di ripristino passa alla versione 10: legge i formati 1 e 2. Il kit della versione 9 si ferma davanti a un archivio di formato 2 con un errore chiaro invece di ripristinarlo in parte.
+
+### Corretto
+- Dopo un backup fallito la pulizia non viene più forzata: i file che il backup aveva già copiato restano per il tentativo successivo, invece di essere eliminati dal cloud e caricati di nuovo.
+- Il Registro scrive quanti file ha eliminato ogni pulizia.
+
 ## [1.0.0-rc4] - 2026-11-07
 
 Quarta candidata alla 1.0: quanto è arrivato dopo la rc3. Nell'app la versione resta 1.0.0, con la build 22. La 1.0 finale dipende dalla prova reale (#24).

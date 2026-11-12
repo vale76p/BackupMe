@@ -8,13 +8,17 @@ import Testing
 /// version's local caches in `local/` (HashCache, references of the cleanup). `source/source-N.tar` is the source as
 /// it was at backup N (names, dates, permissions, link). Generated with the tags v0.8.0, v0.9.4 and 057e5ac (1.0-rc1),
 /// the source at /private/tmp/BackupMeFixture/src; the fixtures are only read: every test works on a copy.
+/// `archive-2.0` is 1.0-rc1 plus a third backup made by this code with containers (`packBelow`): single files and one container.
 @Suite struct FormatFixtureTests {
-    static let versions = ["0.8.0", "0.9.4", "1.0-rc1"]
+    static let versions = ["0.8.0", "0.9.4", "1.0-rc1", "2.0"]
     static let ids = ["2026-01-01T10-00-00Z", "2026-01-02T10-00-00Z"]
+    /// 2.0 is 1.0-rc1 plus a third backup, made with containers, that adds two small files to the source of backup 2.
+    static let extraID = "2026-01-03T10-00-00Z"
+    static func allIDs(_ version: String) -> [String] { version == "2.0" ? ids + [extraID] : ids }
     let fm = FileManager.default
     let fixtures = Bundle.module.resourceURL!.appending(path: "Fixtures", directoryHint: .isDirectory)
 
-    static func archive(_ version: String) -> String { version == "1.0-rc1" ? "MacProva-1A2B3C4D-prova" : "MacProva-1A2B3C4D" }
+    static func archive(_ version: String) -> String { version == "1.0-rc1" || version == "2.0" ? "MacProva-1A2B3C4D-prova" : "MacProva-1A2B3C4D" }
 
     /// A copy of the fixture: the destination (holding BackupMe/) and the local caches.
     func copy(_ version: String) throws -> (dest: URL, local: URL) {
@@ -101,9 +105,9 @@ import Testing
     @Test(arguments: versions) func currentCodeReadsChecksAndRestoresEveryBackup(_ version: String) throws {
         let (dest, local) = try copy(version), name = Self.archive(version)
         let repo = try Repository(destination: dest, computerName: name, create: false)
-        #expect(try repo.snapshotIDs() == Self.ids)
+        #expect(try repo.snapshotIDs() == Self.allIDs(version))
         let check = try checkArchive(repository: repo, cache: HashCache(url: local.appending(path: "hashcache.json")))
-        #expect(check.isHealthy && check.snapshots == 2, "\(check)")
+        #expect(check.isHealthy && check.snapshots == Self.allIDs(version).count, "\(check)")
         for (n, id) in Self.ids.enumerated() {
             let s = try repo.readSnapshot(id)
             #expect(s.id == id && s.date == Snapshot.date(fromID: id) && s.warnings.isEmpty)
@@ -136,12 +140,14 @@ import Testing
         let before = try fm.subpathsOfDirectory(atPath: objects.path).sorted()
 
         let src = try source(2)
-        let now = try #require(Snapshot.date(fromID: "2026-01-03T10-00-00Z"))
+        // one a day is kept: 2.0 already has a backup on 01-03
+        let newID = version == "2.0" ? "2026-01-04T10-00-00Z" : "2026-01-03T10-00-00Z"
+        let now = try #require(Snapshot.date(fromID: newID))
         let repo = try Repository(destination: dest, computerName: name)
         let report = try BackupEngine(repository: repo, cache: HashCache(url: local.appending(path: "hashcache.json")),
                                       excludes: ExcludeRules(patterns: []))
             .run(sources: [src.appending(path: "Documenti"), src.appending(path: "Nota singola.txt")], now: now)
-        #expect(report.snapshotID == "2026-01-03T10-00-00Z" && report.error == nil && report.warnings.isEmpty, "\(report)")
+        #expect(report.snapshotID == newID && report.error == nil && report.warnings.isEmpty, "\(report)")
         #expect(report.newBytes == 0 && report.fileCount == 9, "\(report)")
         let pruned = try prune(repository: repo, policy: RetentionPolicy(), capBytes: nil, now: now,
                                refsCache: local.appending(path: "refs", directoryHint: .isDirectory), forceGC: true)
@@ -149,14 +155,14 @@ import Testing
         #expect(try fm.subpathsOfDirectory(atPath: objects.path).sorted() == before)
         #expect(try checkArchive(repository: repo, cache: HashCache(url: tmp().appending(path: "c.json"))).isHealthy)
 
-        let new = try structure(manifestJSON(dest, name, "2026-01-03T10-00-00Z"))
+        let new = try structure(manifestJSON(dest, name, newID))
         #expect(new == (try structure(manifestJSON(dest, name, Self.ids[1]))))
 
         // backwards: the kit of that version, beside the current one, restores the backup the current code wrote
         let old = base.appending(path: "RIPRISTINO-\(version).command")
         try originalKit.write(to: old)
         let out = tmp().appending(path: "ripristino")
-        let r = try runKit(old, name, "2026-01-03T10-00-00Z", into: out)
+        let r = try runKit(old, name, newID, into: out)
         #expect(r.status == 0, "\(r.out)")
         expectIdentical(out.path, src.path, "\(version) kit originale", composedNames: version != "0.8.0")
     }
@@ -226,5 +232,40 @@ import Testing
         }
         #expect(stored == used)
         #expect(try Data(contentsOf: root.appending(path: "lock")).isEmpty)
+    }
+}
+
+extension FormatFixtureTests {
+    /// The container and index of the 2.0 archive against docs/formato-archivio.md.
+    @Test func packBytesMatchTheFormatDocument() throws {
+        let (dest, _) = try copy("2.0"), name = Self.archive("2.0")
+        let root = dest.appending(path: "BackupMe/\(name)")
+        let info = String(decoding: try Data(contentsOf: root.appending(path: "repo.json")), as: UTF8.self)
+        #expect(info.contains(#""format":2"#), "\(info)")
+
+        let repo = try Repository(destination: dest, computerName: name, create: false)
+        let ids = try repo.packIDs()
+        #expect(ids.count == 1 && ids.allSatisfy(Repository.isPackID))
+        for id in ids {
+            let pack = try Data(contentsOf: root.appending(path: "packs/\(id).pack"))
+            #expect(pack.prefix(8) == Data("BMPACK1\n".utf8))
+            let scanned = try Pack.scan(pack, id: id)
+            let indexed = try Pack.decodeIndex(try Data(contentsOf: root.appending(path: "packs/\(id).idx")), id: id)
+            #expect(!scanned.isEmpty && scanned == indexed)
+            #expect(scanned.contains { $0.compressed } && scanned.contains { !$0.compressed }, "both encodings")
+            for e in scanned {
+                let body = pack[(pack.startIndex + e.offset)..<(pack.startIndex + e.offset + e.length)]
+                let content = e.compressed ? try (Data(body) as NSData).decompressed(using: .lzfse) as Data : Data(body)
+                #expect(sha256Hex(content) == e.hash)
+                // not also a file of its own: the archive is mixed, each object in one form
+                #expect(!fm.fileExists(atPath: root.appending(path: "objects/\(e.hash.prefix(2))/\(e.hash).raw").path))
+                #expect(!fm.fileExists(atPath: root.appending(path: "objects/\(e.hash.prefix(2))/\(e.hash).lzfse").path))
+                #expect(try repo.readObject(e.hash) == content)
+            }
+        }
+        // the third backup reaches the container's objects and the single files of the first two
+        let s = try repo.readSnapshot(Self.extraID)
+        let packed = Set(try ids.flatMap { try repo.packEntries($0).map(\.hash) })
+        #expect(Set(s.entries.compactMap(\.hash)).isSuperset(of: packed) && s.entries.compactMap(\.hash).contains { !packed.contains($0) })
     }
 }
