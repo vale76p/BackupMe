@@ -13,6 +13,8 @@ Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la n
 ### Corretto
 - Dopo un backup fallito la pulizia non viene più forzata: i file che il backup aveva già copiato restano per il tentativo successivo, invece di essere eliminati dal cloud e caricati di nuovo.
 - Il Registro scrive quanti file ha eliminato ogni pulizia.
+- Avviata come servizio di login, l'app non riusciva a leggere i file dell'archivio che il client cloud tiene solo online (`repo.json`, gli indici dei backup): il backup falliva con «Impossibile aprire il file» e **Controlla ora** dava per illeggibili backup sani. Ora li scarica, come quando è avviata dal Finder.
+- **Controlla ora** non propone più di eliminare un backup il cui indice non si è potuto leggere (solo nel cloud, client spento o senza rete): lo segnala come non letto, e l'eliminazione dei backup illeggibili lo salta.
 
 ## [1.0.0-rc4] - 2026-11-07
 

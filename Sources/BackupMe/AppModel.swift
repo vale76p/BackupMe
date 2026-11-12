@@ -113,6 +113,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     static let stuckAfter: TimeInterval = 2 * 3600
 
     init() {
+        // started by launchd (the login service), reads of a file the cloud client keeps only online fail with EDEADLK
+        // instead of downloading it: repo.json, a manifest or a container's index then stop the backup. Sources are
+        // not affected: the engine never opens a file that is only in the cloud
+        setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS, IOPOL_MATERIALIZE_DATALESS_FILES_ON)
         SystemServices.quitIfAlreadyRunning()
         if let data = try? Data(contentsOf: AppPaths.history) {
             let dec = JSONDecoder(); dec.dateDecodingStrategy = .secondsSince1970
@@ -391,12 +395,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             let size = c.objects.bytes.formatted(.byteCount(style: .file))
             var problems: [String] = []
             if !c.unreadableSnapshots.isEmpty { problems.append("\(c.unreadableSnapshots.count) backup illeggibili, che non si possono ripristinare") }
+            if !c.unreadSnapshots.isEmpty {
+                problems.append(c.unreadSnapshots.count == 1 ? "1 backup non si è potuto leggere (forse non ancora scaricato dal cloud): riprova con il client cloud attivo"
+                                : "\(c.unreadSnapshots.count) backup non si sono potuti leggere (forse non ancora scaricati dal cloud): riprova con il client cloud attivo")
+            }
             if c.missingObjects > 0 { problems.append("\(c.missingObjects) file mancanti nell'archivio") }
             if !c.objects.corrupt.isEmpty { problems.append("\(c.objects.corrupt.count) file danneggiati senza una copia attuale per ripararli") }
             if !c.damagedPacks.isEmpty { problems.append(c.damagedPacks.count == 1 ? "1 contenitore danneggiato" : "\(c.damagedPacks.count) contenitori danneggiati") }
             let repaired = c.objects.repaired.isEmpty ? "" : "; \(c.objects.repaired.count) file danneggiati riparati"
             damagedBackups = c.unreadableSnapshots
-            otherCheckProblems = c.missingObjects > 0 || !c.objects.corrupt.isEmpty || !c.damagedPacks.isEmpty
+            otherCheckProblems = c.missingObjects > 0 || !c.objects.corrupt.isEmpty || !c.damagedPacks.isEmpty || !c.unreadSnapshots.isEmpty
             if problems.isEmpty {
                 archiveProblem = nil
                 checkResult = ("Archivio integro: \(c.snapshots) backup, \(c.objects.checked) file controllati (\(size))\(repaired)", true)
@@ -560,7 +568,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 // manifests too, the newest and one at random: one damaged loses its whole backup, and nothing else
                 // reads them before a restore
                 let ids = (try? repo.snapshotIDs()) ?? []
-                for id in Set([ids.last, ids.randomElement()].compactMap { $0 }) where !repo.snapshotIsIntact(id) {
+                for id in Set([ids.last, ids.randomElement()].compactMap { $0 }) where !repo.snapshotIsIntact(id) && repo.snapshotCanBeRead(id) {
                     report.warnings.append("\(Self.damaged) il backup del \(Snapshot.date(fromID: id)?.formatted(date: .abbreviated, time: .shortened) ?? id) non si legge e non si può ripristinare. Dopo «Controlla ora» lo elimini da Impostazioni › Avanzate.")
                 }
                 if !v.corrupt.isEmpty {

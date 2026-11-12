@@ -564,6 +564,10 @@ public final class Repository {
         }
     }
 
+    /// Whether the manifest's bytes can be read at all. False for one only in the cloud with the client off or
+    /// without network: that one is not damaged, and deleting it would throw away a sound backup.
+    public func snapshotCanBeRead(_ id: String) -> Bool { (try? Data(contentsOf: snapshotURL(id))) != nil }
+
     /// Whether the manifest's checksum matches its content; nil when it has none. Throws when it doesn't decompress.
     private func checksumMatches(_ id: String) throws -> Bool? {
         let raw = try Data(contentsOf: snapshotURL(id))

@@ -43,15 +43,17 @@ private func verify(_ objects: [(key: String, value: Int64)], in repository: Rep
 
 public struct ArchiveCheck: Sendable {
     public var snapshots: Int
-    /// Manifests that can't be read or decoded: those backups can't be restored at all.
+    /// Manifests that were read and are damaged: those backups can't be restored at all.
     public var unreadableSnapshots: [String]
+    /// Manifests whose file could not be read (only in the cloud, the client off): not checked, and not damaged.
+    public var unreadSnapshots: [String] = []
     /// Objects some backup needs that aren't in the archive.
     public var missingObjects: Int
     public var objects: VerifyReport
     /// Containers that don't parse: the objects in them are reported missing or are stored again by a backup.
     public var damagedPacks: [String]
 
-    public var isHealthy: Bool { unreadableSnapshots.isEmpty && missingObjects == 0 && objects.corrupt.isEmpty && damagedPacks.isEmpty }
+    public var isHealthy: Bool { unreadableSnapshots.isEmpty && unreadSnapshots.isEmpty && missingObjects == 0 && objects.corrupt.isEmpty && damagedPacks.isEmpty }
 }
 
 /// Reads every manifest and every object they use back: what the daily sample does, for the whole archive. Corrupt objects
@@ -60,13 +62,13 @@ public func checkArchive(repository: Repository, cache: HashCache, isCancelled: 
                          progress: (Double) -> Void = { _ in }) throws -> ArchiveCheck {
     try repository.withLock {
         let ids = try repository.snapshotIDs()
-        var unreadable: [String] = []
+        var unreadable: [String] = [], unread: [String] = []
         var needed = Set<String>()
         for id in ids {
             if isCancelled() { throw BackupError.cancelled }
             Activity.beat()
             do { try autoreleasepool { needed.formUnion(try repository.readSnapshot(id).entries.compactMap(\.hash)) } }
-            catch { unreadable.append(id) }
+            catch { if repository.snapshotCanBeRead(id) { unreadable.append(id) } else { unread.append(id) } }
         }
         var damagedPacks: [String] = []
         for id in try repository.packIDs() {
@@ -81,7 +83,8 @@ public func checkArchive(repository: Repository, cache: HashCache, isCancelled: 
         // (on a cloud folder, a download)
         let objects = try verify(sizes.filter { needed.contains($0.key) }.map { ($0.key, $0.value) }, in: repository, cache: cache,
                                  budgetBytes: .max, isCancelled: isCancelled, progress: progress)
-        return ArchiveCheck(snapshots: ids.count, unreadableSnapshots: unreadable, missingObjects: missing, objects: objects, damagedPacks: damagedPacks)
+        return ArchiveCheck(snapshots: ids.count, unreadableSnapshots: unreadable, unreadSnapshots: unread, missingObjects: missing, objects: objects,
+                            damagedPacks: damagedPacks)
     }
 }
 

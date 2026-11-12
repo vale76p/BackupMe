@@ -150,12 +150,13 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
 }
 
 /// Deletes the manifests among `ids` that can't be read: those backups can't be restored, and keep the archive
-/// marked damaged until retention takes them. A readable one is never deleted. They also leave the references
+/// marked damaged until retention takes them. A sound one is never deleted, nor one whose file can't be read (only
+/// in the cloud): that is not known to be damaged. They also leave the references
 /// cache, or the next cleanup would take them for vanished. Returns the ones deleted.
 public func deleteDamagedSnapshots(_ ids: [String], repository: Repository, refsCache: URL?) throws -> [String] {
     try repository.withLock {
         var deleted: [String] = []
-        for id in ids where repository.snapshotExists(id) && !repository.snapshotIsIntact(id) {
+        for id in ids where repository.snapshotExists(id) && !repository.snapshotIsIntact(id) && repository.snapshotCanBeRead(id) {
             try repository.deleteSnapshot(id)
             deleted.append(id)
             for name in [id, id + ".seen", id + ".gone", id + ".previous"] {

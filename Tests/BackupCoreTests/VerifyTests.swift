@@ -34,6 +34,20 @@ import Testing
         #expect(!bad.isHealthy && bad.unreadableSnapshots == [id] && bad.objects.checked == 0)
     }
 
+    @Test func manifestThatCannotBeReadIsNotDamagedAndIsNeverDeleted() throws {
+        write("uno", to: src.appending(path: "a.txt"))
+        let repo = try backup()
+        let id = try repo.snapshotIDs()[0]
+        let manifest = repo.root.appending(path: "snapshots/\(id).json.lzfse")
+        // as a file only in the cloud with the client off: there, and no read succeeds
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: manifest.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: manifest.path) }
+        let check = try checkArchive(repository: repo, cache: HashCache(url: cacheURL))
+        #expect(!check.isHealthy && check.unreadSnapshots == [id] && check.unreadableSnapshots.isEmpty)
+        #expect(try deleteDamagedSnapshots([id], repository: repo, refsCache: nil).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: manifest.path))
+    }
+
     @Test func fullCheckCountsMissingObjects() throws {
         write("uno", to: src.appending(path: "a.txt"))
         let repo = try backup()
