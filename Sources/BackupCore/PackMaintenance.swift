@@ -62,6 +62,12 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
     }
     condemned.subtract(gone)
 
+    /// The copy that counts reads back now from its own container, never from another: what is relied on when a copy goes.
+    func readsBack(_ h: String) throws -> Bool {
+        guard let copy = try repository.packIndex()[h] else { return false }
+        return try repository.readPacked(h, copy.entry, in: copy.pack) != nil
+    }
+
     // 7. dead containers: none of their entries is both the copy that counts and still used
     let live = Set(try repository.packIndex().filter { !condemned.contains($0.key) }.map(\.value.pack))
     for id in try repository.packIDs() where !live.contains(id) {
@@ -74,6 +80,8 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         // asked container by container: the one the backup just published isn't uploaded yet, and must not stop the others
         guard Set(used.compactMap { repository.packOf($0.hash) }).allSatisfy(confirmed) else { continue }
         Activity.beat()
+        // one not read back since it was published (a crash, a failed cleanup) is never relied on; out of reach: next call
+        guard (try? used.allSatisfy { try readsBack($0.hash) }) == true else { continue }
         try repository.deletePack(id)
         try repository.loadPackIndex()
         files += 2
@@ -119,9 +127,8 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         do {
             for h in doubles {
                 guard left > 0 else { break }
-                // the copy that counts, relied on and read back now: a file written to repair a damaged copy is the good one
-                guard let copy = try repository.packIndex()[h], confirmed(copy.pack),
-                      try repository.readPacked(h, copy.entry, in: copy.pack) != nil else { continue }
+                // a file written to repair a damaged copy in a container is the good one
+                guard let pack = repository.packOf(h), confirmed(pack), try readsBack(h) else { continue }
                 Activity.beat()
                 let (removed, kept) = try repository.deleteObject(h, limit: left)
                 files += removed

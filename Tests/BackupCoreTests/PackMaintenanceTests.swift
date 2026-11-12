@@ -194,6 +194,41 @@ import Testing
         #expect(try restores(try open(), report.snapshotID, files))
     }
 
+    /// Two containers with the same objects, the newer one holding the copies that count.
+    func repackedTwice() throws -> (repo: Repository, ids: [String], files: [String: Data], newer: URL) {
+        let files = named((0..<3).map { _ in random(1000) })
+        let repo = try backup(files, at: t0, packBelow: Repository.packThreshold).repo
+        try repo.repack(files.values.map(sha256Hex))
+        let ids = try repo.packIDs()
+        try #require(ids.count == 2)
+        return (repo, ids, files, repo.root.appending(path: "packs/\(ids[1]).pack"))
+    }
+
+    @Test func oldContainerStaysWhileTheCopyThatCountsDoesNotVerify() throws {
+        let (repo, ids, files, newer) = try repackedTwice()
+        let (name, data) = try #require(files.first)
+        let e = try #require(try repo.packEntries(ids[1]).first { $0.hash == sha256Hex(data) })
+        let intact = try Data(contentsOf: newer)
+        var bytes = intact
+        bytes[e.offset] ^= 0xff
+        try bytes.write(to: newer)
+        let again = try open(packBelow: Repository.packThreshold)
+        _ = try clean(again, keepAll, at: t0, forceGC: true)
+        #expect(try again.packIDs() == ids)
+        #expect(try open().readObject(sha256Hex(data)) == data, "\(name) reads from the old copy")
+        try intact.write(to: newer)
+        _ = try clean(try open(packBelow: Repository.packThreshold), keepAll, at: t0, gcDue: false)
+        #expect(try open().packIDs() == [ids[1]])
+    }
+
+    @Test func oldContainerStaysWhileTheCopyThatCountsIsOutOfReach() throws {
+        let (_, ids, _, newer) = try repackedTwice()
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: newer.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: newer.path) }
+        _ = try clean(try open(packBelow: Repository.packThreshold), keepAll, at: t0, forceGC: true)
+        #expect(try open().packIDs() == ids)
+    }
+
     @Test func vanishedBackupsStopObjectDeletions() throws {
         try backup(["a.txt": Data("a".utf8)], at: t0)
         try backup(["b.txt": Data("b".utf8)], at: t0.addingTimeInterval(day))
