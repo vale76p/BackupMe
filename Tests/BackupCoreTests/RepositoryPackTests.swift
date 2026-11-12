@@ -50,29 +50,54 @@ import Testing
 
     @Test func missingOrWrongIndexIsRebuiltFromTheContainer() throws {
         let r = try repo(packBelow: 100)
-        let a = try put(r, "uno")
+        let a = try put(r, "uno"), c = try put(r, "tre")
         try r.flushPack()
-        let b = try put(r, "due")
+        let b = try put(r, "dodici") // another size: its index doesn't fit the first container
         try r.flushPack()
         let ids = try r.packIDs()
         try #require(ids.count == 2)
-        func rebuilt() throws {
-            let again = try repo(packBelow: 100)
-            #expect(try again.readObject(a) == Data("uno".utf8) && again.readObject(b) == Data("due".utf8))
-            let scanned = try Pack.scan(try Data(contentsOf: packURL(r, ids[0])), id: ids[0])
-            #expect(try Pack.decodeIndex(try Data(contentsOf: packURL(r, ids[0], "idx")), id: ids[0]) == scanned)
+        let idx = packURL(r, ids[0], "idx"), packsDir = r.root.appending(path: "packs")
+        let scanned = try Pack.scan(try Data(contentsOf: packURL(r, ids[0])), id: ids[0])
+        func packs() throws -> [String: Data] {
+            Dictionary(uniqueKeysWithValues: try FileManager.default.contentsOfDirectory(atPath: packsDir.path)
+                .map { ($0, try Data(contentsOf: packsDir.appending(path: $0))) })
         }
-        try FileManager.default.removeItem(at: packURL(r, ids[0], "idx"))
-        try rebuilt()
-        // the valid index of another container: its first entry doesn't match this container's first record
-        try FileManager.default.removeItem(at: packURL(r, ids[0], "idx"))
-        try FileManager.default.copyItem(at: packURL(r, ids[1], "idx"), to: packURL(r, ids[0], "idx"))
-        try rebuilt()
+        func readsAll(_ r: Repository) throws -> Bool {
+            try r.readObject(a) == Data("uno".utf8) && r.readObject(c) == Data("tre".utf8) && r.readObject(b) == Data("dodici".utf8)
+        }
+        func rebuilt(_ wrong: Data?) throws {
+            if let wrong { try wrong.write(to: idx) } else { try FileManager.default.removeItem(at: idx) }
+            let before = try packs()
+            // browsing: the rebuilt index is used in memory only
+            #expect(try readsAll(try repo(packBelow: 100)))
+            #expect(try packs() == before)
+            let again = try repo(packBelow: 100)
+            #expect(try again.withLock { try readsAll(again) })
+            #expect(try Pack.decodeIndex(try Data(contentsOf: idx), id: ids[0]) == scanned)
+        }
+        try rebuilt(nil)
+        // the valid index of another container
+        try rebuilt(try Data(contentsOf: packURL(r, ids[1], "idx")))
         // a valid index with an entry past the container's end
-        let first = try Pack.scan(try Data(contentsOf: packURL(r, ids[0])), id: ids[0])[0]
-        let past = PackEntry(hash: String(repeating: "ab", count: 32), offset: 1000, length: 5, compressed: false)
-        try Pack.encodeIndex([first, past]).write(to: packURL(r, ids[0], "idx"))
-        try rebuilt()
+        try rebuilt(Pack.encodeIndex([scanned[0], PackEntry(hash: String(repeating: "ab", count: 32), offset: 1000, length: 5, compressed: false)]))
+        // the right size with two records swapped: found only when an object is read
+        var swapped = scanned
+        (swapped[0].offset, swapped[1].offset) = (scanned[1].offset, scanned[0].offset)
+        try rebuilt(Pack.encodeIndex(swapped))
+    }
+
+    @Test func openingAndAskingNeverReadsAContainer() throws {
+        let r = try repo(packBelow: 100)
+        let h = try put(r, "solo l'indice")
+        try r.flushPack()
+        let id = try #require(try r.packIDs().first)
+        // unreadable, as a container only online is undownloaded: its index and its size are enough
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: packURL(r, id).path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: packURL(r, id).path) }
+        let again = try repo(packBelow: 100)
+        try again.loadPackIndex()
+        #expect(again.hasObject(h) && again.packOf(h) == id)
+        #expect(try repo(packBelow: 100).allObjectHashes() == [h])
     }
 
     @Test func damagedContainerHidesOnlyItsOwnObjects() throws {

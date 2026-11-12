@@ -37,6 +37,10 @@ public final class Repository {
     var openEntries: [PackEntry] = []
     /// Every published container's entries by hash, the greatest id winning; nil until first needed.
     var packed: [String: (pack: String, entry: PackEntry)]?
+    /// Indexes rebuilt from their container, used instead of the file (written back only while holding the lock).
+    var rebuiltIndexes: [String: [PackEntry]] = [:]
+    /// Inside `withLock`'s body: the only time a rebuilt index may be written to the destination.
+    private(set) var holdsLock = false
     private var destinationFD: Int32 = -1
 
     deinit { if destinationFD >= 0 { close(destinationFD) } }
@@ -582,6 +586,9 @@ public final class Repository {
             attempt += 1
             usleep(10_000)
         }
+        // browsing never writes to the destination: a rebuilt container index is written back only now
+        holdsLock = true
+        defer { holdsLock = false }
         return try body()
     }
 
