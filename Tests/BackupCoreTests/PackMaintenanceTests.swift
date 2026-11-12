@@ -405,6 +405,37 @@ import Testing
         #expect(try restores(try open(), report.snapshotID, files))
     }
 
+    /// The record headers count too: 2100 files of 16 KiB, a container's worth with room to spare, still make one.
+    @Test func manySmallFilesMakeOneContainer() throws {
+        let files = named((0..<2100).map { _ in random(16 << 10) })
+        let report = try backup(files, at: t0).report
+        let repo = try open(packBelow: Repository.packThreshold)
+        _ = try clean(repo, keepAll, at: t0, convert: true)
+        #expect(try repo.packIDs().count == 1)
+        #expect(try restores(try open(), report.snapshotID, files))
+    }
+
+    /// After steps 6 and 7 deleted, an index that can't be read stops steps 9 and 10: what was deleted is reported and
+    /// leaves the plan.
+    @Test func anErrorAfterDeletionsKeepsThemCounted() throws {
+        let p = Repository.packThreshold, now = t0.addingTimeInterval(day)
+        try backup(["a.txt": Data("vecchio".utf8)], at: t0, packBelow: p)
+        let report = try backup(["b.txt": Data("nuovo".utf8)], at: now, packBelow: p).report
+        let h = try orphan(try open(), "orfano")
+        let repo = try open(packBelow: p), ids = try repo.packIDs()
+        try #require(ids.count == 2)
+        _ = try clean(repo, keepNewestOnly, at: now, max: 1) // the plan, and every index loaded
+        let idx = repo.root.appending(path: "packs/\(ids[1]).idx").path
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: idx)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: idx) }
+        let r = try clean(repo, keepNewestOnly, at: now, gcDue: false, convert: true)
+        #expect(r.deletedFiles == 3 && r.deletedObjects == 1, "\(r)") // the orphan and the dead container
+        #expect(try objectFile(repo, h) == nil && repo.packIDs() == [ids[1]])
+        #expect(!condemnedObjects(refsCache: refs).contains(h))
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: idx)
+        #expect(try restores(try open(), report.snapshotID, ["b.txt": Data("nuovo".utf8)]))
+    }
+
     @Test func condemnedSmallFilesAreNotConverted() throws {
         let report = try backup(["a.txt": Data("a".utf8)], at: t0).report
         let h = try orphan(try open(), "orfano piccolo")

@@ -217,31 +217,13 @@ extension Repository {
     }
 
     /// Copies these objects into new containers, whatever form they have now. Each is read and verified first;
-    /// one that doesn't verify throws `corruptObject` before anything is written for it. What is published is read back
-    /// and verified; on any failure the containers this call published are removed and the error thrown.
+    /// one that doesn't verify throws `corruptObject` before anything is written or published. Never deletes: an old copy
+    /// goes only in cleanup, after the copy that stays has been read back.
     public func repack(_ hashes: [String]) throws {
-        try flushPack() // what a backup left open is not this call's to remove
-        let before = Set(try packIDs())
-        do {
-            for h in hashes {
-                let (body, compressed) = Self.storedForm(try readObject(h))
-                try addToOpenPack(body, hash: h, compressed: compressed)
-            }
-            try flushPack()
-            // an old copy may go only once the new one has been read back from the destination
-            var verified = Set<String>()
-            for id in try packIDs() where !before.contains(id) {
-                guard let entries = wholePackEntries(id), try entries.allSatisfy({ try readPacked($0.hash, $0, in: id) != nil })
-                else { throw RepositoryError.damagedPack(id) }
-                verified.formUnion(entries.map(\.hash))
-            }
-            guard verified.isSuperset(of: hashes) else { throw RepositoryError.damagedPack(try packIDs().last ?? "") }
-        } catch {
-            openPack = Data()
-            openEntries = []
-            for id in (try? packIDs()) ?? [] where !before.contains(id) { try? deletePack(id) }
-            throw error
-        }
+        // all read first, held in memory (callers pass about a container's worth): a container is published mid-way at packTarget
+        let forms = try hashes.map { Self.storedForm(try readObject($0)) }
+        for (h, form) in zip(hashes, forms) { try addToOpenPack(form.body, hash: h, compressed: form.compressed) }
+        try flushPack()
     }
 
     /// `.tmp` leftovers in packs/ and indexes without their container; by descriptor, never through a link.

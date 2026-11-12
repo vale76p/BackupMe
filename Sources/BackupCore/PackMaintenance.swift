@@ -80,51 +80,53 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         // asked container by container: the one the backup just published isn't uploaded yet, and must not stop the others
         guard Set(used.compactMap { repository.packOf($0.hash) }).allSatisfy(confirmed) else { continue }
         Activity.beat()
-        // one not read back since it was published (a crash, a failed cleanup) is never relied on; out of reach: next call
+        // a copy damaged since it was written is never relied on; out of reach: the next call
         guard (try? used.allSatisfy { try readsBack($0.hash) }) == true else { continue }
         try repository.deletePack(id)
-        try repository.loadPackIndex()
         files += 2
         left -= 2
+        // not loaded: `packOf` answers nil, and nothing more is deleted on that doubt
+        try? repository.loadPackIndex()
     }
 
-    // 9. compaction: nothing is deleted here, the old container is dead from now on and step 7 takes it
-    try repository.loadPackIndex()
-    var packs: [(id: String, live: [String], liveBytes: Int, dead: Int, small: Bool)] = []
-    for id in try repository.packIDs() {
-        guard let entries = repository.wholePackEntries(id) else { continue }
-        var seen = Set<String>()
-        let live = entries.filter { repository.packOf($0.hash) == id && !condemned.contains($0.hash) && seen.insert($0.hash).inserted }
-        guard !live.isEmpty else { continue } // dead: step 7's
-        let liveBytes = live.reduce(0) { $0 + $1.length }
-        packs.append((id, live.map(\.hash), liveBytes, entries.reduce(0) { $0 + $1.length } - liveBytes,
-                      repository.packSize(id) < Int64(Repository.packTarget / 4)))
-    }
-    let over = try packs.contains { $0.dead > 0 } && (capBytes.map { try repository.poolSize() > $0 } ?? false)
-    let smalls = packs.filter(\.small)
-    var picked: [(id: String, live: [String], liveBytes: Int, dead: Int, small: Bool)] = [], bytes = 0
-    for p in packs.filter({ $0.liveBytes < $0.dead || ($0.dead > 0 && over) }).sorted(by: { $0.dead > $1.dead })
-        + (smalls.count >= 8 ? smalls : []) where bytes < Repository.packTarget && !picked.contains(where: { $0.id == p.id }) {
-        picked.append(p)
-        bytes += p.liveBytes
-    }
-    while !picked.isEmpty {
-        do { try repository.repack(picked.flatMap(\.live)); break } catch RepositoryError.corruptObject(let h) {
-            // a container with a live object that doesn't read stays where it is
-            guard let i = picked.firstIndex(where: { $0.live.contains(h) }) else { break }
-            picked.remove(at: i)
-        } catch { break } // out of reach now (an offline file): tried again at the next call
-    }
-
-    // 10. conversion: small single-file objects copied into containers, then deleted as duplicates
+    // 9 and 10 are opportunistic: an error ends them, what 6 and 7 deleted stays counted and the plan is saved below
     var smallLeft: Int?
-    if convert && !plan.conversionDone {
+    do {
+        // 9. compaction: nothing is deleted here, the old container is dead from now on and step 7 takes it
         try repository.loadPackIndex()
-        let loose = try repository.looseObjectSizes()
-        let small = loose.filter { $0.value < Int64(Repository.packThreshold) }
-        let doubles = loose.keys.filter { repository.packOf($0) != nil }
-        var doublesLeft = doubles.count, smallGone = 0
-        do {
+        var packs: [(id: String, live: [String], liveBytes: Int, dead: Int, small: Bool)] = []
+        for id in try repository.packIDs() {
+            guard let entries = repository.wholePackEntries(id) else { continue }
+            var seen = Set<String>()
+            let live = entries.filter { repository.packOf($0.hash) == id && !condemned.contains($0.hash) && seen.insert($0.hash).inserted }
+            guard !live.isEmpty else { continue } // dead: step 7's
+            let liveBytes = live.reduce(0) { $0 + $1.length }
+            packs.append((id, live.map(\.hash), liveBytes, entries.reduce(0) { $0 + $1.length } - liveBytes,
+                          repository.packSize(id) < Int64(Repository.packTarget / 4)))
+        }
+        let over = try packs.contains { $0.dead > 0 } && (capBytes.map { try repository.poolSize() > $0 } ?? false)
+        let smalls = packs.filter(\.small)
+        var picked: [(id: String, live: [String], liveBytes: Int, dead: Int, small: Bool)] = [], bytes = 0
+        for p in packs.filter({ $0.liveBytes < $0.dead || ($0.dead > 0 && over) }).sorted(by: { $0.dead > $1.dead })
+            + (smalls.count >= 8 ? smalls : []) where bytes < Repository.packTarget && !picked.contains(where: { $0.id == p.id }) {
+            picked.append(p)
+            bytes += p.liveBytes
+        }
+        while !picked.isEmpty {
+            do { try repository.repack(picked.flatMap(\.live)); break } catch RepositoryError.corruptObject(let h) {
+                // a container with a live object that doesn't read stays where it is
+                guard let i = picked.firstIndex(where: { $0.live.contains(h) }) else { break }
+                picked.remove(at: i)
+            } catch { break } // out of reach now (an offline file): tried again at the next call
+        }
+
+        // 10. conversion: small single-file objects copied into containers, then deleted as duplicates
+        if convert && !plan.conversionDone {
+            try repository.loadPackIndex()
+            let loose = try repository.looseObjectSizes()
+            let small = loose.filter { $0.value < Int64(Repository.packThreshold) }
+            let doubles = loose.keys.filter { repository.packOf($0) != nil }
+            var doublesLeft = doubles.count, smallGone = 0
             for h in doubles {
                 guard left > 0 else { break }
                 // a file written to repair a damaged copy in a container is the good one
@@ -135,29 +137,30 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
                 left -= removed
                 if !kept { doublesLeft -= 1; smallGone += small[h] == nil ? 0 : 1; if removed > 0 { objects += 1 } }
             }
-        } catch {} // out of reach now: the duplicates wait, and so does the next container
-        smallLeft = small.count - smallGone
-        let candidates = small.keys.filter { !condemned.contains($0) && repository.packOf($0) == nil }
-        if collected && doubles.isEmpty && candidates.isEmpty { plan.conversionDone = true }
-        // one container at a time: the next only once the copies of the last have left, and never over the cap
-        if doublesLeft == 0, !candidates.isEmpty, try capBytes.map({ try repository.poolSize() <= $0 }) ?? true {
-            let newest = (try? ids.last.map { try references(of: $0, in: repository, cache: refsCache) } ?? []) ?? []
-            var take: [String] = [], bytes: Int64 = 0
-            // the newest backup first: its files are the ones a restore asks for
-            for h in candidates.filter(newest.contains) + candidates.filter({ !newest.contains($0) })
-            where bytes + small[h]! <= Int64(Repository.packTarget) {
-                take.append(h)
-                bytes += small[h]!
-            }
-            while !take.isEmpty {
-                do { try repository.repack(take); break } catch RepositoryError.corruptObject(let h) {
-                    // never converted, never deleted: the others go on
-                    guard let i = take.firstIndex(of: h) else { break }
-                    take.remove(at: i)
-                } catch { break }
+            smallLeft = small.count - smallGone
+            let candidates = small.keys.filter { !condemned.contains($0) && repository.packOf($0) == nil }
+            if collected && doubles.isEmpty && candidates.isEmpty { plan.conversionDone = true }
+            // one container at a time: the next only once the copies of the last have left, and never over the cap
+            if doublesLeft == 0, !candidates.isEmpty, try capBytes.map({ try repository.poolSize() <= $0 }) ?? true {
+                let newest = (try? ids.last.map { try references(of: $0, in: repository, cache: refsCache) } ?? []) ?? []
+                var take: [String] = [], bytes: Int64 = 0
+                // the newest backup first: its files are the ones a restore asks for. Each record has a header, and the
+                // container is published at packTarget: kept below it, all of them go into one
+                for h in candidates.filter(newest.contains) + candidates.filter({ !newest.contains($0) })
+                where bytes + small[h]! + Int64(Pack.headerSize) < Int64(Repository.packTarget - Pack.magic.count) {
+                    take.append(h)
+                    bytes += small[h]! + Int64(Pack.headerSize)
+                }
+                while !take.isEmpty {
+                    do { try repository.repack(take); break } catch RepositoryError.corruptObject(let h) {
+                        // never converted, never deleted: the others go on
+                        guard let i = take.firstIndex(of: h) else { break }
+                        take.remove(at: i)
+                    } catch { break }
+                }
             }
         }
-    }
+    } catch {}
 
     // 11.
     if let refsCache, collected || !gone.isEmpty {

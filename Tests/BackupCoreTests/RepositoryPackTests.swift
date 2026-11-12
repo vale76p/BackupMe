@@ -205,24 +205,24 @@ import Testing
         #expect(r.packOf(h) == "ffffffffffff0001")
     }
 
-    /// A copy is relied on only once read back: a container that doesn't read back as written is removed, and what was
-    /// left open by a repack that stopped is never published.
-    @Test func repackReadsBackWhatItPublished() throws {
+    /// Everything is read and verified before anything is written: a corrupt object at the end of a batch bigger than a
+    /// container leaves nothing published, nothing open and nothing deleted.
+    @Test func repackPublishesNothingWhenAnObjectIsCorrupt() throws {
         let r = try repo(packBelow: 0)
-        let a = try put(r, "uno"), b = try put(r, "due")
-        #expect(throws: CocoaError.self) { try r.repack([a, String(repeating: "0", count: 64)]) }
+        let hashes = try (0..<9).map { _ in
+            var data = Data(count: 4 << 20)
+            data.withUnsafeMutableBytes { arc4random_buf($0.baseAddress, $0.count) }
+            let h = sha256Hex(data)
+            _ = try r.putObject(data, hash: h)
+            return h
+        }
+        try flip(try #require(objectFile(r, hashes[8])), at: 0)
+        #expect(throws: RepositoryError.corruptObject(hashes[8])) { try r.repack(hashes) }
         try r.flushPack()
         #expect(try r.packIDs().isEmpty)
-        try FileManager.default.createDirectory(at: r.root.appending(path: "packs"), withIntermediateDirectories: true)
-        try Pack.magic.write(to: packURL(r, "7fffffffffffff00"))
-        try Pack.encodeIndex([]).write(to: packURL(r, "7fffffffffffff00", "idx"))
-        // what reading the next one back will find: none of what was written
-        r.rebuiltIndexes["7fffffffffffff01"] = []
-        #expect(throws: RepositoryError.damagedPack("7fffffffffffff01")) { try r.repack([a, b]) }
-        #expect(try r.packIDs() == ["7fffffffffffff00"])
-        #expect(r.packOf(a) == nil && objectFile(r, a) != nil && objectFile(r, b) != nil)
-        try r.repack([a, b])
-        #expect(try r.packIDs() == ["7fffffffffffff00", "7fffffffffffff01"] && r.packOf(b) == "7fffffffffffff01")
+        // never published, not published then removed
+        #expect(!FileManager.default.fileExists(atPath: r.root.appending(path: "packs").path))
+        #expect(hashes.allSatisfy { objectFile(r, $0) != nil })
     }
 
     @Test func packsFolderSwappedForALinkIsRefused() throws {
