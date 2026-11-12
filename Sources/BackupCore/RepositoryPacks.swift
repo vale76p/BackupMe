@@ -150,7 +150,8 @@ extension Repository {
         var index: [String: (pack: String, entry: PackEntry)] = [:]
         for id in try packIDs() {
             Activity.beat()
-            for e in try readableEntries(id) { index[e.hash] = (id, e) }
+            // a pool per container: each index's decoded JSON is otherwise kept until the whole backup or cleanup ends
+            try autoreleasepool { for e in try readableEntries(id) { index[e.hash] = (id, e) } }
         }
         packed = index
         return index
@@ -164,9 +165,12 @@ extension Repository {
     func packOf(_ hash: String) -> String? { (try? packIndex())?[hash]?.pack }
 
     /// Container plus index, on disk.
-    public func packSize(_ id: String) -> Int64 {
+    public func packSize(_ id: String) -> Int64 { packFileSize(id, "pack") + packFileSize(id, "idx") }
+
+    /// One file of a container ("pack" or "idx"), on disk; 0 when it isn't there.
+    func packFileSize(_ id: String, _ ext: String) -> Int64 {
         guard Self.isPackID(id) else { return 0 }
-        return ["pack", "idx"].reduce(0) { $0 + ((try? fm.attributesOfItem(atPath: packsDir.appending(path: "\(id).\($1)").path)[.size] as? Int64) ?? 0) }
+        return (try? fm.attributesOfItem(atPath: packsDir.appending(path: "\(id).\(ext)").path)[.size] as? Int64) ?? 0
     }
 
     func addToOpenPack(_ body: Data, hash: String, compressed: Bool) throws {
@@ -221,7 +225,8 @@ extension Repository {
     /// goes only in cleanup, after the copy that stays has been read back.
     public func repack(_ hashes: [String]) throws {
         // all read first, held in memory (callers pass about a container's worth): a container is published mid-way at packTarget
-        let forms = try hashes.map { Self.storedForm(try readObject($0)) }
+        // a pool per object: the content read and its compressed copy are freed here, only the stored form is kept
+        let forms = try hashes.map { h in try autoreleasepool { Self.storedForm(try readObject(h)) } }
         for (h, form) in zip(hashes, forms) { try addToOpenPack(form.body, hash: h, compressed: form.compressed) }
         try flushPack()
     }

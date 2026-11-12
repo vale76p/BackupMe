@@ -78,7 +78,11 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         // everything stored, unreferenced objects included, fits: nothing to delete, and no reason to read every
         // manifest's references at every backup (seconds to minutes with a million files, much more on SMB)
         let fits = capBytes.map { total <= $0 } ?? true
-        if fits { size = total } else if let cap = capBytes {
+        let saved = CleanupPlan.read(refsCache)
+        // with a plan and no collection due, an archive over the cap waits for the daily one (the cap is soft): the
+        // budget makes the over-cap state last days, and reading every manifest's references hourly is what this avoids
+        let waits = !fits && saved != nil && !gcDue && !forceGC
+        if fits || waits { size = total; capPending = waits } else if let cap = capBytes {
             var counts: [String: Int] = [:]
             for id in ids {
                 Activity.beat()
@@ -97,7 +101,9 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
                     counts[h, default: 1] -= 1
                     if counts[h] == 0 { counts[h] = nil; size -= objectSizes[h] ?? 0 }
                 }
-                size -= manifestSizes.removeValue(forKey: oldest) ?? 0
+                let freed = manifestSizes.removeValue(forKey: oldest) ?? 0
+                size -= freed
+                total -= freed
             }
             users = counts
         }
@@ -106,10 +112,9 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         var missingObjects = 0
         // with hourly backups one leaves the last 24 hours every hour: collecting their objects each time reads every
         // manifest's references. `gcDue` (once a day) lets the orphans wait while the archive fits with them; over the
-        // cap they go now, also when nothing left in this run (orphans of an earlier one), and the references are counted.
-        // The conversion starts from a plan
-        let saved = CleanupPlan.read(refsCache)
-        let collect = (!deleted.isEmpty && gcDue) || !fits || forceGC || (options.convert && saved == nil)
+        // cap they go now, also when nothing left in this run (orphans of an earlier one), and the references are counted;
+        // with a plan, only when the collection is due. The conversion starts from a plan
+        let collect = (!deleted.isEmpty && gcDue) || (!fits && !waits) || forceGC || (options.convert && saved == nil)
         // known manifests vanished (a re-sync): the listing can't be trusted, no object or container is deleted
         if !gcSkipped {
             var plan = saved
@@ -124,7 +129,8 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             if let plan {
                 let confirmed = options.confirmed ?? { repository.packIsConfirmed($0, now: now) }
                 deleting = try deleteCondemned(plan, ids: ids, repository: repository, refsCache: refsCache, collected: collect,
-                                               capBytes: capBytes, convert: options.convert, left: &left, confirmed: confirmed)
+                                               room: capBytes.map { $0 - total }, sizes: objectSizes, convert: options.convert,
+                                               left: &left, confirmed: confirmed)
             }
             // leftovers of interrupted writes, not counted: what is left of a file that never was
             if collect { try repository.removeTemporaryFiles() }

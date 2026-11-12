@@ -30,16 +30,18 @@ struct CleanupPlan: Codable {
 public func condemnedObjects(refsCache: URL) -> Set<String> { Set(CleanupPlan.read(refsCache)?.condemned ?? []) }
 
 /// Steps 5-11 of `prune`: deletes what `plan` condemns, never more than `left` files, and saves what is left to do.
-/// `ids`: the manifests still listed. Returns the single-file objects and the files deleted, and the small single-file
-/// objects still there when `convert` counted them.
+/// `ids`: the manifests still listed. `room`: the bytes the cap still allows on disk (negative over it), nil without a
+/// cap; `sizes`: the objects' sizes from the listing `room` was counted on. Returns the single-file objects and the files
+/// deleted, and the small single-file objects still to convert when `convert` counted them.
 func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository, refsCache: URL?, collected: Bool,
-                     capBytes: Int64?, convert: Bool, left: inout Int,
-                     confirmed: (String) -> Bool) throws -> (objects: Int, files: Int, smallLeft: Int?) {
-    var plan = plan, condemned = Set(plan.condemned)
+                     room: Int64?, sizes: [String: Int64], convert: Bool, left: inout Int,
+                     confirmed ask: (String) -> Bool) throws -> (objects: Int, files: Int, smallLeft: Int?) {
+    var plan = plan, condemned = Set(plan.condemned), room = room
+    let planned = condemned.count
     // 5. a backup made since the collection may use a condemned object (one that wasn't told, or reused it anyway)
-    let known = Set(plan.snapshots)
+    let known = Set(plan.snapshots), checked = ids.filter { !known.contains($0) }
     do {
-        for id in ids where !known.contains(id) {
+        for id in checked {
             Activity.beat()
             condemned.subtract(try references(of: id, in: repository, cache: refsCache))
         }
@@ -47,6 +49,9 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         // a manifest that can't be read may use any of them: nothing is deleted until it reads or the next collection
         return (0, 0, nil)
     }
+    // asked once per container in this call: in a cloud folder whose client says nothing each answer lists the clients
+    var answers: [String: Bool] = [:]
+    func confirmed(_ id: String) -> Bool { if answers[id] == nil { answers[id] = ask(id) }; return answers[id]! }
 
     // 6. condemned objects with no copy in a container; one in a container is judged with its container below
     try repository.loadPackIndex()
@@ -58,6 +63,7 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         let (removed, kept) = try repository.deleteObject(h, limit: left)
         files += removed
         left -= removed
+        if removed > 0 { room? += sizes[h] ?? 0 }
         if !kept { gone.append(h); if removed > 0 { objects += 1 } }
     }
     condemned.subtract(gone)
@@ -82,9 +88,11 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         Activity.beat()
         // a copy damaged since it was written is never relied on; out of reach: the next call
         guard (try? used.allSatisfy { try readsBack($0.hash) }) == true else { continue }
+        let freed = repository.packSize(id)
         try repository.deletePack(id)
         files += 2
         left -= 2
+        room? += freed
         // not loaded: `packOf` answers nil, and nothing more is deleted on that doubt
         try? repository.loadPackIndex()
     }
@@ -92,28 +100,39 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
     // 9 and 10 are opportunistic: an error ends them, what 6 and 7 deleted stays counted and the plan is saved below
     var smallLeft: Int?
     do {
-        // 9. compaction: nothing is deleted here, the old container is dead from now on and step 7 takes it
-        try repository.loadPackIndex()
-        var packs: [(id: String, live: [String], liveBytes: Int, dead: Int, small: Bool)] = []
-        for id in try repository.packIDs() {
-            guard let entries = repository.wholePackEntries(id) else { continue }
-            var seen = Set<String>()
-            let live = entries.filter { repository.packOf($0.hash) == id && !condemned.contains($0.hash) && seen.insert($0.hash).inserted }
-            guard !live.isEmpty else { continue } // dead: step 7's
-            let liveBytes = live.reduce(0) { $0 + $1.length }
-            packs.append((id, live.map(\.hash), liveBytes, entries.reduce(0) { $0 + $1.length } - liveBytes,
-                          repository.packSize(id) < Int64(Repository.packTarget / 4)))
+        // 9. compaction: nothing is deleted here, the old container is dead from now on and step 7 takes it. Judged on the
+        // index in memory and the containers' sizes, bytes on disk with the record headers: only a chosen one's index is read again
+        var counting: [String: [(hash: String, length: Int)]] = [:]
+        for (h, copy) in try repository.packIndex() where !condemned.contains(h) {
+            counting[copy.pack, default: []].append((h, copy.entry.length))
         }
-        let over = try packs.contains { $0.dead > 0 } && (capBytes.map { try repository.poolSize() > $0 } ?? false)
-        let smalls = packs.filter(\.small)
-        var picked: [(id: String, live: [String], liveBytes: Int, dead: Int, small: Bool)] = [], bytes = 0
+        typealias Candidate = (id: String, live: [String], liveBytes: Int64, dead: Int64, size: Int64)
+        var packs: [Candidate] = []
+        for id in try repository.packIDs() {
+            guard let entries = counting[id] else { continue } // dead: step 7's
+            let pack = repository.packFileSize(id, "pack")
+            let liveBytes = Int64(entries.reduce(0) { $0 + Pack.headerSize + $1.length })
+            packs.append((id, entries.map(\.hash), liveBytes, pack - Int64(Pack.magic.count) - liveBytes,
+                          pack + repository.packFileSize(id, "idx")))
+        }
+        let over = packs.contains { $0.dead > 0 } && (room.map { $0 < 0 } ?? false)
+        let smalls = packs.filter { $0.size < Int64(Repository.packTarget / 4) }
+        var picked: [Candidate] = [], bytes: Int64 = 0
+        // a read downloads whole containers: what one call reads is capped at a container's worth, one always allowed
         for p in packs.filter({ $0.liveBytes < $0.dead || ($0.dead > 0 && over) }).sorted(by: { $0.dead > $1.dead })
-            + (smalls.count >= 8 ? smalls : []) where bytes < Repository.packTarget && !picked.contains(where: { $0.id == p.id }) {
+            + (smalls.count >= 8 ? smalls : [])
+        where (picked.isEmpty || bytes + p.size <= Int64(Repository.packTarget)) && !picked.contains(where: { $0.id == p.id })
+            // never one whose index is not whole: what it holds beyond it is unknown
+            && repository.wholePackEntries(p.id) != nil {
             picked.append(p)
-            bytes += p.liveBytes
+            bytes += p.size
         }
         while !picked.isEmpty {
-            do { try repository.repack(picked.flatMap(\.live)); break } catch RepositoryError.corruptObject(let h) {
+            do {
+                try repository.repack(picked.flatMap(\.live))
+                room? -= picked.reduce(0) { $0 + $1.liveBytes }
+                break
+            } catch RepositoryError.corruptObject(let h) {
                 // a container with a live object that doesn't read stays where it is
                 guard let i = picked.firstIndex(where: { $0.live.contains(h) }) else { break }
                 picked.remove(at: i)
@@ -126,7 +145,7 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
             let loose = try repository.looseObjectSizes()
             let small = loose.filter { $0.value < Int64(Repository.packThreshold) }
             let doubles = loose.keys.filter { repository.packOf($0) != nil }
-            var doublesLeft = doubles.count, smallGone = 0
+            var doublesLeft = doubles.count
             for h in doubles {
                 guard left > 0 else { break }
                 // a file written to repair a damaged copy in a container is the good one
@@ -135,13 +154,15 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
                 let (removed, kept) = try repository.deleteObject(h, limit: left)
                 files += removed
                 left -= removed
-                if !kept { doublesLeft -= 1; smallGone += small[h] == nil ? 0 : 1; if removed > 0 { objects += 1 } }
+                if removed > 0 { room? += loose[h] ?? 0 }
+                if !kept { doublesLeft -= 1; if removed > 0 { objects += 1 } }
             }
-            smallLeft = small.count - smallGone
             let candidates = small.keys.filter { !condemned.contains($0) && repository.packOf($0) == nil }
+            // the condemned ones wait for the budget, not for the conversion: 0 when the conversion is done
+            smallLeft = candidates.count + doublesLeft
             if collected && doubles.isEmpty && candidates.isEmpty { plan.conversionDone = true }
             // one container at a time: the next only once the copies of the last have left, and never over the cap
-            if doublesLeft == 0, !candidates.isEmpty, try capBytes.map({ try repository.poolSize() <= $0 }) ?? true {
+            if doublesLeft == 0, !candidates.isEmpty, room.map({ $0 >= 0 }) ?? true {
                 let newest = (try? ids.last.map { try references(of: $0, in: repository, cache: refsCache) } ?? []) ?? []
                 var take: [String] = [], bytes: Int64 = 0
                 // the newest backup first: its files are the ones a restore asks for. Each record has a header, and the
@@ -162,9 +183,12 @@ func deleteCondemned(_ plan: CleanupPlan, ids: [String], repository: Repository,
         }
     } catch {}
 
-    // 11.
-    if let refsCache, collected || !gone.isEmpty {
+    // 11. saved also when a newer backup took objects off the list, or `hasObject` stores them again at every backup. The
+    // plan's manifests become those listed, the ones checked in 5 included: the saved list never names an object one of
+    // them uses, and one that left and comes back is read again
+    if let refsCache, collected || condemned.count < planned {
         plan.condemned = Array(condemned)
+        plan.snapshots = ids
         try? JSONEncoder().encode(plan).write(to: CleanupPlan.url(in: refsCache), options: .atomic)
     }
     return (objects, files, smallLeft)
