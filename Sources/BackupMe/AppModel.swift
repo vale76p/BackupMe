@@ -495,12 +495,25 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         }
         let repo: Repository
         do {
-            repo = try Repository(destination: URL(fileURLWithPath: s.destination ?? ""), computerName: archive)
+            repo = try Repository(destination: URL(fileURLWithPath: s.destination ?? ""), computerName: archive,
+                                  packBelow: Repository.packThreshold)
             // before any write or cleanup: another account's archive is refused, not shared
             try repo.withLock { try repo.claim(owner: getuid()) }
         } catch {
             return (failed(error), nil, false, nil)
         }
+        // what the last collection found unused: this backup must not reuse an object the cleanup may delete
+        repo.condemned = condemnedObjects(refsCache: AppPaths.refsCache(archive, destination: repo.root.path))
+        // the client behind on what was already there: deleting now would leave the cloud copy without what replaces
+        // it. Read before the backup, whose own files are not uploaded yet by definition
+        let packs = (try? repo.packIDs()) ?? []
+        let lastPackConfirmed = packs.last.map { repo.packIsConfirmed($0, now: Date()) } ?? true
+        let newest = ((try? repo.snapshotIDs()) ?? []).last.flatMap {
+            try? repo.root.appending(path: "snapshots/\($0).json.lzfse").resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemIsUploadedKey])
+        }
+        let manifestUploaded = newest?.isUbiquitousItem == true ? newest?.ubiquitousItemIsUploaded : nil
+        let clientBehind = manifestUploaded == false || !lastPackConfirmed
+        Log.backup.debug("Contenitori: \(packs.count), ultimo confermato: \(lastPackConfirmed ? "sì" : "no"), il client dichiara lo stato di caricamento: \(manifestUploaded != nil ? "sì" : "no")")
         // the first backup of a new build checks what earlier versions left (kit, repo.json, leftovers, manifests)
         let info = Bundle.main.infoDictionary
         let build = "\(info?["CFBundleShortVersionString"] as? String ?? "") (\(info?["CFBundleVersion"] as? String ?? ""))"
@@ -560,20 +573,42 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         do {
             // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
             let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
+            // deletions of the last hour, across backups: OneDrive alerts on many files deleted within an hour
+            let defaults = UserDefaults.standard
+            var ledger = defaults.data(forKey: "deletionLedger").flatMap { try? JSONDecoder().decode(DeletionLedger.self, from: $0) } ?? DeletionLedger()
+            var options = CleanupOptions()
+            options.maxDeletions = clientBehind ? 0 : ledger.allowance(limit: defaults.object(forKey: "deletionsPerHour") as? Int ?? 50, now: Date())
+            options.convert = true
             // objects of the backups that leave are collected once a day, not at every hourly backup
-            let lastGC = UserDefaults.standard.object(forKey: "lastGC") as? Date
+            let lastGC = defaults.object(forKey: "lastGC") as? Date
             let gcDue = lastGC.map { Date().timeIntervalSince($0) > 86400 || $0 > Date() } ?? true
             // never forced after a failed run: what it copied is what the next attempt needs, and deleting it was
             // thousands of files removed from the cloud and uploaded again. Over the cap they are collected anyway
             let result = try prune(repository: repo, policy: s.retention, capBytes: cap, now: Date(),
                                    refsCache: AppPaths.refsCache(archive, destination: repo.root.path),
-                                   pinned: pinned, gcDue: gcDue)
-            if result.collected { UserDefaults.standard.set(Date(), forKey: "lastGC") }
-            // in the Registro at any log level: the count to compare with a cloud service's "many files deleted" alert
-            if result.deletedObjects > 0 {
-                Log.backup.info("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) file eliminati dall'archivio")
+                                   pinned: pinned, gcDue: gcDue, options: options)
+            ledger.record(result.deletedFiles, at: Date())
+            defaults.set(try? JSONEncoder().encode(ledger), forKey: "deletionLedger")
+            if result.collected { defaults.set(Date(), forKey: "lastGC") }
+            // nil: not counted in this call, the last count stays
+            let smallBefore = defaults.object(forKey: "smallFilesLeft") as? Int
+            if let small = result.smallFilesLeft {
+                defaults.set(small, forKey: "smallFilesLeft")
+                // the pace of the conversion is measured from when it started (Destinazione's end estimate)
+                if small == 0 {
+                    defaults.removeObject(forKey: "conversionStartCount")
+                    defaults.removeObject(forKey: "conversionStartDate")
+                } else if defaults.object(forKey: "conversionStartDate") == nil {
+                    defaults.set(small, forKey: "conversionStartCount")
+                    defaults.set(Date(), forKey: "conversionStartDate")
+                }
             }
-            Log.backup.debug("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) oggetti eliminati, archivio \(result.poolSize) byte, oltre il tetto: \(result.overCap), rinviata: \(result.gcSkipped), oggetti mancanti: \(result.missingObjects)")
+            // in the Registro at any log level: the count to compare with a cloud service's "many files deleted" alert
+            if result.deletedFiles > 0 || (result.smallFilesLeft.map { $0 != smallBefore ?? 0 } ?? false) {
+                let small = result.smallFilesLeft.map { $0 == 0 ? "" : ", \($0) file piccoli da convertire" } ?? ""
+                Log.backup.info("Pulizia: \(result.deletedFiles) file eliminati dalla destinazione\(small)")
+            }
+            Log.backup.debug("Pulizia: \(result.deletedSnapshots.count) backup e \(result.deletedObjects) oggetti eliminati, archivio \(result.poolSize) byte, oltre il tetto: \(result.overCap), rientro rinviato: \(result.capPending), eliminazioni consentite: \(options.maxDeletions ?? 0), rinviata: \(result.gcSkipped), oggetti mancanti: \(result.missingObjects)")
             if result.archiveReplaced {
                 report.warnings.append("\(Self.recreated) nella destinazione c'è un archivio nuovo e i backup precedenti non ci sono più. Se non l'hai cancellato tu, controlla la cartella: un servizio cloud può averlo spostato o rinominato")
             }
@@ -581,7 +616,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             if result.missingObjects > 0 {
                 report.warnings.append("\(Self.incomplete) mancano \(result.missingObjects) file usati dai backup, che non si ripristinano per intero")
             }
-            return (report, result.overCap, verified, upgrade)
+            // an archive still shrinking within the hourly budget is not a cap too low for the folders
+            return (report, result.overCap && !result.capPending, verified, upgrade)
         } catch {
             // the destination unplugged: the backup's own error says it, the archive isn't damaged
             if FileManager.default.fileExists(atPath: repo.root.path) {

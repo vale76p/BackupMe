@@ -242,6 +242,9 @@ struct DestinationCard: View {
         var connected = true
         /// false: the destination holds no archive of this Mac yet
         var hasArchive = true
+        /// Small single-file objects still to move into containers, as the last cleanup counted them
+        var smallFilesLeft = 0
+        var conversionEnd: Date?
     }
 
     var body: some View {
@@ -251,6 +254,12 @@ struct DestinationCard: View {
                 Text(Self.title(path)).font(.title3).lineLimit(1).truncationMode(.middle)
                 Group {
                     Text(spaceLine)
+                    if let info, info.connected, info.smallFilesLeft > 0 {
+                        Text("File piccoli da convertire: \(info.smallFilesLeft.formatted())" + (info.conversionEnd.map { " · fine stimata \($0.formatted(.relative(presentation: .named)))" } ?? ""))
+                    }
+                    if let info, info.connected, let cap = model.settings.capGB, Double(info.used) > cap * 1e9 {
+                        Text("L'archivio sta rientrando sotto il tetto")
+                    }
                     Text(backupsLine)
                     Text("Prossimo backup: \(model.nextBackupText)")
                 }
@@ -350,9 +359,14 @@ struct DestinationCard: View {
         return await Task.detached(priority: .utility) {
             let repo = try? Repository(destination: URL(fileURLWithPath: path), computerName: archive, create: false)
             let dates = ((try? repo?.snapshotIDs()) ?? []).compactMap(Snapshot.date(fromID:)).sorted()
+            let d = UserDefaults.standard, left = d.integer(forKey: "smallFilesLeft")
+            let end = (d.object(forKey: "conversionStartDate") as? Date).flatMap {
+                conversionEnd(startCount: d.integer(forKey: "conversionStartCount"), startDate: $0, left: left, now: Date())
+            }
             // checked after reading: a disk pulled out meanwhile left empty results
             return Info(available: available(path), used: (try? repo?.poolSize()) ?? 0, dates: dates,
-                        connected: Repository.isAvailable(destination: URL(fileURLWithPath: path)), hasArchive: repo != nil)
+                        connected: Repository.isAvailable(destination: URL(fileURLWithPath: path)), hasArchive: repo != nil,
+                        smallFilesLeft: left, conversionEnd: end)
         }.value
     }
 }
