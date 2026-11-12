@@ -393,9 +393,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             if !c.unreadableSnapshots.isEmpty { problems.append("\(c.unreadableSnapshots.count) backup illeggibili, che non si possono ripristinare") }
             if c.missingObjects > 0 { problems.append("\(c.missingObjects) file mancanti nell'archivio") }
             if !c.objects.corrupt.isEmpty { problems.append("\(c.objects.corrupt.count) file danneggiati senza una copia attuale per ripararli") }
+            if !c.damagedPacks.isEmpty { problems.append(c.damagedPacks.count == 1 ? "1 contenitore danneggiato" : "\(c.damagedPacks.count) contenitori danneggiati") }
             let repaired = c.objects.repaired.isEmpty ? "" : "; \(c.objects.repaired.count) file danneggiati riparati"
             damagedBackups = c.unreadableSnapshots
-            otherCheckProblems = c.missingObjects > 0 || !c.objects.corrupt.isEmpty
+            otherCheckProblems = c.missingObjects > 0 || !c.objects.corrupt.isEmpty || !c.damagedPacks.isEmpty
             if problems.isEmpty {
                 archiveProblem = nil
                 checkResult = ("Archivio integro: \(c.snapshots) backup, \(c.objects.checked) file controllati (\(size))\(repaired)", true)
@@ -579,6 +580,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         var options = CleanupOptions()
         options.maxDeletions = clientBehind ? 0 : ledger.allowance(limit: defaults.object(forKey: "deletionsPerHour") as? Int ?? 50, now: Date())
         options.convert = true
+        // saved spent before the deletions: a quit or crash before the real count is saved must not leave a full allowance
+        var spent = ledger
+        spent.record(options.maxDeletions ?? 0, at: Date())
+        defaults.set(try? JSONEncoder().encode(spent), forKey: "deletionLedger")
         do {
             // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
             let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
