@@ -90,12 +90,33 @@ extension Repository {
         // container. Its records are checked when an object is read (`readPacked`). Written not to overflow on a
         // crafted index
         let size = Int(st.st_size)
-        func inside(_ e: PackEntry) -> Bool { e.offset <= size && e.length <= size - e.offset }
-        if entries.allSatisfy(inside), (entries.map { $0.offset + $0.length }.max() ?? Pack.magic.count) == size { return entries }
+        if Self.isWhole(entries, size: size) { return entries }
         do { return try rebuildIndex(id, in: packs) } catch RepositoryError.damagedPack {
             // a container cut short: what its index still locates inside it reads back, each copy checked by its hash
-            return entries.filter(inside)
+            return entries.filter { Self.isInside($0, size: size) }
         }
+    }
+
+    /// Written not to overflow on a crafted index.
+    private static func isInside(_ e: PackEntry, size: Int) -> Bool { e.offset <= size && e.length <= size - e.offset }
+
+    /// Every entry inside a container of `size` bytes, the last one ending at its end.
+    private static func isWhole(_ entries: [PackEntry], size: Int) -> Bool {
+        entries.allSatisfy { isInside($0, size: size) } && (entries.map { $0.offset + $0.length }.max() ?? Pack.magic.count) == size
+    }
+
+    /// A container's entries only when its index is whole: rebuilt from it in this session, or a file that decodes and
+    /// ends exactly at the container's end. nil for anything else (one cut short, missing, damaged): cleanup never
+    /// deletes a container it can't fully account for. Only the container's size is asked, never its bytes.
+    func wholePackEntries(_ id: String) -> [PackEntry]? {
+        if let entries = rebuiltIndexes[id] { return entries }
+        guard Self.isPackID(id), let packs = try? packsDirectory() else { return nil }
+        defer { close(packs) }
+        var st = stat()
+        guard fstatat(packs, "\(id).pack", &st, AT_SYMLINK_NOFOLLOW) == 0, st.st_mode & S_IFMT == S_IFREG,
+              let data = try? readPackFile("\(id).idx", in: packs), let entries = try? Pack.decodeIndex(data, id: id),
+              Self.isWhole(entries, size: Int(st.st_size)) else { return nil }
+        return entries
     }
 
     /// Reads the container itself and scans it, rebuilding its index when it disagrees: `packEntries` alone trusts an

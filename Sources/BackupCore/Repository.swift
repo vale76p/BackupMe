@@ -397,13 +397,14 @@ public final class Repository {
         try readObject(hash).write(to: destination, options: .withoutOverwriting)
     }
 
-    /// Deletes the object's file; a copy in a container stays.
-    public func deleteObject(_ hash: String) throws {
+    /// Deletes the object's file; a copy in a container stays. Returns the files removed: cleanup counts them.
+    @discardableResult
+    public func deleteObject(_ hash: String) throws -> Int {
         if packed?[hash] == nil { knownObjects?.remove(hash) }
         // by descriptor, opened without following links: a fan-out folder swapped for a link deletes nothing outside
-        guard Self.isHash(hash), let fanout = try? parentDirectory(of: objectURL(hash, "raw")) else { return }
+        guard Self.isHash(hash), let fanout = try? parentDirectory(of: objectURL(hash, "raw")) else { return 0 }
         defer { close(fanout) }
-        for ext in Self.extensions { unlinkat(fanout, "\(hash).\(ext)", 0) }
+        return Self.extensions.reduce(0) { $0 + (unlinkat(fanout, "\(hash).\($1)", 0) == 0 ? 1 : 0) }
     }
 
     /// Returns how many were removed.

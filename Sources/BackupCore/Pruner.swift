@@ -18,6 +18,10 @@ public struct PruneResult: Equatable, Sendable {
     public var collected = false
     /// Objects that kept manifests use but the archive listing lacks (counted only when object cleanup ran).
     public var missingObjects = 0
+    /// Manifests, single-file objects, and 2 for each container: what the destination saw deleted.
+    public var deletedFiles = 0
+    /// The cap loop stopped for the budget, not for lack of backups to delete.
+    public var capPending = false
 }
 
 /// Applies retention, then deletes oldest snapshots while the pool exceeds `capBytes` (never the newest),
@@ -30,33 +34,47 @@ public struct PruneResult: Equatable, Sendable {
 ///
 /// `pinned` snapshots are never deleted, neither by retention nor by the cap (e.g. the last complete backup
 /// while newer ones are partial).
+///
+/// Objects are deleted from a plan kept in `refsCache` (`CleanupPlan`): the collection writes it, the calls in between
+/// delete from it within `options.maxDeletions`, and without one no object is deleted.
 public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int64?, now: Date,
                   calendar: Calendar = .backup, refsCache: URL? = nil, forceGC: Bool = false,
-                  pinned: Set<String> = [], gcDue: Bool = true) throws -> PruneResult {
+                  pinned: Set<String> = [], gcDue: Bool = true, options: CleanupOptions = .init()) throws -> PruneResult {
     try repository.withLock {
         var ids = try repository.snapshotIDs()
         let tracked = refsCache.map { trackVanished(ids: Set(ids), archive: repository.archiveID, cache: $0, now: now) }
         let gcSkipped = tracked?.wait ?? false
+        // files this call may still delete: a cloud service alerts on many deleted at once
+        var left = options.maxDeletions ?? .max
 
         // ids that don't parse as dates are not ours to judge: keep them
         let dated = ids.compactMap { id in Snapshot.date(fromID: id).map { (id: id, date: $0) } }
         let keep = snapshotsToKeep(dated, policy: policy, now: now, calendar: calendar).union(pinned)
         var deleted: [String] = []
         for s in dated where !keep.contains(s.id) {
+            guard left > 0 else { break }
             try repository.deleteSnapshot(s.id)
             deleted.append(s.id)
+            left -= 1
         }
         ids.removeAll { deleted.contains($0) }
 
-        var size: Int64 = 0
+        var size: Int64 = 0, capPending = false
         // object → how many kept manifests use it: one entry per object, not one set per manifest (that was
         // gigabytes with a million files), and taking a manifest out updates the size without recounting
         var users: [String: Int]?
-        let objectSizes = try capBytes.map { _ in try repository.objectSizes() } ?? [:]
-        var manifestSizes = try capBytes.map { _ in try repository.snapshotSizes() } ?? [:]
+        var objectSizes: [String: Int64] = [:], manifestSizes: [String: Int64] = [:], total: Int64 = 0
+        if capBytes != nil {
+            // objects/ listed once: the sizes of objectSizes() for the backups to delete, the bytes on disk of
+            // poolSize() for whether it fits (a container counts whole, its dead entries and its index too)
+            let loose = try repository.looseObjectSizes()
+            objectSizes = try repository.packIndex().mapValues { Int64($0.entry.length) }.merging(loose) { $1 }
+            manifestSizes = try repository.snapshotSizes()
+            total = loose.values.reduce(0, +) + (try repository.packIDs()).reduce(0) { $0 + repository.packSize($1) }
+                + manifestSizes.values.reduce(0, +)
+        }
         // everything stored, unreferenced objects included, fits: nothing to delete, and no reason to read every
         // manifest's references at every backup (seconds to minutes with a million files, much more on SMB)
-        let total = objectSizes.values.reduce(0, +) + manifestSizes.values.reduce(0, +)
         let fits = capBytes.map { total <= $0 } ?? true
         if fits { size = total } else if let cap = capBytes {
             var counts: [String: Int] = [:]
@@ -67,6 +85,8 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             size = counts.keys.reduce(0) { $0 + (objectSizes[$1] ?? 0) } + manifestSizes.values.reduce(0, +)
             // oldest first, never the newest, never a pinned one or an id that isn't ours
             while size > cap, let oldest = ids.dropLast().first(where: { !pinned.contains($0) && Snapshot.date(fromID: $0) != nil }) {
+                guard left > 0 else { capPending = true; break }
+                left -= 1
                 let gone = try references(of: oldest, in: repository, cache: refsCache) // read again rather than kept
                 ids.removeAll { $0 == oldest }
                 try repository.deleteSnapshot(oldest)
@@ -80,21 +100,32 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             users = counts
         }
 
-        var deletedObjects = 0
+        var deleting = (objects: 0, files: 0)
         var missingObjects = 0
         // with hourly backups one leaves the last 24 hours every hour: collecting their objects each time reads every
         // manifest's references. `gcDue` (once a day) lets the orphans wait while the archive fits with them; over the
-        // cap they go now, also when nothing left in this run (orphans of an earlier one), and the references are counted
-        let collect = (!deleted.isEmpty && gcDue) || !fits || forceGC
-        if collect, !gcSkipped {
-            var reachable = users.map { Set($0.keys) } ?? []
-            if users == nil { for id in ids { reachable.formUnion(try references(of: id, in: repository, cache: refsCache)) } }
-            let stored = try repository.allObjectHashes()
-            let unreachable = stored.subtracting(reachable)
-            for h in unreachable { Activity.beat(); try repository.deleteObject(h) }
-            try repository.removeTemporaryFiles()
-            deletedObjects = unreachable.count
-            missingObjects = reachable.subtracting(stored).count
+        // cap they go now, also when nothing left in this run (orphans of an earlier one), and the references are counted.
+        // The conversion starts from a plan
+        let saved = CleanupPlan.read(refsCache)
+        let collect = (!deleted.isEmpty && gcDue) || !fits || forceGC || (options.convert && saved == nil)
+        // known manifests vanished (a re-sync): the listing can't be trusted, no object or container is deleted
+        if !gcSkipped {
+            var plan = saved
+            if collect {
+                var reachable = users.map { Set($0.keys) } ?? []
+                if users == nil { for id in ids { reachable.formUnion(try references(of: id, in: repository, cache: refsCache)) } }
+                let stored = try repository.allObjectHashes()
+                plan = CleanupPlan(snapshots: ids, condemned: Array(stored.subtracting(reachable)),
+                                   conversionDone: saved?.conversionDone ?? false)
+                missingObjects = reachable.subtracting(stored).count
+            }
+            if let plan {
+                let confirmed = options.confirmed ?? { repository.packIsConfirmed($0, now: now) }
+                deleting = try deleteCondemned(plan, ids: ids, repository: repository, refsCache: refsCache, collected: collect,
+                                               left: &left, confirmed: confirmed)
+            }
+            // leftovers of interrupted writes, not counted: what is left of a file that never was
+            if collect { try repository.removeTemporaryFiles() }
         }
         if let dir = refsCache {
             for id in deleted {
@@ -102,10 +133,10 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
                 try? FileManager.default.removeItem(at: dir.appending(path: id + ".seen"))
             }
         }
-        return PruneResult(deletedSnapshots: deleted, deletedObjects: deletedObjects, poolSize: size,
+        return PruneResult(deletedSnapshots: deleted, deletedObjects: deleting.objects, poolSize: size,
                            overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, vanished: tracked?.warn ?? false,
                            archiveReplaced: tracked?.replaced ?? false, collected: collect && !gcSkipped,
-                           missingObjects: missingObjects)
+                           missingObjects: missingObjects, deletedFiles: deleted.count + deleting.files, capPending: capPending)
     }
 }
 
@@ -134,6 +165,8 @@ public func deleteDamagedSnapshots(_ ids: [String], repository: Repository, refs
 private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, now: Date) -> (wait: Bool, warn: Bool, replaced: Bool) {
     let fm = FileManager.default
     let markers = [".seen", ".gone", ".previous"]
+    // the archive's id and the cleanup plan: not manifests
+    let reserved: Set = ["archive", "cleanup"]
     func id(of name: String) -> String { markers.first(where: name.hasSuffix).map { String(name.dropLast($0.count)) } ?? name }
     func mark(_ url: URL, as name: String) {
         let to = dir.appending(path: name)
@@ -146,7 +179,7 @@ private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, n
     let idFile = dir.appending(path: "archive")
     var replaced = false
     if let archive, let known = try? String(contentsOf: idFile, encoding: .utf8), known != archive {
-        let cached = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0 != "archive" }
+        let cached = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { !reserved.contains($0) }
         // repo.json written again over the same backups (lost, or damaged and repaired) is the same archive
         replaced = !cached.isEmpty && !cached.contains { ids.contains(id(of: $0)) }
         for name in cached where replaced && !ids.contains(id(of: name)) {
@@ -164,7 +197,7 @@ private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, n
         fm.createFile(atPath: dir.appending(path: id + ".seen").path, contents: nil)
     }
     var wait = false, warn = false
-    for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name != "archive" {
+    for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where !reserved.contains(name) {
         let url = dir.appending(path: name)
         let id = id(of: name)
         if name.hasSuffix(".gone") || name.hasSuffix(".previous") {
@@ -183,7 +216,7 @@ private func trackVanished(ids: Set<String>, archive: String?, cache dir: URL, n
 /// Object hashes used by one manifest. A manifest that can't be read throws, which aborts pruning before any delete.
 /// Cached as 32-byte hashes under a checksum: 64 hex digits a line were ~65 MB per manifest with a million files.
 /// A cached file that doesn't verify is read from the manifest again; the text of earlier versions is still read.
-private func references(of id: String, in repository: Repository, cache: URL?) throws -> Set<String> {
+func references(of id: String, in repository: Repository, cache: URL?) throws -> Set<String> {
     let cached = cache?.appending(path: id)
     // an empty file is a manifest that came back after vanishing before its references were cached (its ".gone"
     // marker renamed back): read the manifest, or every object it uses would look unreferenced
