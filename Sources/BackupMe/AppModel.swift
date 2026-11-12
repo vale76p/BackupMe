@@ -505,13 +505,16 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         // what the last collection found unused: this backup must not reuse an object the cleanup may delete
         repo.condemned = condemnedObjects(refsCache: AppPaths.refsCache(archive, destination: repo.root.path))
         // the client behind on what was already there: deleting now would leave the cloud copy without what replaces
-        // it. Read before the backup, whose own files are not uploaded yet by definition
-        let packs = (try? repo.packIDs()) ?? []
-        let lastPackConfirmed = packs.last.map { repo.packIsConfirmed($0, now: Date()) } ?? true
-        let newest = ((try? repo.snapshotIDs()) ?? []).last.flatMap {
-            try? repo.root.appending(path: "snapshots/\($0).json.lzfse").resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemIsUploadedKey])
+        // it. Read before the backup, whose own files are not uploaded yet by definition. Only an explicit "not uploaded"
+        // counts: a client that says nothing would block every cleanup (each hourly backup writes a new container)
+        let uploaded = { (path: String) -> Bool? in
+            let v = try? repo.root.appending(path: path).resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemIsUploadedKey])
+            return v?.isUbiquitousItem == true ? v?.ubiquitousItemIsUploaded : nil
         }
-        let manifestUploaded = newest?.isUbiquitousItem == true ? newest?.ubiquitousItemIsUploaded : nil
+        // archive layout (README): packs/<id>.pack and .idx, snapshots/<id>.json.lzfse
+        let packs = (try? repo.packIDs()) ?? []
+        let lastPackConfirmed = packs.last.map { id in ["pack", "idx"].allSatisfy { uploaded("packs/\(id).\($0)") != false } } ?? true
+        let manifestUploaded = ((try? repo.snapshotIDs()) ?? []).last.flatMap { uploaded("snapshots/\($0).json.lzfse") }
         let clientBehind = manifestUploaded == false || !lastPackConfirmed
         Log.backup.debug("Contenitori: \(packs.count), ultimo confermato: \(lastPackConfirmed ? "sì" : "no"), il client dichiara lo stato di caricamento: \(manifestUploaded != nil ? "sì" : "no")")
         // the first backup of a new build checks what earlier versions left (kit, repo.json, leftovers, manifests)
@@ -570,15 +573,15 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         guard case .prune(let pinned) = cleanupDecision(thrown: thrown, report: report,
                                                         lastComplete: lastComplete.flatMap { repo.snapshotExists($0) ? $0 : nil })
         else { return (report, nil, verified, upgrade) }
+        // deletions of the last hour, across backups: OneDrive alerts on many files deleted within an hour
+        let defaults = UserDefaults.standard
+        var ledger = defaults.data(forKey: "deletionLedger").flatMap { try? JSONDecoder().decode(DeletionLedger.self, from: $0) } ?? DeletionLedger()
+        var options = CleanupOptions()
+        options.maxDeletions = clientBehind ? 0 : ledger.allowance(limit: defaults.object(forKey: "deletionsPerHour") as? Int ?? 50, now: Date())
+        options.convert = true
         do {
             // clamp: Int64(x * 1e9) traps above ~9.2e9 GB
             let cap = s.capGB.map { Int64(min($0, 1_000_000) * 1e9) }
-            // deletions of the last hour, across backups: OneDrive alerts on many files deleted within an hour
-            let defaults = UserDefaults.standard
-            var ledger = defaults.data(forKey: "deletionLedger").flatMap { try? JSONDecoder().decode(DeletionLedger.self, from: $0) } ?? DeletionLedger()
-            var options = CleanupOptions()
-            options.maxDeletions = clientBehind ? 0 : ledger.allowance(limit: defaults.object(forKey: "deletionsPerHour") as? Int ?? 50, now: Date())
-            options.convert = true
             // objects of the backups that leave are collected once a day, not at every hourly backup
             let lastGC = defaults.object(forKey: "lastGC") as? Date
             let gcDue = lastGC.map { Date().timeIntervalSince($0) > 86400 || $0 > Date() } ?? true
@@ -616,9 +619,12 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             if result.missingObjects > 0 {
                 report.warnings.append("\(Self.incomplete) mancano \(result.missingObjects) file usati dai backup, che non si ripristinano per intero")
             }
-            // an archive still shrinking within the hourly budget is not a cap too low for the folders
-            return (report, result.overCap && !result.capPending, verified, upgrade)
+            // an archive still shrinking within the hourly budget says nothing about the cap: nil keeps the last notice
+            return (report, result.capPending ? nil : result.overCap, verified, upgrade)
         } catch {
+            // it may have deleted before throwing: the whole allowance counts as spent, retries within the hour get none
+            ledger.record(options.maxDeletions ?? 0, at: Date())
+            defaults.set(try? JSONEncoder().encode(ledger), forKey: "deletionLedger")
             // the destination unplugged: the backup's own error says it, the archive isn't damaged
             if FileManager.default.fileExists(atPath: repo.root.path) {
                 report.warnings.append("Pulizia non riuscita: \(describe(error))")
