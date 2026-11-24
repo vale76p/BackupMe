@@ -77,6 +77,8 @@ public final class BackupEngine {
     /// Files of the current run that didn't fit in the destination, and the smallest of them: anything at least
     /// as big is skipped without copying it until the disk is full again.
     private var noRoom = (count: 0, bytes: Int64(0), from: Int64.max)
+    /// Files already in the backups that this run couldn't read: errors, or retention would drop their last copies.
+    private var lostKnown: [String] = []
 
     /// Warnings starting with this mean a backup can't be restored in full: the app notifies them.
     public static let damagedPrefix = "Archivio danneggiato:"
@@ -114,6 +116,7 @@ public final class BackupEngine {
             var scans: [Scan] = []
             cloudOnly = 0
             noRoom = (0, 0, .max)
+            lostKnown = []
             for s in sources {
                 var scan = Scan(source: s.path)
                 if let err = scanSource(&scan) { sourceErrors.append(err) } else { scans.append(scan) }
@@ -150,6 +153,10 @@ public final class BackupEngine {
                     }
                 }
                 entries += pass.entries; fileCount += pass.fileCount; denied += pass.denied
+                // a volume unplugged or asleep halfway: the files not read yet are missing, with only "not found" warnings
+                if Self.device(scan.source) != scan.device {
+                    sourceErrors.append("Sorgente scollegata durante il backup, parte dei suoi file manca: \(scan.source)")
+                }
                 sourceErrors += scan.unreadable
                 warnings += scan.warnings + pass.warnings
                 excluded += scan.excluded
@@ -157,6 +164,7 @@ public final class BackupEngine {
             if isCancelled() { throw BackupError.cancelled }
             // a partial backup rather than none: failing would make cleanup delete everything copied, and the next
             // attempt would fill the disk again with the same files
+            sourceErrors += lostKnown
             if noRoom.count > 0 {
                 let size = ByteCountFormatter.string(fromByteCount: noRoom.bytes, countStyle: .file)
                 sourceErrors.append("Spazio esaurito nella destinazione: \(noRoom.count) file (\(size)) non \(noRoom.count == 1 ? "salvato" : "salvati") in questo backup")
@@ -183,7 +191,7 @@ public final class BackupEngine {
                 if damaged == false {
                     // the deferred flush swallows its error: objects not published would be reported as saved
                     try repository.flushPack()
-                    try? cache.save()
+                    try? cache.save(dropUnseen: sourceErrors.isEmpty)
                     return report(last.id)
                 }
                 // not read is not damaged (only in the cloud, a destination not answering yet after sleep): no alarm
@@ -197,7 +205,8 @@ public final class BackupEngine {
                                     warnings: Self.bounded(sourceErrors + warnings, "avvisi", "avviso"))
             try repository.writeSnapshot(snapshot) // written last: a backup without manifest does not exist
             cache.lastManifest = (digest, snapshot.id)
-            try? cache.save()
+            // a source missing or cut short: forgetting its hashes would read the whole of it again when it is back
+            try? cache.save(dropUnseen: sourceErrors.isEmpty)
             return report(snapshot.id)
         }
     }
@@ -218,7 +227,11 @@ public final class BackupEngine {
         var excluded: [String] = []
         /// Folders that couldn't be listed: their files are missing from this backup, so it is partial.
         var unreadable: [String] = []
+        /// The source's volume when scanned: another one, or none, after storing means it went away meanwhile.
+        var device: dev_t?
     }
+
+    static func device(_ path: String) -> dev_t? { var st = stat(); return stat(path, &st) == 0 ? st.st_dev : nil }
 
     private func store(_ scan: Scan, isCancelled: () -> Bool, tick: () -> Void) throws
         -> (entries: [Entry], warnings: [String], fileCount: Int, newBytes: Int64, denied: [String]) {
@@ -284,6 +297,7 @@ public final class BackupEngine {
         let source = scan.source
         // the source itself may be a symlink to the real folder or file
         guard let st = FileStat(path: source, followSymlink: true) else { return "Non trovato: \(source)" }
+        scan.device = Self.device(source)
         if st.kind == .file {
             // a file the backup can't read is a missing source, not a warning: the backup would count as complete
             guard let h = FileHandle(forReadingAtPath: source) else { return "File non leggibile: \(source)" }
@@ -370,9 +384,12 @@ public final class BackupEngine {
                     hash = sha256Hex(data)
                 }
             } catch {
-                // only files never saved: one already in the backups that turns unreadable is a warning, or it
-                // would vanish silently and cleanup would end up deleting its last copy
-                if skipUnreadable, Self.isPermissionDenied(error), !cache.knows(path) { denied.append(path) } else {
+                // skipped silently only if never saved; one already in the backups makes the backup partial, or
+                // retention would end up deleting its last copy. Gone (ENOENT): deleted meanwhile, a warning
+                if skipUnreadable, Self.isPermissionDenied(error), !cache.knows(path) { denied.append(path) } else if
+                    cache.knows(path), Self.posixCode(error) != ENOENT {
+                    lostKnown.append("File già salvato non più leggibile, resta solo nei backup precedenti: \(path) (\(error.localizedDescription))")
+                } else {
                     warnings.append("\(path): \(error.localizedDescription)")
                 }
                 return nil
@@ -403,7 +420,12 @@ public final class BackupEngine {
                 warnings.append("\(path): modificato durante la lettura, saltato")
                 return nil
             }
-            cache.store(path: path, inode: st.inode, size: st.size, mtime: st.mtime, ctime: st.ctime, hash: hash)
+            // racily clean: where times are kept to the second (HFS+, FAT, some NAS) a same-size rewrite in this
+            // second leaves size, mtime and ctime as they are, and the cached hash would be wrong for good. Kept with a
+            // date that never matches, read again next time: the path is still known to be in the backups
+            let whole = st.mtime.timeIntervalSince1970.rounded() == st.mtime.timeIntervalSince1970 // APFS keeps nanoseconds
+            let racy = whole && Date().timeIntervalSince(max(st.mtime, st.ctime)) <= 2
+            cache.store(path: path, inode: st.inode, size: st.size, mtime: racy ? .distantPast : st.mtime, ctime: st.ctime, hash: hash)
             return (hash, st, written)
         }
         return nil

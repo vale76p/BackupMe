@@ -143,7 +143,8 @@ import Testing
         #expect(try e.run(sources: [src]).excluded?.count == 200)
     }
 
-    @Test func savedFileTurningUnreadableIsWarned() throws {
+    /// Not skipped silently, and not a warning only: the backup is partial, so retention keeps its last copies.
+    @Test func savedFileTurningUnreadableMakesThePartialBackup() throws {
         let file = src.appending(path: "a.txt")
         write("prima", to: file)
         let repo = try Repository(destination: dest, computerName: "Mac")
@@ -156,7 +157,7 @@ import Testing
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
         let r = try run()
-        #expect(r.warnings.count == 1 && r.skipped == nil)
+        #expect(r.skipped == nil && r.error?.contains("File già salvato non più leggibile") == true)
     }
 
     @Test func filesOverSizeLimitAreExcluded() throws {

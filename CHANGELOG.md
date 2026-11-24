@@ -10,6 +10,10 @@ Correzioni dalla revisione avversativa sullo standby: letture dell'archivio che 
 - Un indice di backup sano poteva essere dato per danneggiato, e **Elimina…** lo cancellava. Per decidere si leggeva il file due volte: se la prima lettura falliva e la seconda riusciva, l'indice risultava danneggiato. Ora decide una sola lettura, in **Controlla ora**, nell'eliminazione dei backup illeggibili, nella verifica giornaliera e in quella dopo un aggiornamento. Un indice che non si legge resta "non letto" e non si elimina.
 - Al primo backup dopo il risveglio, se l'indice del backup più recente non si leggeva ancora, arrivava l'avviso critico «Archivio danneggiato… lo elimini». Ora si salva un backup nuovo senza allarme; l'avviso resta per un indice letto e davvero danneggiato.
 - Una cartella di `objects/` che non si riusciva a leggere veniva presa per vuota, e **Controlla ora** segnalava file mancanti che c'erano. Ora il controllo si ferma con l'errore e va ripetuto.
+- Un file già salvato che non si riusciva più a leggere (disco o NAS che dopo il risveglio risponde con un errore, segnaposto del cloud rotto) dava solo un avviso: il backup contava come completo e la pulizia finiva per eliminarne l'ultima copia. Ora il backup è parziale e l'ultimo completo resta. Un file sparito nel frattempo resta un avviso.
+- Una sorgente su un disco o un NAS che si scollegava a metà backup dava un backup completo con parte dei file. Ora il backup è parziale: «Sorgente scollegata durante il backup».
+- Una sorgente assente per un backup (NAS non ancora montato dopo il risveglio) veniva tolta dalla memoria dei file già letti, e al ritorno si rileggeva per intero. Ora la memoria si sfoltisce solo dopo un backup completo.
+- Su dischi che salvano le date al secondo (HFS+, FAT, alcuni NAS), un file riscritto con la stessa dimensione nello stesso secondo in cui era stato letto restava salvato nella versione vecchia a ogni backup successivo. Ora un file cambiato da meno di 2 secondi viene riletto al backup dopo.
 
 ## [1.0.0] - 2026-11-12
 
