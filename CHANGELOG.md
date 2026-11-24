@@ -2,9 +2,9 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString` solo numerico, `BackupMeVersionLabel` col nome completo mostrato nel menu, es. `1.0.0-rc2`, e `CFBundleVersion` +1 a ogni rilascio).
 
-## [Non rilasciato]
+## [1.0.1] - 2026-11-24
 
-Correzioni dalla revisione avversativa sullo standby: letture dell'archivio che dopo il risveglio falliscono per un momento (file del cloud che si riscarica, volume che si ricollega).
+Correzioni dalla revisione avversativa sullo standby, con il suo giro di conferma: letture dell'archivio e delle cartelle che dopo il risveglio falliscono per un momento (file del cloud che si riscarica, disco o NAS che si ricollega). Il formato dell'archivio e il kit di ripristino non cambiano. Da sapere: un file già salvato che non si riesce più a leggere ora rende il backup parziale (icona rossa e nuovo tentativo) finché non si legge di nuovo o lo escludi, invece di sparire alla lunga dai backup.
 
 ### Corretto
 - Un indice di backup sano poteva essere dato per danneggiato, e **Elimina…** lo cancellava. Per decidere si leggeva il file due volte: se la prima lettura falliva e la seconda riusciva, l'indice risultava danneggiato. Ora decide una sola lettura, in **Controlla ora**, nell'eliminazione dei backup illeggibili, nella verifica giornaliera e in quella dopo un aggiornamento. Un indice che non si legge resta "non letto" e non si elimina.
