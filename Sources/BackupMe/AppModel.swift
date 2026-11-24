@@ -568,7 +568,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 // manifests too, the newest and one at random: one damaged loses its whole backup, and nothing else
                 // reads them before a restore
                 let ids = (try? repo.snapshotIDs()) ?? []
-                for id in Set([ids.last, ids.randomElement()].compactMap { $0 }) where !repo.snapshotIsIntact(id) && repo.snapshotCanBeRead(id) {
+                for id in Set([ids.last, ids.randomElement()].compactMap { $0 }) where repo.snapshotDamaged(id) == true {
                     report.warnings.append("\(Self.damaged) il backup del \(Snapshot.date(fromID: id)?.formatted(date: .abbreviated, time: .shortened) ?? id) non si legge e non si può ripristinare. Dopo «Controlla ora» lo elimini da Impostazioni › Avanzate.")
                 }
                 if !v.corrupt.isEmpty {

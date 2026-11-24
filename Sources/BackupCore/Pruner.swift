@@ -156,7 +156,7 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
 public func deleteDamagedSnapshots(_ ids: [String], repository: Repository, refsCache: URL?) throws -> [String] {
     try repository.withLock {
         var deleted: [String] = []
-        for id in ids where repository.snapshotExists(id) && !repository.snapshotIsIntact(id) && repository.snapshotCanBeRead(id) {
+        for id in ids where repository.snapshotExists(id) && repository.snapshotDamaged(id) == true {
             try repository.deleteSnapshot(id)
             deleted.append(id)
             for name in [id, id + ".seen", id + ".gone", id + ".previous"] {

@@ -179,13 +179,15 @@ public final class BackupEngine {
             let digest = Self.digest(sources: sources.map(\.path), entries: entries)
             if let last = cache.lastManifest, last.digest == digest, repository.snapshotExists(last.id) {
                 // the newest backup must be restorable: a damaged one is written again below
-                if repository.snapshotIsIntact(last.id) {
+                let damaged = repository.snapshotDamaged(last.id)
+                if damaged == false {
                     // the deferred flush swallows its error: objects not published would be reported as saved
                     try repository.flushPack()
                     try? cache.save()
                     return report(last.id)
                 }
-                shown.append("\(Self.damagedPrefix) il backup del \(Snapshot.date(fromID: last.id)?.formatted(date: .abbreviated, time: .shortened) ?? last.id) non si legge più e non si può ripristinare: i file sono stati salvati in un backup nuovo. Dopo «Controlla ora» lo elimini da Impostazioni › Avanzate.")
+                // not read is not damaged (only in the cloud, a destination not answering yet after sleep): no alarm
+                if damaged == true { shown.append("\(Self.damagedPrefix) il backup del \(Snapshot.date(fromID: last.id)?.formatted(date: .abbreviated, time: .shortened) ?? last.id) non si legge più e non si può ripristinare: i file sono stati salvati in un backup nuovo. Dopo «Controlla ora» lo elimini da Impostazioni › Avanzate.") }
             }
             var date = now
             while repository.snapshotExists(Snapshot.id(for: date)) { date += 1 } // one manifest per second, never overwritten

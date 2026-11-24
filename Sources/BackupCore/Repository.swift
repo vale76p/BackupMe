@@ -196,7 +196,7 @@ public final class Repository {
         var dirs = try fm.contentsOfDirectory(atPath: objectsDir.path)
         if let n = sampleDirs { dirs = Array(dirs.shuffled().prefix(n)) }
         for dir in dirs {
-            for (hash, size) in objects(in: dir, sizes: true) { result[hash] = size }
+            for (hash, size) in try objects(in: dir, sizes: true) { result[hash] = size }
         }
         return result
     }
@@ -204,7 +204,7 @@ public final class Repository {
     public func allObjectHashes() throws -> Set<String> {
         var result = Set(try packIndex().keys)
         for dir in try fm.contentsOfDirectory(atPath: objectsDir.path) {
-            for (hash, _) in objects(in: dir) { result.insert(hash) }
+            for (hash, _) in try objects(in: dir) { result.insert(hash) }
         }
         return result
     }
@@ -212,17 +212,20 @@ public final class Repository {
     /// The objects in one fan-out folder: only `<hash>.<ext>` under its own prefix, never through a link. A link
     /// planted in objects/ would otherwise list files outside the archive as unreferenced objects, for cleanup.
     /// `sizes`: read in the same listing (getattrlistbulk), 8 times faster than a stat per object.
-    private func objects(in dir: String, sizes: Bool = false) -> [(hash: String, size: Int64)] {
+    /// A folder that can't be read throws: taken for empty, after a sleep its objects were reported missing.
+    private func objects(in dir: String, sizes: Bool = false) throws -> [(hash: String, size: Int64)] {
         let d = objectsDir.appending(path: dir)
-        guard (try? fm.attributesOfItem(atPath: d.path)[.type] as? FileAttributeType) == .typeDirectory else { return [] }
+        var st = stat()
+        guard lstat(d.path, &st) == 0 else { if errno == ENOENT { return [] }; throw Self.posixError() }
+        guard st.st_mode & S_IFMT == S_IFDIR else { return [] }
         func hash(_ name: String) -> String? {
             let hash = (name as NSString).deletingPathExtension
             return Self.extensions.contains((name as NSString).pathExtension) && Self.isHash(hash) && hash.hasPrefix(dir) ? hash : nil
         }
         // a pool per folder: the listing's URLs and names are otherwise kept until the whole backup or cleanup ends
-        return autoreleasepool {
-            guard sizes else { return ((try? fm.contentsOfDirectory(atPath: d.path)) ?? []).compactMap { hash($0).map { ($0, 0) } } }
-            return ((try? fm.contentsOfDirectory(at: d, includingPropertiesForKeys: [.fileSizeKey])) ?? []).compactMap { url in
+        return try autoreleasepool {
+            guard sizes else { return try fm.contentsOfDirectory(atPath: d.path).compactMap { hash($0).map { ($0, 0) } } }
+            return try fm.contentsOfDirectory(at: d, includingPropertiesForKeys: [.fileSizeKey]).compactMap { url in
                 hash(url.lastPathComponent).map { ($0, Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)) }
             }
         }
@@ -542,8 +545,10 @@ public final class Repository {
 
     private static let checkPrefix = #"{"check":""#
 
-    public func readSnapshot(_ id: String) throws -> Snapshot {
-        let json = try sealedJSON(id)
+    public func readSnapshot(_ id: String) throws -> Snapshot { try decodeSnapshot(Data(contentsOf: snapshotURL(id)), id) }
+
+    private func decodeSnapshot(_ raw: Data, _ id: String) throws -> Snapshot {
+        let json = try sealedJSON(raw, id)
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .secondsSince1970
         let s = try dec.decode(Snapshot.self, from: json)
@@ -555,22 +560,23 @@ public final class Repository {
     }
 
     /// Whether a manifest can be read: its checksum, without decoding it, when it has one.
-    public func snapshotIsIntact(_ id: String) -> Bool {
+    public func snapshotIsIntact(_ id: String) -> Bool { snapshotDamaged(id) == false }
+
+    /// Whether a manifest's bytes are damaged, decided on one read; nil when they can't be read at all (only in the
+    /// cloud with the client off, a volume not answering yet after sleep): not known to be damaged. A failed read
+    /// followed by a good one was taken for damage, and the sound backup deleted.
+    public func snapshotDamaged(_ id: String) -> Bool? {
         autoreleasepool {
+            guard let raw = try? Data(contentsOf: snapshotURL(id)) else { return nil }
             // decompressed and hashed as a stream: the JSON of a million entries is hundreds of MB, and this runs at
             // every backup that finds nothing changed. nil: no checksum (before 0.9.2), decoded whole as before
-            guard let sealed = try? checksumMatches(id) else { return (try? readSnapshot(id)) != nil }
-            return sealed
+            guard let sealed = try? checksumMatches(raw) else { return (try? decodeSnapshot(raw, id)) == nil }
+            return !sealed
         }
     }
 
-    /// Whether the manifest's bytes can be read at all. False for one only in the cloud with the client off or
-    /// without network: that one is not damaged, and deleting it would throw away a sound backup.
-    public func snapshotCanBeRead(_ id: String) -> Bool { (try? Data(contentsOf: snapshotURL(id))) != nil }
-
     /// Whether the manifest's checksum matches its content; nil when it has none. Throws when it doesn't decompress.
-    private func checksumMatches(_ id: String) throws -> Bool? {
-        let raw = try Data(contentsOf: snapshotURL(id))
+    private func checksumMatches(_ raw: Data) throws -> Bool? {
         let prefix = Data(Self.checkPrefix.utf8), headSize = prefix.count + 66 // {"check":"<64 hex>",
         var head = Data(), hasher = SHA256(), bodySize = 0
         let filter = try OutputFilter(.decompress, using: .lzfse) { chunk in
@@ -589,8 +595,7 @@ public final class Repository {
     }
 
     /// The manifest's JSON, its checksum verified when it has one.
-    private func sealedJSON(_ id: String) throws -> Data {
-        let raw = try Data(contentsOf: snapshotURL(id))
+    private func sealedJSON(_ raw: Data, _ id: String) throws -> Data {
         guard let json = try? (raw as NSData).decompressed(using: .lzfse) as Data else { throw RepositoryError.damagedSnapshot(id) }
         let prefix = Data(Self.checkPrefix.utf8)
         guard json.starts(with: prefix) else { return json }

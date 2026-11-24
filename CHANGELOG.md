@@ -2,6 +2,15 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString` solo numerico, `BackupMeVersionLabel` col nome completo mostrato nel menu, es. `1.0.0-rc2`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [Non rilasciato]
+
+Correzioni dalla revisione avversativa sullo standby: letture dell'archivio che dopo il risveglio falliscono per un momento (file del cloud che si riscarica, volume che si ricollega).
+
+### Corretto
+- Un indice di backup sano poteva essere dato per danneggiato, e **Elimina…** lo cancellava. Per decidere si leggeva il file due volte: se la prima lettura falliva e la seconda riusciva, l'indice risultava danneggiato. Ora decide una sola lettura, in **Controlla ora**, nell'eliminazione dei backup illeggibili, nella verifica giornaliera e in quella dopo un aggiornamento. Un indice che non si legge resta "non letto" e non si elimina.
+- Al primo backup dopo il risveglio, se l'indice del backup più recente non si leggeva ancora, arrivava l'avviso critico «Archivio danneggiato… lo elimini». Ora si salva un backup nuovo senza allarme; l'avviso resta per un indice letto e davvero danneggiato.
+- Una cartella di `objects/` che non si riusciva a leggere veniva presa per vuota, e **Controlla ora** segnalava file mancanti che c'erano. Ora il controllo si ferma con l'errore e va ripetuto.
+
 ## [1.0.0] - 2026-11-12
 
 Prima versione di produzione. Rispetto alla rc4 l'archivio passa al formato 2: i file piccoli stanno nei contenitori e la pulizia ha un tetto orario, perché i client cloud non segnalino più eliminazioni in massa. Gli archivi esistenti si aprono come sono e si convertono a poco a poco.

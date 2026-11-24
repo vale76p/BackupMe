@@ -68,7 +68,9 @@ public func checkArchive(repository: Repository, cache: HashCache, isCancelled: 
             if isCancelled() { throw BackupError.cancelled }
             Activity.beat()
             do { try autoreleasepool { needed.formUnion(try repository.readSnapshot(id).entries.compactMap(\.hash)) } }
-            catch { if repository.snapshotCanBeRead(id) { unreadable.append(id) } else { unread.append(id) } }
+            // damaged only when the bytes were read: a read that fails, then works, is not damage
+            catch RepositoryError.damagedSnapshot { unreadable.append(id) } catch is DecodingError { unreadable.append(id) }
+            catch { unread.append(id) }
         }
         var damagedPacks: [String] = []
         for id in try repository.packIDs() {
@@ -167,8 +169,10 @@ public func upgradeCheck(repository: Repository) throws -> UpgradeReport {
             Activity.beat()
             // the checksum as a stream; a manifest from before it (0.9.1 and earlier) is decoded whole
             // unreadable is not damaged: a manifest only in the cloud, without network, would push to delete a sound backup
-            if !repository.snapshotIsIntact(id) {
-                if (try? Data(contentsOf: snapshots.appending(path: name))) == nil { unread.append(id) } else { damaged.append(id) }
+            switch repository.snapshotDamaged(id) {
+            case nil: unread.append(id)
+            case true?: damaged.append(id)
+            case false?: break
             }
         }
         if !damaged.isEmpty {
