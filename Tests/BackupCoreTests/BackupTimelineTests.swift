@@ -95,15 +95,19 @@ import Testing
         #expect(known[id]?.warnings == 5)
     }
 
-    @Test func theHistoryFirstThenTheIndex() {
+    @Test func theHistoryWinsOverTheIndex() {
+        // «Cancella avvisi» empties the last run's warnings in the app's history: the timeline follows it, index or not
         let a = Rules.d(2026, 11, 23, 15), b = Rules.d(2026, 11, 20, 20), c = Rules.d(2026, 11, 18, 20)
-        let report = BackupReport(snapshotID: Snapshot.id(for: a), date: a, duration: 1, fileCount: 1, newBytes: 1_000_000,
-                                  warnings: ["w"], error: nil)
-        let items = BackupTimeline.items(snapshots: [a, b, c].map { (id: Snapshot.id(for: $0), date: $0) }, history: [report]) {
-            $0 == Snapshot.id(for: b) ? 2 : nil
-        }
+        let id = Snapshot.id(for: a)
+        let index = { (id: String) -> Int? in id == Snapshot.id(for: b) ? 2 : id == Snapshot.id(for: a) ? 9 : nil }
+        let report = BackupReport(snapshotID: id, date: a, duration: 1, fileCount: 1, newBytes: 1_000_000, warnings: ["w"], error: nil)
+        let items = BackupTimeline.items(snapshots: [a, b, c].map { (id: Snapshot.id(for: $0), date: $0) }, history: [report], indexWarnings: index)
         #expect(items.map(\.newBytes) == [1_000_000, nil, nil])
+        // what the history knows stands, even where an index in memory says otherwise
         #expect(items.map(\.warnings) == [1, 2, nil])
+        // and once the warnings are cleared nothing brings them back
+        let cleared = BackupReport(snapshotID: id, date: a, duration: 1, fileCount: 1, newBytes: 1_000_000, warnings: [], error: nil)
+        #expect(BackupTimeline.items(snapshots: [(id: id, date: a)], history: [cleared], indexWarnings: index).first?.warnings == 0)
     }
 
     @Test func barsAreProportionalToTheLargest() {

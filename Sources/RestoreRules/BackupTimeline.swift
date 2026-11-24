@@ -55,8 +55,31 @@ extension String {
     var firstUp: String { prefix(1).uppercased() + String(dropFirst()) }
 }
 
+extension Calendar {
+    /// The first of the seven days the timeline lists one by one: six days before today, at midnight.
+    func timelineWeekStart(now: Date) -> Date { date(byAdding: .day, value: -6, to: startOfDay(for: now)) ?? now }
+
+    /// Whether `date` falls on the day before `now`.
+    func isYesterday(_ date: Date, now: Date) -> Bool {
+        self.date(byAdding: .day, value: -1, to: now).map { isDate(date, inSameDayAs: $0) } ?? false
+    }
+
+    /// Whether `date` falls in another year than `now`.
+    func isAnotherYear(_ date: Date, now: Date) -> Bool { component(.year, from: date) != component(.year, from: now) }
+}
+
+extension Date {
+    /// "Oggi" or "Ieri" when the day is one of those two; nil for every other day.
+    func todayOrYesterday(now: Date, calendar: Calendar) -> String? {
+        if calendar.isDate(self, inSameDayAs: now) { return "Oggi" }
+        if calendar.isYesterday(self, now: now) { return "Ieri" }
+        return nil
+    }
+}
+
 public enum BackupTimeline {
     /// New bytes and warnings of the backups the app's history holds (its last 50 runs); a run with no changes reused an older backup, so only the run that wrote an index counts.
+    /// For warnings the history is the record even once its index is in memory: «Cancella avvisi» empties it for the last backup, and the timeline follows.
     public static func info(from history: [BackupReport]) -> [String: (newBytes: Int64, warnings: Int)] {
         var known: [String: (newBytes: Int64, warnings: Int)] = [:]
         for r in history {
@@ -67,7 +90,7 @@ public enum BackupTimeline {
         return known
     }
 
-    /// Every backup with what is known about it. `indexWarnings` answers for a backup whose index is in memory.
+    /// Every backup with what is known about it; `indexWarnings` answers only for a backup the history says nothing about.
     public static func items(snapshots: [(id: String, date: Date)], history: [BackupReport],
                              indexWarnings: (String) -> Int?) -> [TimelineItem] {
         let known = info(from: history)
@@ -80,7 +103,7 @@ public enum BackupTimeline {
     /// One section per day of the last week (today included), then one per month. Newest first.
     public static func sections(_ items: [TimelineItem], now: Date = Date(), calendar: Calendar = .current,
                                 locale: Locale = Locale(identifier: "it_IT")) -> [TimelineSection] {
-        let weekStart = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)) ?? now
+        let weekStart = calendar.timelineWeekStart(now: now)
         var result: [TimelineSection] = []
         for item in items.sorted(by: { $0.date > $1.date }) {
             let key: String, title: String
@@ -100,18 +123,14 @@ public enum BackupTimeline {
     /// "Oggi · 24 nov", "Ieri · 23 nov", "Domenica 22 nov".
     public static func dayTitle(_ date: Date, now: Date, calendar: Calendar, locale: Locale) -> String {
         let day = date.rule(.dayMonth, calendar: calendar, locale: locale)
-        if calendar.isDate(date, inSameDayAs: now) { return "Oggi · " + day }
-        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
-            return "Ieri · " + day
-        }
+        if let named = date.todayOrYesterday(now: now, calendar: calendar) { return named + " · " + day }
         return date.rule(.weekday, calendar: calendar, locale: locale).firstUp + " " + day
     }
 
     /// "Novembre", with the year when it isn't the current one: "Dicembre 2025".
     public static func monthTitle(_ date: Date, now: Date, calendar: Calendar, locale: Locale) -> String {
         let month = date.rule(.month, calendar: calendar, locale: locale).firstUp
-        let year = calendar.component(.year, from: date)
-        return year == calendar.component(.year, from: now) ? month : month + " " + String(year)
+        return calendar.isAnotherYear(date, now: now) ? month + " " + String(calendar.component(.year, from: date)) : month
     }
 
     /// Width of an item's bar, 0...1, against the largest of `items`; nil when its data is unknown.
