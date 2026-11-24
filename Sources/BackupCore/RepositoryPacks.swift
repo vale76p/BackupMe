@@ -187,15 +187,19 @@ extension Repository {
         let packs = try packsDirectory(create: true)
         defer { close(packs) }
         // before the first container: an archive with containers marked 1 would be restored only in part by an older kit
-        let info = root.appending(path: "repo.json")
-        guard var json = try JSONSerialization.jsonObject(with: Data(contentsOf: info)) as? [String: Any] else {
-            throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: info.path])
+        let info = root.appending(path: "repo.json"), ids = try packIDs()
+        // with a container there, repo.json was marked with the first one: a read failing for a moment after a sleep
+        // (only in the cloud, a volume reconnecting) must not fail the whole backup
+        if let data = ids.isEmpty ? try Data(contentsOf: info) : try? Data(contentsOf: info) {
+            guard var json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw CocoaError(.fileReadCorruptFile, userInfo: [NSFilePathErrorKey: info.path])
+            }
+            if (json["format"] as? Int ?? 1) < Self.format {
+                json["format"] = Self.format
+                try atomicWrite(try JSONSerialization.data(withJSONObject: json, options: .sortedKeys), to: info, sync: .device)
+            }
         }
-        if (json["format"] as? Int ?? 1) < Self.format {
-            json["format"] = Self.format
-            try atomicWrite(try JSONSerialization.data(withJSONObject: json, options: .sortedKeys), to: info, sync: .device)
-        }
-        let last = try packIDs().last.flatMap { UInt64($0, radix: 16) } ?? 0
+        let last = ids.last.flatMap { UInt64($0, radix: 16) } ?? 0
         guard last < .max else { throw POSIXError(.EOVERFLOW) }
         // strictly increasing, also with the clock set back
         let id = String(format: "%016llx", max(last + 1, UInt64(Date().timeIntervalSince1970 * 1000)))

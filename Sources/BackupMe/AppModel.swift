@@ -104,6 +104,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     private var timer: Timer?
     /// Uptime of the last wake: scheduled backups wait a minute after it.
     private var wokeAt: TimeInterval = -.infinity
+    /// Between going to sleep and the full wake: the timer still fires in the dark wakes (Power Nap, maintenance),
+    /// with network and cloud clients not ready, and a backup started there fails or is frozen halfway.
+    private var asleep = false
     private var uploadCheckRunning = false
     /// The login agent pointed at a moved or old copy of the app and was rewritten at this launch.
     private var launchAgentRepaired = false
@@ -149,9 +152,13 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         let timer = Timer(timeInterval: 60, repeats: true) { _ in MainActor.assumeIsolated { self.tick() } }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+            // shortcut: a wake without didWake would hold scheduled backups until restart; the 3-day notice still fires
+            MainActor.assumeIsolated { self.asleep = true }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
             // give network and OneDrive a minute after wake: the 60 s timer may fire seconds after it
-            MainActor.assumeIsolated { self.wokeAt = ProcessInfo.processInfo.systemUptime }
+            MainActor.assumeIsolated { self.asleep = false; self.wokeAt = ProcessInfo.processInfo.systemUptime }
             DispatchQueue.main.asyncAfter(deadline: .now() + 60) { MainActor.assumeIsolated { self.tick() } }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { MainActor.assumeIsolated { self.tick() } }
@@ -218,7 +225,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             deferral = nil
             return
         }
-        guard ProcessInfo.processInfo.systemUptime - wokeAt >= 60 else { return }
+        // "Esegui ora" still runs while asleep; only the scheduled ones wait for the full wake
+        guard !asleep, ProcessInfo.processInfo.systemUptime - wokeAt >= 60 else { return }
         // waits for power or a cooler Mac, but never past a day without a backup; "Esegui ora" always runs
         let overdue = lastSuccess.map { now.timeIntervalSince($0) > 86400 } ?? true
         let reason = overdue ? nil : SystemServices.backupDeferral(onlyOnPower: settings.onlyOnPower, avoidMetered: settings.deferOnMetered)
@@ -639,8 +647,11 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             ledger.record(options.maxDeletions ?? 0, at: Date())
             defaults.set(try? JSONEncoder().encode(ledger), forKey: "deletionLedger")
             // the destination unplugged: the backup's own error says it, the archive isn't damaged
+            // a read failing for a moment after a sleep is not damage: the next backup cleans up again
             if FileManager.default.fileExists(atPath: repo.root.path) {
-                report.warnings.append("Pulizia non riuscita: \(describe(error))")
+                report.warnings.append(BackupEngine.isTransient(error)
+                    ? "Pulizia rinviata: un file dell'archivio non si è potuto leggere, riprova al prossimo backup (\(describe(error)))"
+                    : "Pulizia non riuscita: \(describe(error))")
             }
             return (report, nil, verified, upgrade)
         }

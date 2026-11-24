@@ -221,3 +221,87 @@ import Testing
         #expect(HashCache(url: cacheURL).knows(nas.appending(path: "a.bin").path))
     }
 }
+
+/// Adversarial review "standby", life cycle: a backup or a cleanup that meets files of the destination not readable
+/// for a while (chmod 0 here), or that is stopped halfway.
+@Suite(.serialized) struct AdversarialStandbyLifecycleTests {
+    let dest = tmp()
+    let src = tmp()
+    let cacheURL = tmp().appending(path: "cache")
+    let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    let fm = FileManager.default
+
+    func repo(packs: Bool = false) throws -> Repository {
+        try Repository(destination: dest, computerName: "Mac", packBelow: packs ? Repository.packThreshold : 0)
+    }
+    func engine(_ r: Repository) -> BackupEngine {
+        BackupEngine(repository: r, cache: HashCache(url: cacheURL), excludes: ExcludeRules(patterns: []))
+    }
+
+    /// repo.json only in the cloud for a moment: the archive already has containers, the backup has no reason to fail.
+    @Test func repoInfoNotReadableForAMomentDoesNotFailTheBackup() throws {
+        write("uno", to: src.appending(path: "a.txt"))
+        _ = try engine(try repo(packs: true)).run(sources: [src], now: t0)
+        let info = dest.appending(path: "BackupMe/Mac/repo.json")
+        write("due", to: src.appending(path: "b.txt"))
+        let r = try repo(packs: true) // opened while it still reads
+        chmod(info.path, 0)
+        let second = Result { try engine(r).run(sources: [src], now: t0.addingTimeInterval(3600)) }
+        chmod(info.path, 0o644)
+        let id = try #require(try second.get().snapshotID)
+        let entry = try #require(try r.readSnapshot(id).entries.first { $0.path == "b.txt" })
+        #expect(try r.readObject(try #require(entry.hash)) == Data("due".utf8))
+        #expect(try checkArchive(repository: try repo(packs: true), cache: HashCache(url: cacheURL)).isHealthy)
+    }
+
+    /// The first container still needs repo.json: marking the archive format 2 is what keeps older kits away.
+    @Test func firstContainerStillNeedsRepoInfo() throws {
+        write("uno", to: src.appending(path: "a.txt"))
+        let r = try repo(packs: true)
+        let info = dest.appending(path: "BackupMe/Mac/repo.json")
+        chmod(info.path, 0)
+        defer { chmod(info.path, 0o644) }
+        #expect(throws: (any Error).self) { try engine(r).run(sources: [src], now: t0) }
+    }
+
+    /// A cleanup that throws after deleting a backup (objects/ not readable for a moment): the next one must not take
+    /// the backup it deleted itself for one that vanished, and hold the object cleanup for 3 days.
+    @Test func cleanupStoppedAfterDeletingABackupDoesNotLookVanished() throws {
+        let refs = tmp()
+        var keepNewest = RetentionPolicy(); keepNewest.days = 0; keepNewest.weeks = 0; keepNewest.months = 0
+        write("uno", to: src.appending(path: "a.txt"))
+        _ = try engine(try repo()).run(sources: [src], now: t0)
+        write("due", to: src.appending(path: "a.txt"))
+        let r = try repo()
+        _ = try engine(r).run(sources: [src], now: t0.addingTimeInterval(2 * 86400))
+        _ = try prune(repository: r, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(2 * 86400),
+                      refsCache: refs, gcDue: false) // remembers both backups
+        let objects = dest.appending(path: "BackupMe/Mac/objects")
+        chmod(objects.path, 0)
+        let stopped = Result { try prune(repository: r, policy: keepNewest, capBytes: nil, now: t0.addingTimeInterval(2 * 86400),
+                                         refsCache: refs, gcDue: true) }
+        chmod(objects.path, 0o755)
+        if case .success = stopped { Issue.record("the cleanup was expected to stop on objects/") }
+        #expect(try r.snapshotIDs().count == 1)
+        let next = try prune(repository: r, policy: keepNewest, capBytes: nil, now: t0.addingTimeInterval(2 * 86400 + 3600),
+                             refsCache: refs, gcDue: true)
+        #expect(!next.vanished && !next.gcSkipped)
+    }
+
+    /// What the app reports as "Pulizia rinviata" instead of the critical "Pulizia non riuscita".
+    @Test func readFailingForAMomentIsTransient() throws {
+        let f = tmp().appending(path: "x.json")
+        write("{}", to: f)
+        chmod(f.path, 0)
+        defer { chmod(f.path, 0o644) }
+        let denied = try #require(Result { try Data(contentsOf: f) }.failure)
+        let gone = try #require(Result { try Data(contentsOf: f.appendingPathExtension("no")) }.failure)
+        #expect(BackupEngine.isTransient(denied) && BackupEngine.isTransient(gone))
+        #expect(BackupEngine.isTransient(POSIXError(.ETIMEDOUT)) && BackupEngine.isTransient(POSIXError(.ENOTDIR)))
+        #expect(!BackupEngine.isTransient(RepositoryError.damagedSnapshot("x")) && !BackupEngine.isTransient(POSIXError(.ENOSPC)))
+    }
+}
+
+private extension Result {
+    var failure: Failure? { if case .failure(let e) = self { e } else { nil } }
+}

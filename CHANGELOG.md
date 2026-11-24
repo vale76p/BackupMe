@@ -14,6 +14,10 @@ Correzioni dalla revisione avversativa sullo standby: letture dell'archivio che 
 - Una sorgente su un disco o un NAS che si scollegava a metà backup dava un backup completo con parte dei file. Ora il backup è parziale: «Sorgente scollegata durante il backup».
 - Una sorgente assente per un backup (NAS non ancora montato dopo il risveglio) veniva tolta dalla memoria dei file già letti, e al ritorno si rileggeva per intero. Ora la memoria si sfoltisce solo dopo un backup completo.
 - Su dischi che salvano le date al secondo (HFS+, FAT, alcuni NAS), un file riscritto con la stessa dimensione nello stesso secondo in cui era stato letto restava salvato nella versione vecchia a ogni backup successivo. Ora un file cambiato da meno di 2 secondi viene riletto al backup dopo.
+- A ogni contenitore salvato si rileggeva `repo.json`: se in quel momento non si leggeva (solo nel cloud, volume che si ricollega) falliva tutto il backup con «Impossibile aprire il file “repo.json”». Ora serve solo prima del primo contenitore, quando l'archivio passa al formato 2.
+- Una pulizia interrotta dopo aver eliminato un backup (errore, app chiusa, Mac in standby) lo lasciava ricordato: la pulizia successiva lo credeva sparito, avvisava «alcuni backup sono spariti» e rinviava la pulizia di 3 giorni. Ora un backup viene dimenticato prima di eliminarlo.
+- Una pulizia fermata da un file dell'archivio che non si leggeva per un momento dava l'avviso critico «Pulizia non riuscita», che restava fino a **Controlla ora**. Ora è «Pulizia rinviata» e riprova al backup successivo.
+- I backup pianificati non partono più tra la sospensione e il risveglio vero: nei brevi risvegli in standby (Power Nap, manutenzione) rete e servizi cloud non sono pronti, e il backup falliva o si fermava a metà. **Esegui ora** parte comunque.
 
 ## [1.0.0] - 2026-11-12
 

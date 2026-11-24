@@ -53,8 +53,14 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
         let dated = ids.compactMap { id in Snapshot.date(fromID: id).map { (id: id, date: $0) } }
         let keep = snapshotsToKeep(dated, policy: policy, now: now, calendar: calendar).union(pinned)
         var deleted: [String] = []
+        // before the manifest goes: a cleanup stopped after deleting it (an error, the app killed or the Mac asleep)
+        // must not leave it remembered, or the next one takes it for vanished and holds object cleanup for 3 days
+        func forget(_ id: String) {
+            for name in [id, id + ".seen"] { try? refsCache.map { try FileManager.default.removeItem(at: $0.appending(path: name)) } }
+        }
         for s in dated where !keep.contains(s.id) {
             guard left > 0 else { break }
+            forget(s.id)
             try repository.deleteSnapshot(s.id)
             deleted.append(s.id)
             left -= 1
@@ -95,6 +101,7 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
                 left -= 1
                 let gone = try references(of: oldest, in: repository, cache: refsCache) // read again rather than kept
                 ids.removeAll { $0 == oldest }
+                forget(oldest)
                 try repository.deleteSnapshot(oldest)
                 deleted.append(oldest)
                 for h in gone {
@@ -135,12 +142,6 @@ public func prune(repository: Repository, policy: RetentionPolicy, capBytes: Int
             // leftovers of interrupted writes, not counted: what is left of a file that never was
             if collect { try repository.removeTemporaryFiles() }
         }
-        if let dir = refsCache {
-            for id in deleted {
-                try? FileManager.default.removeItem(at: dir.appending(path: id))
-                try? FileManager.default.removeItem(at: dir.appending(path: id + ".seen"))
-            }
-        }
         return PruneResult(deletedSnapshots: deleted, deletedObjects: deleting.objects, poolSize: size,
                            overCap: capBytes.map { size > $0 } ?? false, gcSkipped: gcSkipped, vanished: tracked?.warn ?? false,
                            archiveReplaced: tracked?.replaced ?? false, collected: collect && !gcSkipped,
@@ -157,11 +158,12 @@ public func deleteDamagedSnapshots(_ ids: [String], repository: Repository, refs
     try repository.withLock {
         var deleted: [String] = []
         for id in ids where repository.snapshotExists(id) && repository.snapshotDamaged(id) == true {
-            try repository.deleteSnapshot(id)
-            deleted.append(id)
+            // forgotten first, as in prune: stopped in between, it would look vanished
             for name in [id, id + ".seen", id + ".gone", id + ".previous"] {
                 try? refsCache.map { try FileManager.default.removeItem(at: $0.appending(path: name)) }
             }
+            try repository.deleteSnapshot(id)
+            deleted.append(id)
         }
         return deleted
     }

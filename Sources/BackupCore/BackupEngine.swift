@@ -446,6 +446,14 @@ public final class BackupEngine {
         return posix.flatMap { $0.domain == NSPOSIXErrorDomain ? Int32($0.code) : nil }
     }
 
+    /// A read or a listing that may work in a while: a destination not answering yet after a sleep (a cloud file being
+    /// downloaded again, a volume or a share reconnecting, one unplugged under an open descriptor). Not damage.
+    public static func isTransient(_ error: Error) -> Bool {
+        guard let code = posixCode(error) else { return false }
+        return [EIO, ETIMEDOUT, ENXIO, ESTALE, EDEADLK, ENOTCONN, EAGAIN, ENETDOWN, EHOSTDOWN, EHOSTUNREACH, EACCES, ENOENT,
+                ENOTDIR, EBADF].contains(code)
+    }
+
     static func isPermissionDenied(_ error: Error) -> Bool {
         let e = error as NSError
         if e.domain == NSCocoaErrorDomain, e.code == NSFileReadNoPermissionError { return true }
