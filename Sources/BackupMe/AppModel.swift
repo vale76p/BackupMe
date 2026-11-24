@@ -315,7 +315,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                         if self.checkProgress != nil { self.checkProgress = p }
                     }
                 }
-            }
+            }.mapError { Self.unplugged($0, destination: dest) }
             await MainActor.run {
                 self.checkWorkerActive = false
                 self.checkProgress = nil
@@ -338,7 +338,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         Task.detached(priority: .userInitiated) {
             let plan = Result {
                 try kitTestPlan(repository: Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false))
-            }
+            }.mapError { Self.unplugged($0, destination: dest) }
             await MainActor.run {
                 switch plan {
                 case .success(let p?): self.pendingKitTest = p
@@ -366,7 +366,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             let result = Result {
                 let repo = try Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false)
                 return try testRestoreKit(repository: repo, snapshotID: plan.snapshotID, into: work) { flag.withLock { $0 } }
-            }
+            }.mapError { Self.unplugged($0, destination: dest) }
             await MainActor.run {
                 self.kitTestRunning = false
                 switch result {
@@ -402,7 +402,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             lastVerify = Date()
             let size = c.objects.bytes.formatted(.byteCount(style: .file))
             var problems: [String] = []
-            if !c.unreadableSnapshots.isEmpty { problems.append("\(c.unreadableSnapshots.count) backup illeggibili, che non si possono ripristinare") }
+            if !c.unreadableSnapshots.isEmpty {
+                problems.append(c.unreadableSnapshots.count == 1 ? "1 backup illeggibile, che non si può ripristinare"
+                                : "\(c.unreadableSnapshots.count) backup illeggibili, che non si possono ripristinare")
+            }
             if !c.unreadSnapshots.isEmpty {
                 problems.append(c.unreadSnapshots.count == 1 ? "1 backup non si è potuto leggere (forse non ancora scaricato dal cloud): riprova con il client cloud attivo"
                                 : "\(c.unreadSnapshots.count) backup non si sono potuti leggere (forse non ancora scaricati dal cloud): riprova con il client cloud attivo")
@@ -418,6 +421,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 checkResult = ("Archivio integro: \(c.snapshots) backup, \(c.objects.checked) file controllati (\(size))\(repaired)", true)
                 Log.backup.info(checkResult!.text)
             } else {
+                // only backups not read (not downloaded yet, a destination not answering): the damage once noticed is
+                // not confirmed, and its «lo elimini» would point to an Elimina button that isn't there
+                if c.unreadableSnapshots.isEmpty, c.missingObjects == 0, c.objects.corrupt.isEmpty, c.damagedPacks.isEmpty { archiveProblem = nil }
                 checkResult = ("Problemi trovati: " + problems.joined(separator: ", ") + repaired, false)
                 Log.backup.error(checkResult!.text)
                 if !c.unreadableSnapshots.isEmpty { Log.backup.error("Backup illeggibili: \(c.unreadableSnapshots.joined(separator: ", "))") }
@@ -435,7 +441,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 let repo = try Repository(destination: URL(fileURLWithPath: dest), computerName: archive, create: false)
                 try repo.withLock { try repo.claim(owner: getuid()) }
                 return try BackupCore.deleteDamagedSnapshots(ids, repository: repo, refsCache: AppPaths.refsCache(archive, destination: repo.root.path))
-            }
+            }.mapError { Self.unplugged($0, destination: dest) }
             await MainActor.run {
                 self.deleting = false
                 self.deletions += 1
@@ -443,6 +449,10 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
                 switch result {
                 case .failure(let error):
                     self.checkResult = ("Eliminazione non riuscita: \(Self.describe(error))", false)
+                case .success(let deleted) where deleted.isEmpty:
+                    // they read now, or can't be reached: nothing known to be damaged is left to delete
+                    self.damagedBackups = []
+                    self.checkResult = ("Nessun backup eliminato: ora si leggono, o la destinazione non risponde. Ripeti Controlla ora", false)
                 case .success(let deleted):
                     self.damagedBackups.removeAll { deleted.contains($0) }
                     let what = deleted.count == 1 ? "Eliminato 1 backup illeggibile" : "Eliminati \(deleted.count) backup illeggibili"
@@ -556,7 +566,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             if !(error is RepositoryError || error is BackupError) {
                 let gone = !FileManager.default.fileExists(atPath: repo.root.path)
                 report.error = gone ? describe(RepositoryError.destinationMissing(s.destination ?? ""))
-                    : "Impossibile scrivere nella destinazione \(((s.destination ?? "") as NSString).abbreviatingWithTildeInPath): \(describeWrite(error))"
+                    : "Impossibile usare la destinazione \(((s.destination ?? "") as NSString).abbreviatingWithTildeInPath): \(describeWrite(error))"
             }
         }
         if repo.repairedInfo { report.warnings.append("Riparato repo.json, il file che identifica l'archivio: era illeggibile") }
@@ -650,7 +660,7 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             // a read failing for a moment after a sleep is not damage: the next backup cleans up again
             if FileManager.default.fileExists(atPath: repo.root.path) {
                 report.warnings.append(BackupEngine.isTransient(error)
-                    ? "Pulizia rinviata: un file dell'archivio non si è potuto leggere, riprova al prossimo backup (\(describe(error)))"
+                    ? "Pulizia rinviata, riprova al prossimo backup: \(describe(error))"
                     : "Pulizia non riuscita: \(describe(error))")
             }
             return (report, nil, verified, upgrade)
@@ -681,7 +691,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
             notifiedErrors.formIntersection(critical)
             Log.backup.info("Backup \(report.snapshotID ?? "") riuscito: \(report.fileCount) file, \(report.newBytes) byte nuovi, \(Restorer.boundedCount(report.warnings)) avvisi, \(Int(report.duration)) s")
         }
-        for w in critical { notifyOnce(w, title: "Problema nell'archivio") }
+        // the text sends to Controlla ora: the notification offers it, not Riprova
+        for w in critical where notifiedErrors.insert(w).inserted { SystemServices.notify("Problema nell'archivio", w, offerCheck: true) }
         if let last = critical.last { archiveProblem = last }
         if report.error == nil, settings.notify != .errors {
             let others = Restorer.boundedCount(report.warnings) - critical.count
@@ -745,9 +756,9 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
     }
 
     /// One notification per distinct problem until the next successful backup.
-    private func notifyOnce(_ message: String, title: String = "Backup non riuscito") {
+    private func notifyOnce(_ message: String) {
         guard notifiedErrors.insert(message).inserted else { return }
-        SystemServices.notify(title, message)
+        SystemServices.notify("Backup non riuscito", message)
     }
 
     nonisolated static func describe(_ error: Error) -> String {
@@ -774,6 +785,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case RestoreError.inCloudFolder(let p, let service):
             return "Sostituisci «\((p as NSString).lastPathComponent)» toccherebbe file di \(service), che potrebbe eliminarli subito invece di spostarli nel Cestino. Usa Ripristina accanto o Ripristina in…"
         case let e where BackupEngine.posixCode(e) == ELOOP: return linkInArchive
+        case let e where notAnswering.contains(BackupEngine.posixCode(e) ?? 0):
+            return "Il disco o il servizio cloud non risponde (succede subito dopo lo standby): riprova fra qualche minuto"
         // a missing object is named by its hash, which means nothing to anyone
         case let e as CocoaError where e.code == .fileNoSuchFile && e.filePath.map(Repository.isHash) == true:
             return "Manca un file nell'archivio: prova un'altra versione o Impostazioni › Avanzate › Controlla ora"
@@ -789,8 +802,25 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         case EROFS: "il disco è in sola lettura"
         case ENOENT: "cartella dell'archivio non trovata"
         case ELOOP: linkInArchive
+        case let c? where notAnswering.contains(c) || c == ENOTDIR || c == EBADF:
+            "la destinazione non risponde o si è scollegata durante il backup (succede dopo lo standby): BackupMe riprova da solo entro 15 minuti"
         default: error.localizedDescription
         }
+    }
+
+    /// A disk, a share or a cloud folder not answering, mostly right after a sleep: worth a retry, not damage.
+    nonisolated static let notAnswering: Set<Int32> = [EIO, ETIMEDOUT, ENXIO, ESTALE, EDEADLK, ENOTCONN, EAGAIN, ENETDOWN,
+                                                        EHOSTDOWN, EHOSTUNREACH]
+
+    /// An operation on the archive (check, deletion, kit test, restore) that failed with the destination gone, or
+    /// unplugged under its open folder, is said as such: not Foundation's "Not a directory" or the name of a file in
+    /// the archive. Off the main thread: it looks at the disk.
+    nonisolated static func unplugged(_ error: Error, destination: String) -> Error {
+        guard !(error is BackupError), !(error is RepositoryError) else { return error }
+        if !Repository.isAvailable(destination: URL(fileURLWithPath: destination)) { return RepositoryError.destinationMissing(destination) }
+        // the descriptor of a volume detached and mounted again: told as a device not answering
+        if let c = BackupEngine.posixCode(error), c == ENOTDIR || c == EBADF { return POSIXError(.ENXIO) }
+        return error
     }
 
     /// ELOOP from the archive's writes, which never follow links: BackupMe, this Mac's folder or a file in it is one.

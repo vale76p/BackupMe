@@ -83,7 +83,8 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         guard let dest = destination else { throw RepositoryError.destinationMissing("") }
         let computer = computer
         return try await Task.detached(priority: .userInitiated) {
-            try body(try Repository(destination: dest, computerName: computer, create: false))
+            do { return try body(try Repository(destination: dest, computerName: computer, create: false)) }
+            catch { throw AppModel.unplugged(error, destination: dest.path) }
         }.value
     }
 
@@ -357,7 +358,8 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         restoring = true
         Log.restore.info("Ripristino dal backup \(snapshotID) (\(mode)): \(items.map { $0.path.isEmpty ? $0.source : $0.source + "/" + $0.path }.joined(separator: ", "))")
         Task {
-            let outcome = await (try? withRepository { repo -> ([URL], [String]) in
+            let outcome: ([URL], [String])
+            do { outcome = try await withRepository { repo -> ([URL], [String]) in
                 let snapshot = try repo.readSnapshot(snapshotID)
                 let restorer = Restorer(repository: repo)
                 var done: [URL] = [], failed: [String] = []
@@ -370,7 +372,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
                     catch { failed.append("\(name): \(AppModel.describe(error))") }
                 }
                 return (done, failed)
-            }) ?? ([], ["Impossibile aprire il backup"])
+            } } catch { outcome = ([], ["Impossibile aprire il backup: \(AppModel.describe(error))"]) }
             Log.restore.debug("Ripristinati: \(outcome.0.map(\.path).joined(separator: ", "))")
             for e in outcome.1 { Log.restore.error("Ripristino non riuscito: \(e)") }
             if !outcome.0.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(outcome.0) }

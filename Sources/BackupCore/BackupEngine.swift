@@ -390,7 +390,9 @@ public final class BackupEngine {
                     cache.knows(path), Self.posixCode(error) != ENOENT {
                     lostKnown.append("File già salvato non più leggibile, resta solo nei backup precedenti: \(path) (\(error.localizedDescription))")
                 } else {
-                    warnings.append("\(path): \(error.localizedDescription)")
+                    // gone meanwhile (ENOENT): nothing to retry
+                    let retry = Self.posixCode(error) == ENOENT ? "" : " Non salvato in questo backup, riprova al prossimo"
+                    warnings.append("\(path): \(error.localizedDescription)\(retry)")
                 }
                 return nil
             }

@@ -1055,7 +1055,7 @@ private struct ArchiveCheckSection: View {
                     Button("Elimina", role: .destructive, action: model.deleteDamagedBackups)
                 } message: {
                     Text(model.damagedBackups.map { Snapshot.date(fromID: $0)?.formatted(date: .abbreviated, time: .shortened) ?? $0 }
-                        .joined(separator: ", ") + "\n\nNon si possono ripristinare in nessun modo. Gli altri backup non vengono toccati; i file usati solo da questi vengono tolti alle prossime pulizie.")
+                        .joined(separator: ", ") + "\n\nBackupMe non riesce a ripristinarli. Se la destinazione è nel cloud, la cronologia delle versioni del servizio può averne una copia sana: recuperala prima di eliminare. Se il Mac si è appena risvegliato, ripeti prima Controlla ora fra qualche minuto. Gli altri backup non vengono toccati; i file usati solo da questi vengono tolti alle prossime pulizie.")
                 }
             }
         } header: {

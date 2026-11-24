@@ -206,6 +206,18 @@ import Testing
         #expect(try repo.snapshotIDs().contains { try repo.readSnapshot($0).entries.contains { $0.path == "tesi.docx" } })
     }
 
+    /// A file never saved that can't be read: a warning that says it is missing from this backup and retried.
+    @Test func unreadableNewFileWarningSaysItIsRetried() throws {
+        let src = tmp()
+        write("nuovo", to: src.appending(path: "nuovo.txt"))
+        chmod(src.appending(path: "nuovo.txt").path, 0)
+        defer { chmod(src.appending(path: "nuovo.txt").path, 0o644) }
+        write("altro", to: src.appending(path: "altro.txt"))
+        let r = try engine(tmp(), tmp().appending(path: "cache")).0.run(sources: [src])
+        #expect(r.error == nil)
+        #expect(r.warnings.contains { $0.hasSuffix("Non salvato in questo backup, riprova al prossimo") })
+    }
+
     /// A NAS not mounted yet at the first backup after wake: back at the next one, it must not be read again in full.
     @Test func sourceMissingForOneBackupKeepsItsHashes() throws {
         let nas = tmp().appending(path: "nas", directoryHint: .isDirectory), doc = tmp().appending(path: "doc", directoryHint: .isDirectory)

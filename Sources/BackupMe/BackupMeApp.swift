@@ -41,7 +41,7 @@ private struct MenuBarLabel: View {
     var body: some View {
         Image(nsImage: Self.icon(model.iconName, colors: model.iconColors))
             .accessibilityLabel("BackupMe")
-            .accessibilityValue(model.statusText)
+            .accessibilityValue(model.accessibilityStatus)
             .task {
                 Log.app.info("BackupMe \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") avviato, log \(Log.level.rawValue)")
                 // the label lives as long as the app: the one place with the window actions at hand
@@ -90,7 +90,8 @@ extension AppModel {
         switch status {
         // the drive with the circular arrow of the app icon, as a badge: the icon keeps its shape while it runs
         case .running: "externaldrive.badge.timemachine"
-        case .failed: "externaldrive.trianglebadge.exclamationmark"
+        // not the warnings' badge: red and yellow alone don't tell an error from a warning
+        case .failed: "externaldrive.badge.exclamationmark"
         case .idle:
             !settings.isConfigured ? "externaldrive.badge.xmark"
                 : settings.paused ? "externaldrive.badge.minus"
@@ -121,6 +122,12 @@ extension AppModel {
         guard let last = lastSuccess else { return "Entro un minuto" }
         let next = last.addingTimeInterval(Double(settings.intervalHours) * 3600)
         return next < Date() ? "A breve" : next.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    /// What VoiceOver reads for the menu bar icon: the badge's color says there are warnings, the words must too.
+    var accessibilityStatus: String {
+        guard case .idle = status, settings.isConfigured, !settings.paused else { return statusText }
+        return archiveProblem != nil ? "Problema nell'archivio · \(statusText)" : hasWarnings ? "Con avvisi · \(statusText)" : statusText
     }
 
     var statusText: String {

@@ -18,6 +18,13 @@ Correzioni dalla revisione avversativa sullo standby: letture dell'archivio che 
 - Una pulizia interrotta dopo aver eliminato un backup (errore, app chiusa, Mac in standby) lo lasciava ricordato: la pulizia successiva lo credeva sparito, avvisava «alcuni backup sono spariti» e rinviava la pulizia di 3 giorni. Ora un backup viene dimenticato prima di eliminarlo.
 - Una pulizia fermata da un file dell'archivio che non si leggeva per un momento dava l'avviso critico «Pulizia non riuscita», che restava fino a **Controlla ora**. Ora è «Pulizia rinviata» e riprova al backup successivo.
 - I backup pianificati non partono più tra la sospensione e il risveglio vero: nei brevi risvegli in standby (Power Nap, manutenzione) rete e servizi cloud non sono pronti, e il backup falliva o si fermava a metà. **Esegui ora** parte comunque.
+- Errori dopo lo standby spiegati: un disco, una condivisione o un servizio cloud che non risponde dà «non risponde (succede subito dopo lo standby): riprova fra qualche minuto», e per il backup «BackupMe riprova da solo entro 15 minuti», invece di «Errore di input/output» o «Non è una directory». Il backup non riuscito dice «Impossibile usare la destinazione» invece di «Impossibile scrivere», che era sbagliato per un errore di lettura.
+- **Controlla ora**, **Elimina…**, la prova del kit e il ripristino con la destinazione staccata a metà dicono «Destinazione non trovata» invece di un errore su una cartella o un file interno dell'archivio. **Impossibile aprire il backup** nel ripristino ora dice anche perché.
+- Se **Controlla ora** trova solo backup non letti (non ancora scaricati), l'avviso «Archivio danneggiato… lo elimini» di un backup precedente sparisce: indicava un pulsante **Elimina** che non c'era.
+- **Elimina…** che non trova più niente da eliminare dice «Nessun backup eliminato» invece di «Eliminati 0 backup illeggibili». La conferma non dice più che quei backup non si possono ripristinare «in nessun modo»: ricorda la cronologia delle versioni del servizio cloud e di ripetere il controllo se il Mac si è appena risvegliato.
+- La notifica «Problema nell'archivio» offre **Controlla ora**, come chiede il suo testo, invece di **Riprova**.
+- VoiceOver legge «Problema nell'archivio» o «Con avvisi» prima dello stato; nella barra dei menu un backup non riuscito ha un simbolo diverso da quello degli avvisi, non solo un altro colore.
+- Un file mai salvato che non si legge dice che manca da questo backup e che si riprova al prossimo. «1 backup illeggibili» ora è al singolare.
 
 ## [1.0.0] - 2026-11-12
 
