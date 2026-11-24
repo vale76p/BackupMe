@@ -84,7 +84,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         let computer = computer
         return try await Task.detached(priority: .userInitiated) {
             do { return try body(try Repository(destination: dest, computerName: computer, create: false)) }
-            catch { throw AppModel.unplugged(error, destination: dest.path) }
+            catch { throw AppModel.unplugged(error, destination: dest.path, archive: computer) }
         }.value
     }
 
@@ -357,6 +357,7 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         guard !items.isEmpty else { return }
         restoring = true
         Log.restore.info("Ripristino dal backup \(snapshotID) (\(mode)): \(items.map { $0.path.isEmpty ? $0.source : $0.source + "/" + $0.path }.joined(separator: ", "))")
+        let dest = destination
         Task {
             let outcome: ([URL], [String])
             do { outcome = try await withRepository { repo -> ([URL], [String]) in
@@ -369,7 +370,14 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
                     // named: with several items "La cartella non è in questo backup" alone doesn't say which
                     let name = ((item.path.isEmpty ? item.source : item.path) as NSString).lastPathComponent
                     do { done.append(try restorer.restore(snapshot, source: item.source, path: item.path, mode: m)) }
-                    catch { failed.append("\(name): \(AppModel.describe(error))") }
+                    catch {
+                        // the destination unplugged halfway: said once, not as a file missing from the archive for each item
+                        if let dest, !Repository.isAvailable(destination: dest) {
+                            failed.append(AppModel.describe(RepositoryError.destinationMissing(dest.path)))
+                            break
+                        }
+                        failed.append("\(name): \(AppModel.describe(error))")
+                    }
                 }
                 return (done, failed)
             } } catch { outcome = ([], ["Impossibile aprire il backup: \(AppModel.describe(error))"]) }

@@ -157,7 +157,7 @@ import Testing
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path) }
         let r = try run()
-        #expect(r.skipped == nil && r.error?.contains("File già salvato non più leggibile") == true)
+        #expect(r.skipped == nil && r.error?.contains("File già salvato che ora non si legge") == true)
     }
 
     @Test func filesOverSizeLimitAreExcluded() throws {

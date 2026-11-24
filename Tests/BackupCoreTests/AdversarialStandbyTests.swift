@@ -161,7 +161,7 @@ import Testing
                 if p > 0.3, !detached { detached = true; Self.hdiutil("detach", "-quiet", "-force", mnt.path) }
             }
             #expect(detached && report.fileCount < 2000)
-            #expect(report.error?.contains("Sorgente scollegata durante il backup") == true)
+            #expect(report.error?.contains("Cartella scollegata durante il backup") == true)
             #expect(cleanupDecision(thrown: nil, report: report, lastComplete: "older") == .prune(pinned: ["older", report.snapshotID!]))
         }
     }
@@ -215,7 +215,7 @@ import Testing
         write("altro", to: src.appending(path: "altro.txt"))
         let r = try engine(tmp(), tmp().appending(path: "cache")).0.run(sources: [src])
         #expect(r.error == nil)
-        #expect(r.warnings.contains { $0.hasSuffix("Non salvato in questo backup, riprova al prossimo") })
+        #expect(r.warnings.contains { $0.hasSuffix("Non salvato in questo backup: si riprova al prossimo") })
     }
 
     /// A NAS not mounted yet at the first backup after wake: back at the next one, it must not be read again in full.
@@ -316,4 +316,87 @@ import Testing
 
 private extension Result {
     var failure: Failure? { if case .failure(let e) = self { e } else { nil } }
+}
+
+/// Confirmation round of the "standby" review: regressions found in the first fixes.
+@Suite(.serialized) struct AdversarialStandbyConfirmationTests {
+    let dest = tmp()
+    let src = tmp()
+    let cacheURL = tmp().appending(path: "cache")
+    let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+    let fm = FileManager.default
+
+    func repo() throws -> Repository { try Repository(destination: dest, computerName: "Mac", packBelow: 0) }
+    func engine(_ r: Repository) -> BackupEngine {
+        BackupEngine(repository: r, cache: HashCache(url: cacheURL), excludes: ExcludeRules(patterns: []))
+    }
+
+    /// One fan-out folder of objects/ not listable for a moment must not make the backup take nothing for stored.
+    @Test func unlistableFanoutDoesNotRewriteTheArchive() throws {
+        for i in 0..<300 { write("contenuto \(i)", to: src.appending(path: "f\(i).txt")) }
+        let first = try engine(try repo()).run(sources: [src], now: t0)
+        let dirs = try fm.contentsOfDirectory(atPath: dest.appending(path: "BackupMe/Mac/objects").path)
+        let dir = dest.appending(path: "BackupMe/Mac/objects/\(try #require(dirs.first))").path
+        let r = try repo()
+        // not readable only while the archive is first listed, as a read failing for a moment
+        chmod(dir, 0o333)
+        _ = r.hasObject(String(repeating: "0", count: 64))
+        chmod(dir, 0o755)
+        // a new cache: every file is looked up in the archive, as after a lost cache
+        let again = try BackupEngine(repository: r, cache: HashCache(url: tmp().appending(path: "c")),
+                                     excludes: ExcludeRules(patterns: [])).run(sources: [src], now: t0.addingTimeInterval(3600))
+        #expect(again.newBytes < first.newBytes / 10)
+    }
+
+    /// A backup whose deletion fails stays, and stays remembered: a listing that misses it next time must hold the
+    /// object cleanup, or its objects would go while its manifest is there.
+    @Test func backupWhoseDeletionFailsStaysRemembered() throws {
+        let refs = tmp()
+        var keepNewest = RetentionPolicy(); keepNewest.days = 0; keepNewest.weeks = 0; keepNewest.months = 0
+        write("uno", to: src.appending(path: "a.txt"))
+        let old = try #require(try engine(try repo()).run(sources: [src], now: t0).snapshotID)
+        write("due", to: src.appending(path: "a.txt"))
+        let r = try repo()
+        _ = try engine(r).run(sources: [src], now: t0.addingTimeInterval(2 * 86400))
+        _ = try prune(repository: r, policy: RetentionPolicy(), capBytes: nil, now: t0.addingTimeInterval(2 * 86400), refsCache: refs)
+        let snapshots = dest.appending(path: "BackupMe/Mac/snapshots")
+        chmod(snapshots.path, 0o555) // the manifest can't be deleted
+        let failed = Result { try prune(repository: r, policy: keepNewest, capBytes: nil, now: t0.addingTimeInterval(2 * 86400), refsCache: refs) }
+        chmod(snapshots.path, 0o755)
+        if case .success = failed { Issue.record("the deletion was expected to fail") }
+        // a re-sync hides it for a while
+        let manifest = snapshots.appending(path: "\(old).json.lzfse"), away = tmp().appending(path: "m")
+        try fm.moveItem(at: manifest, to: away)
+        let next = try prune(repository: r, policy: keepNewest, capBytes: nil, now: t0.addingTimeInterval(2 * 86400 + 3600),
+                             refsCache: refs, forceGC: true)
+        try fm.moveItem(at: away, to: manifest)
+        #expect(next.gcSkipped && next.deletedObjects == 0)
+        #expect(try checkArchive(repository: r, cache: HashCache(url: cacheURL)).isHealthy)
+    }
+
+    /// An mtime in the future at whole seconds (a camera's clock, an extracted archive) kept the file "racy" for good:
+    /// read again at every backup. Racy is decided on ctime.
+    @Test func futureMtimeIsCachedAsUsual() throws {
+        let f = src.appending(path: "foto.jpg")
+        write("pixel", to: f)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 4_000_000_000)], ofItemAtPath: f.path)
+        _ = try engine(try repo()).run(sources: [src], now: t0)
+        let st = try #require(FileStat(path: f.path))
+        #expect(HashCache(url: cacheURL).lookup(path: f.path, inode: st.inode, size: st.size, mtime: st.mtime, ctime: st.ctime) != nil)
+    }
+
+    /// Partial only for a file already saved that can't be read: the source is all there, deleted paths still go.
+    @Test func lostFileDoesNotKeepDeletedPathsInTheCache() throws {
+        write("tesi", to: src.appending(path: "tesi.docx"))
+        write("tmp", to: src.appending(path: "build.tmp"))
+        _ = try engine(try repo()).run(sources: [src], now: t0)
+        try fm.removeItem(at: src.appending(path: "build.tmp"))
+        write("tesi 2", to: src.appending(path: "tesi.docx"))
+        chmod(src.appending(path: "tesi.docx").path, 0)
+        defer { chmod(src.appending(path: "tesi.docx").path, 0o644) }
+        let r = try engine(try repo()).run(sources: [src], now: t0.addingTimeInterval(3600))
+        #expect(r.error != nil)
+        #expect(!HashCache(url: cacheURL).knows(src.appending(path: "build.tmp").path))
+        #expect(HashCache(url: cacheURL).knows(src.appending(path: "tesi.docx").path))
+    }
 }

@@ -134,6 +134,7 @@ public final class BackupEngine {
             // taken out one at a time: each source's scan is freed once stored, not kept until the manifest is written
             while !scans.isEmpty {
                 var scan = scans.removeFirst()
+                let lostBefore = lostKnown.count
                 var pass = try store(scan, isCancelled: isCancelled) { done += 1; progress(Double(done) / Double(total)) }
                 newBytes += pass.newBytes
                 // a commit during the pass may have stored refs pointing to objects read before it: read it again
@@ -143,6 +144,7 @@ public final class BackupEngine {
                     var consistent = false
                     if scanSource(&rescan) == nil {
                         scan = rescan
+                        lostKnown.removeLast(lostKnown.count - lostBefore) // the second pass decides, once
                         pass = try store(scan, isCancelled: isCancelled) {}
                         newBytes += pass.newBytes
                         consistent = !gitChanged(scan, since: again)
@@ -155,7 +157,7 @@ public final class BackupEngine {
                 entries += pass.entries; fileCount += pass.fileCount; denied += pass.denied
                 // a volume unplugged or asleep halfway: the files not read yet are missing, with only "not found" warnings
                 if Self.device(scan.source) != scan.device {
-                    sourceErrors.append("Sorgente scollegata durante il backup, parte dei suoi file manca: \(scan.source)")
+                    sourceErrors.append("Cartella scollegata durante il backup (disco o NAS staccato o in standby), parte dei suoi file manca: \(scan.source)")
                 }
                 sourceErrors += scan.unreadable
                 warnings += scan.warnings + pass.warnings
@@ -164,6 +166,9 @@ public final class BackupEngine {
             if isCancelled() { throw BackupError.cancelled }
             // a partial backup rather than none: failing would make cleanup delete everything copied, and the next
             // attempt would fill the disk again with the same files
+            // a source missing or cut short: forgetting its hashes would read the whole of it again when it is back.
+            // Not for files lost or a full disk: backups partial for months would keep every deleted path
+            let keepUnseen = !sourceErrors.isEmpty
             sourceErrors += lostKnown
             if noRoom.count > 0 {
                 let size = ByteCountFormatter.string(fromByteCount: noRoom.bytes, countStyle: .file)
@@ -191,7 +196,7 @@ public final class BackupEngine {
                 if damaged == false {
                     // the deferred flush swallows its error: objects not published would be reported as saved
                     try repository.flushPack()
-                    try? cache.save(dropUnseen: sourceErrors.isEmpty)
+                    try? cache.save(dropUnseen: !keepUnseen)
                     return report(last.id)
                 }
                 // not read is not damaged (only in the cloud, a destination not answering yet after sleep): no alarm
@@ -205,8 +210,7 @@ public final class BackupEngine {
                                     warnings: Self.bounded(sourceErrors + warnings, "avvisi", "avviso"))
             try repository.writeSnapshot(snapshot) // written last: a backup without manifest does not exist
             cache.lastManifest = (digest, snapshot.id)
-            // a source missing or cut short: forgetting its hashes would read the whole of it again when it is back
-            try? cache.save(dropUnseen: sourceErrors.isEmpty)
+            try? cache.save(dropUnseen: !keepUnseen)
             return report(snapshot.id)
         }
     }
@@ -388,10 +392,10 @@ public final class BackupEngine {
                 // retention would end up deleting its last copy. Gone (ENOENT): deleted meanwhile, a warning
                 if skipUnreadable, Self.isPermissionDenied(error), !cache.knows(path) { denied.append(path) } else if
                     cache.knows(path), Self.posixCode(error) != ENOENT {
-                    lostKnown.append("File già salvato non più leggibile, resta solo nei backup precedenti: \(path) (\(error.localizedDescription))")
+                    lostKnown.append("File già salvato che ora non si legge, la sua copia resta nei backup precedenti (se non ti serve più, escludilo): \(path) (\(error.localizedDescription))")
                 } else {
                     // gone meanwhile (ENOENT): nothing to retry
-                    let retry = Self.posixCode(error) == ENOENT ? "" : " Non salvato in questo backup, riprova al prossimo"
+                    let retry = Self.posixCode(error) == ENOENT ? "" : " Non salvato in questo backup: si riprova al prossimo"
                     warnings.append("\(path): \(error.localizedDescription)\(retry)")
                 }
                 return nil
@@ -424,9 +428,10 @@ public final class BackupEngine {
             }
             // racily clean: where times are kept to the second (HFS+, FAT, some NAS) a same-size rewrite in this
             // second leaves size, mtime and ctime as they are, and the cached hash would be wrong for good. Kept with a
-            // date that never matches, read again next time: the path is still known to be in the backups
-            let whole = st.mtime.timeIntervalSince1970.rounded() == st.mtime.timeIntervalSince1970 // APFS keeps nanoseconds
-            let racy = whole && Date().timeIntervalSince(max(st.mtime, st.ctime)) <= 2
+            // date that never matches, read again next time: the path is still known to be in the backups. On ctime,
+            // which only the system sets: an mtime in the future would make it racy for good
+            let whole = st.ctime.timeIntervalSince1970.rounded() == st.ctime.timeIntervalSince1970 // APFS keeps nanoseconds
+            let racy = whole && Date().timeIntervalSince(st.ctime) <= 2
             cache.store(path: path, inode: st.inode, size: st.size, mtime: racy ? .distantPast : st.mtime, ctime: st.ctime, hash: hash)
             return (hash, st, written)
         }

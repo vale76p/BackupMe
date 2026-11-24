@@ -65,7 +65,7 @@ private struct MenuBarLabel: View {
     /// A symbol at the menu bar's default 13 pt looks small next to Apple's items, and its badge shrinks the
     /// drive further: 15 pt matches them, medium weight so its thin strokes read as well as theirs. Template (it follows
     /// the menu bar's light/dark), except for the states whose badge has a color: blue arrow while a backup runs,
-    /// green check when all is well, yellow triangle for warnings, red triangle for errors.
+    /// green check when all is well, yellow triangle for warnings, red circle for errors.
     private static func icon(_ name: String, colors: [NSColor]?) -> NSImage {
         var config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
         if let colors { config = config.applying(.init(paletteColors: colors)) }
@@ -126,7 +126,8 @@ extension AppModel {
 
     /// What VoiceOver reads for the menu bar icon: the badge's color says there are warnings, the words must too.
     var accessibilityStatus: String {
-        guard case .idle = status, settings.isConfigured, !settings.paused else { return statusText }
+        guard case .idle = status, settings.isConfigured else { return statusText }
+        if settings.paused { return "Backup sospesi · \(statusText)" }
         return archiveProblem != nil ? "Problema nell'archivio · \(statusText)" : hasWarnings ? "Con avvisi · \(statusText)" : statusText
     }
 

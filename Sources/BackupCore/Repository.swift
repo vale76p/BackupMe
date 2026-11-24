@@ -201,10 +201,12 @@ public final class Repository {
         return result
     }
 
-    public func allObjectHashes() throws -> Set<String> {
+    /// `skippingUnreadable`: a fan-out folder that can't be listed counts as empty instead of throwing, for `hasObject`,
+    /// where unknown only means stored again. Thrown, it emptied the whole set and the backup rewrote the archive.
+    public func allObjectHashes(skippingUnreadable: Bool = false) throws -> Set<String> {
         var result = Set(try packIndex().keys)
         for dir in try fm.contentsOfDirectory(atPath: objectsDir.path) {
-            for (hash, _) in try objects(in: dir) { result.insert(hash) }
+            for (hash, _) in try skippingUnreadable ? (try? objects(in: dir)) ?? [] : objects(in: dir) { result.insert(hash) }
         }
         return result
     }
@@ -235,7 +237,7 @@ public final class Repository {
         if condemned.contains(hash) { return false }
         // shortcut: the first call lists the whole archive (a set of every hash, ~100 MB with a million objects);
         // check the object's file instead if that listing is too slow on a network destination
-        if knownObjects == nil { knownObjects = ((try? allObjectHashes()) ?? []).union(openEntries.map(\.hash)) }
+        if knownObjects == nil { knownObjects = ((try? allObjectHashes(skippingUnreadable: true)) ?? []).union(openEntries.map(\.hash)) }
         return knownObjects!.contains(hash)
     }
 
