@@ -20,6 +20,7 @@
 - Messaggi all'utente in italiano; commenti nel codice in inglese, una riga, solo il perché.
 - Per gli avvisi di un backup comanda la cronologia dell'app, anche quando il suo indice è in memoria: «Cancella avvisi» li toglie anche dalla linea del tempo (decisione dell'utente; come i chip di oggi).
 - Una versione scelta conta come versione a sé solo se viene da un backup diverso da quello guardato (o da quello del risultato): solo allora la barra dice «versione del …»; altrimenti «dal backup di …», come sempre.
+- Nessun ciclo tra proprietà calcolate di una vista: `selection` legge solo modello e stato, `plan` legge `selection`, `bar` legge `plan`. Un ciclo è un arresto anomalo al primo disegno, invisibile a compilazione e test; lo cerca `scripts/check-view-cycles.py` (Task 9).
 - Un risultato della ricerca si ripristina anche prima che un backup sia guardato (mentre il suo indice carica), come nella finestra di oggi.
 - Le viste (Task 4–8) non hanno test automatici: la spec li affida alla compilazione e alla lista di prova a schermo `docs/prova-sfoglia-backup.md`.
 - I 323 test esistenti non cambiano e restano verdi. Dopo i Task 1–3 la suite è «363 test in 34 suite», dopo il Task 5 «365 test in 35 suite».
@@ -36,6 +37,8 @@
 5. **«Sostituisci» resta dov'era**: passa solo da `askWholeFolder`, con `check` e `checking` come prima (Task 8).
 6. **Il vetro della capsula**: se dà glitch, torna la barra in fondo di prima (Task 7 e Task 8; ripiego deciso nella spec).
 7. **`snapshotOnFATFilesystems`** (`RepositoryTests`) monta un'immagine disco con `hdiutil` e ogni tanto resta appeso o fallisce per conto suo: se capita, rilanciarlo da solo (`swift test --filter snapshotOnFATFilesystems`) prima di sospettare il codice.
+
+8. **La finestra si apre.** Nessuno ha ancora aperto la finestra nuova: compilazione e test non vedono un arresto anomalo al primo disegno (alla revisione del Task 8 ne è uscito uno). La prima riga di `docs/prova-sfoglia-backup.md` è aprirla, e `scripts/check-view-cycles.py` guarda la classe di arresti anomali che si vede dal codice.
 
 ## File
 
@@ -57,6 +60,7 @@
 | `Tests/BackupCoreTests/RestoreRulesTestSupport.swift` (nuovo) | `Rules`: un calendario, un fuso e una lingua fissi per i test |
 | `Tests/BackupCoreTests/BackupTimelineTests.swift`, `WhenTextTests.swift`, `RestorePlannerTests.swift`, `RowFilterTests.swift` (nuovi) | I quarantadue test delle regole |
 | `docs/prova-sfoglia-backup.md` (nuovo), `CHANGELOG.md` | La lista di prova a schermo e la voce del changelog |
+| `scripts/check-view-cycles.py` (nuovo), `README.md` | La sentinella dei cicli tra proprietà calcolate nelle viste, e come lanciarla |
 
 ---
 
@@ -2817,7 +2821,7 @@ struct RestoreView: View {
         s.path = model.currentPath
         s.visible = model.search.isEmpty ? rows : []
         s.selectedIDs = selectedIDs
-        if let e = barFile, let picked, picked.entry.source == e.source, picked.entry.path == e.path {
+        if let e = chosenFile, let picked, picked.entry.source == e.source, picked.entry.path == e.path {
             s.version = .init(backup: .init(id: picked.snapshotID, date: Snapshot.date(fromID: picked.snapshotID) ?? e.mtime),
                               entry: picked.entry)
         }
@@ -2827,6 +2831,9 @@ struct RestoreView: View {
 
     private var plan: RestorePlanner.Plan { RestorePlanner.resolve(selection) }
     private var bar: RestorePlanner.Bar { RestorePlanner.bar(plan, selection: selection, compare: canCompare) }
+
+    /// The rows chosen in the list, whatever they are.
+    private var selectedRows: [Entry] { selection.visible.filter { selectedIDs.contains($0.restoreID) } }
 
     /// The only selected file, when there is just one: the one that has saved versions.
     private var chosenFile: Entry? {
@@ -2881,10 +2888,12 @@ struct RestoreView: View {
     private var revealTitle: String { model.search.isEmpty ? "Mostra nel Finder" : "Mostra nel backup" }
     private var revealIcon: String { model.search.isEmpty ? "folder" : "clock.arrow.circlepath" }
 
-    /// What the action restores and is still on this Mac, to show in the Finder.
+    /// What the action restores and is still on this Mac, to show in the Finder; with nothing to restore, the rows chosen.
     private var todayURLs: [URL] {
         guard model.search.isEmpty else { return hit.map { [$0.entry.url] } ?? [] }
-        return plan.items.compactMap { item in
+        // «Nuovo» rows have nothing to restore: where they are today is the only thing there is to show
+        let items = plan.action == .nothing ? selectedRows.map { RestorePlanner.Item($0) } : plan.items
+        return items.compactMap { item in
             // the folder's rows were compared with the disk once, off the main thread; a chosen version wasn't, and there is one
             if let e = item.entry, e.kind != .directory {
                 let missing = model.status(of: e).map { $0.own == .missing } ?? (Restorer.status(of: e) == .missing)
@@ -3236,13 +3245,118 @@ git commit -m "feat(app): Sfoglia backup con la finestra nuova"
 
 ---
 
-### Task 9: Documenti
+### Task 9: Documenti e la sentinella dei cicli
 
 **Files:**
+- Create: `scripts/check-view-cycles.py`
+- Modify: `README.md`
 - Create: `docs/prova-sfoglia-backup.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] **Step 1: Creare la lista di prova** `docs/prova-sfoglia-backup.md`:
+- [ ] **Step 1: Creare la sentinella** `scripts/check-view-cycles.py`. Cerca i cicli tra le proprietà calcolate di un file Swift: due proprietà che si leggono l'una con l'altra mandano la finestra in crash al primo disegno, e né il compilatore né i test lo vedono. Creare il file con:
+
+```python
+#!/usr/bin/env python3
+"""Finds cycles among the computed properties of a Swift file's types.
+
+The compiler cannot see them: two computed properties that read each other recurse until the stack is over, and a
+view that does it crashes at its first render. Views have no tests here, so this is the only guard before the app runs.
+
+Usage: check-view-cycles.py file.swift ...
+Prints every cycle found and exits 1; prints nothing and exits 0 when there is none. It goes by names: a local
+variable that shares a property's name can give a false cycle, and closures are not read.
+"""
+import re
+import sys
+
+
+def properties(src):
+    """Name and body of every computed property (`var name: Type { … }`)."""
+    found = {}
+    for m in re.finditer(r'^[ \t]*(?:private\s+|fileprivate\s+)?var\s+(\w+)\s*:\s*[^{=\n]+?\{', src, flags=re.M):
+        name, start = m.group(1), m.end()
+        depth, i = 1, start
+        while i < len(src) and depth:
+            depth += (src[i] == '{') - (src[i] == '}')
+            i += 1
+        found[name] = src[start:i - 1]
+    return found
+
+
+def cycles(props):
+    """Each cycle as the path of property names that comes back to its start."""
+    edges = {n: {w for w in re.findall(r'\b(\w+)\b', body) if w in props and w != n} for n, body in props.items()}
+    found, stack, done = [], [], set()
+
+    def visit(n):
+        if n in stack:
+            found.append(stack[stack.index(n):] + [n])
+            return
+        if n in done:
+            return
+        stack.append(n)
+        for m in sorted(edges[n]):
+            visit(m)
+        stack.pop()
+        done.add(n)
+
+    for n in sorted(edges):
+        visit(n)
+    return found
+
+
+def main(paths):
+    bad = False
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            found = cycles(properties(f.read()))
+        for c in found:
+            print(f"{path}: {' → '.join(c)}")
+        bad = bad or bool(found)
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
+```
+
+- [ ] **Step 2: Provarla.** Sul codice di oggi non deve trovare niente; su un file con un ciclo inventato deve trovarlo e uscire con 1.
+
+Run: `python3 scripts/check-view-cycles.py Sources/BackupMe/*.swift; echo "exit $?"`
+Expected: solo `exit 0` (nessuna riga prima).
+
+Run: `printf 'struct S {\n    var a: Int { b }\n    var b: Int { c }\n    var c: Int { a }\n}\n' > /tmp/ciclo.swift && python3 scripts/check-view-cycles.py /tmp/ciclo.swift; echo "exit $?"; rm /tmp/ciclo.swift`
+Expected: `/tmp/ciclo.swift: a → b → c → a`, poi `exit 1`.
+
+- [ ] **Step 3: Il README,** sezione «Sviluppo», in fondo al file.
+
+Old:
+
+````markdown
+## Sviluppo
+
+```bash
+swift test
+```
+
+Il motore (`Sources/BackupCore`) non ha interfaccia ed è coperto da test; l'app (`Sources/BackupMe`) è solo UI e pianificazione.
+````
+
+New:
+
+````markdown
+## Sviluppo
+
+```bash
+swift test
+python3 scripts/check-view-cycles.py Sources/BackupMe/*.swift
+```
+
+Il motore (`Sources/BackupCore`) non ha interfaccia ed è coperto da test; l'app (`Sources/BackupMe`) è solo UI e pianificazione. Le regole dell'interfaccia che non dipendono dalle viste stanno in `Sources/RestoreRules` e sono provate come il motore. Le viste non hanno test: due proprietà calcolate che si leggono l'una con l'altra fanno andare la finestra in crash al primo disegno, e lo scopre solo il secondo comando.
+````
+
+
+- [ ] **Step 4: Creare la lista di prova** `docs/prova-sfoglia-backup.md`:
 
 ```markdown
 # Prova di Sfoglia backup (finestra nuova)
@@ -3253,7 +3367,12 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 
 ## Linea del tempo
 
+- [ ] **Prima di tutto: la finestra si apre** e l'app resta in esecuzione (l'icona resta nella barra dei menu, un backup in corso non si interrompe). Aprirla e chiuderla tre volte di seguito.
 - [ ] La finestra si apre 1100×700 con tre colonne: linea del tempo, lista, ispettore.
+- [ ] Appena aperta la barra delle azioni sta già al suo posto, staccata dalla linea del tempo: non salta da sinistra verso il centro.
+- [ ] L'ultima riga della lista e l'ultimo elemento dell'ispettore non stanno sotto la barra delle azioni.
+- [ ] «Ripristina» spento (per esempio durante un ripristino) non apre il menu.
+- [ ] Si sceglie una versione nell'ispettore, poi si nasconde l'ispettore: la barra dice ancora «versione del …» e «Ripristina» ripristina quella versione.
 - [ ] In cima la carta ripete la riga di stato del pannello della barra dei menu (stesso testo, colore e simbolo); un clic porta all'ultimo backup.
 - [ ] Ogni backup è una riga: un punto sulla linea verticale, l'ora, la barra e «+N MB». Un backup con avvisi ha punto e barra arancioni e il triangolo.
 - [ ] Le sezioni sono «Oggi · …», «Ieri · …», i giorni della settimana, poi i mesi; dal più recente. Scorrendo, le intestazioni restano ferme in alto.
@@ -3297,7 +3416,7 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 - [ ] Una cartella salvata per intera: «Ripristina» chiede come prima (Sostituisci, Ripristina accanto, Ripristina in…), con il conto di quello che finirebbe nel Cestino.
 - [ ] «Sostituisci» non compare per l'archivio di un altro computer, né per una cartella che questo Mac non salva.
 - [ ] A «Tutte le cartelle», niente selezionato: «Ripristina tutto…» chiede una cartella.
-- [ ] Solo elementi «Nuovi»: «Niente da ripristinare qui», e «Mostra nel Finder» al posto del pulsante.
+- [ ] Solo elementi «Nuovi»: «Niente da ripristinare qui», e «Mostra nel Finder» al posto del pulsante: lo si preme e il Finder mostra quei file dove sono oggi.
 - [ ] Più elementi: «N elementi», la dimensione, «Ripristina ▾».
 - [ ] Menu «▾»: «Ripristina in…»; «Mostra nel Finder» (spento se non c'è più niente da mostrare); «Mostra versioni del file» (solo con un file).
 - [ ] ⌘R e ⇧⌘R fanno la stessa cosa del pulsante e della voce di menu.
@@ -3326,7 +3445,7 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 (una riga per ogni problema: cosa si è fatto, cosa si è visto)
 ```
 
-- [ ] **Step 2: La voce di changelog.** In `CHANGELOG.md`, subito prima di `## [1.0.1] - 2026-11-24`, inserire questa sezione (seguita da una riga vuota):
+- [ ] **Step 5: La voce di changelog.** In `CHANGELOG.md`, subito prima di `## [1.0.1] - 2026-11-24`, inserire questa sezione (seguita da una riga vuota):
 
 ```markdown
 ## [Non pubblicato]
@@ -3335,11 +3454,11 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 - Sfoglia backup rifatta. La barra laterale è una linea del tempo: ogni backup è un punto sulla linea, con l'ora, una barra lunga quanto i dati salvati e «+N MB»; un backup con avvisi è arancione. In cima una carta ripete lo stato del pannello della barra dei menu. Il pannello centrale dice in grande «Ieri alle 15:00», con la data, i dati salvati e gli avvisi; i filtri Modificati, Eliminati e Nuovi sono tag. L'ispettore, più largo, mostra un'anteprima del file (immagini, testo, anteprima rapida degli altri tipi, fino a 20 MB) e le versioni su una linea. Le azioni stanno in una capsula in fondo, sotto lista e ispettore: Anteprima, Confronta con oggi e un solo «Ripristina» con menu («Ripristina in…», «Mostra nel Finder», «Mostra versioni del file»). Scegliendo una versione nell'ispettore, «Ripristina» ripristina quella. Le regole non cambiano: cosa si ripristina, da quale backup e quando chiede prima lo decide il target nuovo `RestoreRules`, provato con 42 test. La finestra si apre 1100×700.
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add docs/prova-sfoglia-backup.md CHANGELOG.md
-git commit -m "docs: lista di prova della finestra nuova di Sfoglia e CHANGELOG"
+git add scripts/check-view-cycles.py README.md docs/prova-sfoglia-backup.md CHANGELOG.md
+git commit -m "docs: lista di prova della finestra nuova di Sfoglia, CHANGELOG e sentinella dei cicli nelle viste"
 ```
 
 ---
