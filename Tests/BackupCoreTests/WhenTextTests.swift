@@ -25,7 +25,8 @@ import Testing
         #expect(from(Rules.d(2026, 11, 24, 14)) == "dal backup di oggi alle 14:00")
         #expect(from(Rules.d(2026, 11, 23, 15)) == "dal backup di ieri alle 15:00")
         #expect(from(Rules.d(2026, 11, 22)) == "dal backup di domenica 22 alle 20:00")
-        #expect(from(Rules.d(2026, 11, 9)) == "dal backup di 9 novembre alle 20:00")
+        #expect(from(Rules.d(2026, 11, 9)) == "dal backup del 9 novembre alle 20:00")
+        #expect(from(Rules.d(2025, 12, 10)) == "dal backup del 10 dicembre 2025 alle 20:00")
     }
 
     @Test func theThirdLineTellsTheDataOfTheBackup() {

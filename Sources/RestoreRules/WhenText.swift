@@ -14,11 +14,13 @@ public enum WhenText {
         return day + " alle " + time
     }
 
-    /// "dal backup di ieri alle 15:00": the same words, lower case, for the line of the bar.
+    /// "dal backup di ieri alle 15:00", "dal backup del 9 novembre alle 20:00": the same words, lower case, for the line of the bar.
     public static func from(_ date: Date, now: Date = Date(), calendar: Calendar = .current,
                             locale: Locale = Locale(identifier: "it_IT")) -> String {
         let text = title(date, now: now, calendar: calendar, locale: locale)
-        return "dal backup di " + text.prefix(1).lowercased() + String(text.dropFirst())
+        // a day written as a date takes the article, as «versione del 30 ott» does; a day with its name does not
+        let article = text.first?.isNumber == true ? "del" : "di"
+        return "dal backup " + article + " " + text.prefix(1).lowercased() + String(text.dropFirst())
     }
 
     /// "lunedì 23 novembre 2026 · +210 MB salvati · 1 avviso": the third line of the title.
