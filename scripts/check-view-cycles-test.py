@@ -168,6 +168,45 @@ CASES = [
             var b: Int { a }
         }
     '''}, ["R.a R.b"]),
+    ("computed properties at the top level of two files", {"A.swift": "var a: Int { b }\n", "B.swift": "var b: Int { a }\n"}, ["a b"]),
+    ("private computed properties at the top level of two files are not one",
+     {"A.swift": "private var a: Int { b }\n", "B.swift": "private var b: Int { a }\n"}, []),
+    ("a string inside an interpolation of a raw string, holding a brace", {"S.swift": r'''
+        struct N {
+            var a: Int {
+                let s = #"\#(wrap("{"))"#
+                return s.count + b
+            }
+            var b: Int { a }
+        }
+    '''}, ["N.a N.b"]),
+    ("a raw string that ends with a backslash", {"S.swift": r'''
+        struct R {
+            var a: Int {
+                let s = #"a\"#
+                return s.count + b
+            }
+            var b: Int { a }
+        }
+    '''}, ["R.a R.b"]),
+    ("an extended regex literal with a lone backslash", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let r = #/a\*/#
+                return r == nil ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("an extended regex literal whose escaped slash comes before its hashes", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let r = #/x\/#[{]/#
+                return r == nil ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
     ("a regex literal", {"S.swift": r'''
         struct X {
             var a: Int {
@@ -247,18 +286,26 @@ CASES = [
     ("a stored property is not read as one", {"S.swift": "struct S {\n    var a: Int = 0\n    var b: Int { a }\n}\n"}, []),
 ]
 
-# (what the case is about, the files, the exit code expected, the seconds it may take): the exit code alone is checked
-DENSE = [
-    ("a type dense with reads and no cycle is fast", False, 0),
-    ("a type dense with reads and one cycle is answered in bounded time", True, 1),
-]
-
-
 def dense(count, back):
     """A type whose every property reads all the later ones; with `back`, the last one reads the first."""
     rows = ["    var p%d: Int { %s }" % (i, " ".join("p%d" % j for j in range(i + 1, count)) or "0") for i in range(count)]
     if back: rows[-1] = "    var p%d: Int { p0 }" % (count - 1)
     return {"D.swift": "struct D {\n" + "\n".join(rows) + "\n}\n"}
+
+
+def pairs(count):
+    """`count` types of two properties that read each other: as many cycles, and not one more."""
+    return {"P.swift": "".join("struct P%d {\n    var a: Int { b }\n    var b: Int { a }\n}\n" % i for i in range(count))}
+
+
+# (what the case is about, its files, the exit code expected, how many cycles must be listed, whether a last line
+# says there are more)
+BOUNDED = [
+    ("a type dense with reads and no cycle is fast", lambda: dense(40, False), 0, 0, False),
+    ("a type dense with reads and one cycle is answered in bounded time", lambda: dense(24, True), 1, 100, True),
+    ("a hundred cycles are all listed, and no line says there are more", lambda: pairs(100), 1, 100, False),
+    ("a hundred and one cycles: a hundred listed, then a line that says there are more", lambda: pairs(101), 1, 100, True),
+]
 
 
 def check(files):
@@ -291,10 +338,12 @@ def main():
         code, _, cycles = check(files)
         ok(label, code == (1 if expected else 0) and [names for _, names in cycles] == [sorted(name.split()) for name in expected],
            f"expected {expected}, found {cycles} (exit {code})")
-    for label, back, expected in DENSE:
-        code, seconds, cycles = check(dense(40, back))
-        ok(label, code == expected and seconds < 10 and (not back or cycles[-1][0] is None),
-           f"expected exit {expected} in under 10 s, found exit {code} in {seconds:.1f} s with {len(cycles)} lines")
+    for label, files, expected, listed, more in BOUNDED:
+        code, seconds, cycles = check(files())
+        listed_here = [line for line, _ in cycles if line is not None]
+        ok(label, code == expected and seconds < 10 and len(listed_here) == listed and (len(cycles) > len(listed_here)) == more,
+           f"expected exit {expected} with {listed} cycles listed and a last line saying there are more: {more}; "
+           f"found exit {code} in {seconds:.1f} s with {len(listed_here)} cycles listed and {len(cycles) - len(listed_here)} other lines")
     line = check(CASES[0][1])[2][0][0]
     ok("the line of the first property", line == 2, f"expected 2, found {line}")
     code = subprocess.run([sys.executable, SENTINEL], capture_output=True).returncode

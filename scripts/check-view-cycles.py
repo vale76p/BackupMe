@@ -26,7 +26,7 @@ START = r'(?:^|[\n;{}])[ \t]*'
 ATTRIBUTES = r'(?:(?:@[\w.]+(?:\((?:[^()]|\([^()]*\))*\))?)\s*)*'
 TYPE = re.compile(START + ATTRIBUTES + r'((?:[A-Za-z_]+\s+)*)(struct|class|actor|enum|protocol|extension)\s+'
                   r'(?!(?:var|func|let)\b)(' + QUALIFIED + r')')
-PROPERTY = re.compile(START + ATTRIBUTES + r'(?:' + IDENT + r'(?:\([^)\n]*\))?\s+)*?var\s+(' + IDENT + r')\s*:\s*'
+PROPERTY = re.compile(START + ATTRIBUTES + r'((?:' + IDENT + r'(?:\([^)\n]*\))?\s+)*)var\s+(' + IDENT + r')\s*:\s*'
                       r'[^{=\n]*?(?:\n[ \t]*)?\{')
 OBSERVER = re.compile(r'\s*(?:willSet|didSet)\b')
 HIDDEN = re.compile(r'\b(?:private|fileprivate)\b')
@@ -56,12 +56,10 @@ def blanked(src):
                 space(i, i + len(opening))
                 i += len(opening)
                 stack.append(['interpolation', 1])
-            elif src[i] == '\\':
-                k = i + 1
-                for _ in range(hashes):
-                    if k < n and src[k] == '#': k += 1
-                space(i, k + 1)
-                i = k + 1
+            elif src[i] == '\\' and (not hashes or src.startswith('\\' + '#' * hashes, i)):
+                # in a raw string only a backslash followed by its hashes escapes: a lone one is a character
+                space(i, i + 2 + hashes)
+                i += 2 + hashes
             elif src.startswith(closer, i):
                 space(i, i + len(closer))
                 i += len(closer)
@@ -102,10 +100,8 @@ def blanked(src):
                 # a regex literal can hold quotes and braces: it ends at the slash its escapes do not protect
                 k = j + 1
                 while k < n and not src.startswith('/' + '#' * hashes, k):
-                    if src[k] == '\\':
-                        k += 1
-                        for _ in range(hashes):
-                            if k < n and src[k] == '#': k += 1
+                    # in a regex literal a backslash escapes the next character, with or without hashes
+                    if src[k] == '\\': k += 1
                     k += 1
                 space(i, min(k + 1 + hashes, n))
                 i = min(k + 1 + hashes, n)
@@ -175,7 +171,9 @@ def properties(path, src):
         # a stored property has braces too, for its observers, and reading it in its own didSet is no recursion
         if OBSERVER.match(body): continue
         owners = [k for k, d in zip(keys, decls) if d[0] <= m.start() and end <= d[3]]
-        found.append((owners[-1] if owners else (path, ''), m.group(1), src.count('\n', 0, m.start(1)) + 1, body))
+        # a property at the top level is the whole module's, unless it is declared private
+        key = owners[-1] if owners else ((path, '') if HIDDEN.search(m.group(1)) else '')
+        found.append((key, m.group(2), src.count('\n', 0, m.start(2)) + 1, body))
     return found
 
 
@@ -213,8 +211,8 @@ def components(count, edges):
 
 
 def cycles_in(files):
-    """Each cycle once, at most MAX_LISTED: the file and the line of its first property, and the names that form it,
-    back to the first. A last entry without names says that the list stopped early."""
+    """(whether a cycle exists, the lines to print). Each cycle is listed from its first property, so it comes out
+    once; at most MAX_LISTED of them, then a line says so."""
     nodes, by_name = [], {}
     for path, src in files:
         for scope, name, line, body in properties(path, src):
@@ -228,29 +226,34 @@ def cycles_in(files):
             if MEMBER.search(body, 0, word.start()) and not SELF.search(body, 0, word.start()): continue
             reads.add(word.group())
         edges.append({j for read in reads for j in by_name.get((scope, read), [])})
+
+    def label(j):
+        declared_in = owner(nodes[j][1])
+        return declared_in + '.' + nodes[j][2] if declared_in else nodes[j][2]
+
+    groups = components(len(nodes), edges)
     found, left = [], [BUDGET]
 
     def walk(members, start, node, path):
-        # a cycle is listed from its first property, so each comes out once
         for j in sorted(edges[node]):
-            if left[0] < 0 or len(found) >= MAX_LISTED: return
+            if left[0] < 0: return
             left[0] -= 1
             if j == start: found.append(path)
             elif j in members and j > start and j not in path: walk(members, start, j, path + [j])
 
-    for group in components(len(nodes), edges):
+    for group in groups:
         for start in sorted(group): walk(set(group), start, start, [start])
-    cycles = []
-    for loop in found:
-        path, _, _, line, _ = nodes[loop[0]]
-        names = []
-        for j in loop:
-            type = owner(nodes[j][1])
-            names.append(type + '.' + nodes[j][2] if type else nodes[j][2])
-        cycles.append((path, line, names + [names[0]]))
-    cycles.sort(key=lambda c: (c[0], c[1], c[2]))
-    if found and (left[0] < 0 or len(found) >= MAX_LISTED): cycles.append((nodes[0][0], None, []))
-    return cycles
+    loops = sorted([(nodes[loop[0]][0], nodes[loop[0]][3], [label(j) for j in loop]) for loop in found],
+                   key=lambda l: (l[0], l[1], l[2]))
+    lines = [f"{path}:{line}: " + " → ".join(names + [names[0]]) for path, line, names in loops[:MAX_LISTED]]
+    if not loops:
+        # the search gave up before it could list one: the group it ran in still names the properties
+        lines += [f"{nodes[g[0]][0]}:{nodes[g[0]][3]}: a cycle runs among: " + ", ".join(label(j) for j in sorted(g))
+                  for g in groups]
+    if len(loops) > MAX_LISTED or left[0] < 0:
+        path = loops[MAX_LISTED][0] if len(loops) > MAX_LISTED else lines[-1].rsplit(":", 2)[0]
+        lines.append(f"{path}: more cycles exist: the list stops here")
+    return bool(groups), lines
 
 
 def owner(scope):
@@ -270,10 +273,9 @@ def main(paths):
         except OSError as error:
             print(error, file=sys.stderr)
             return 2
-    found = cycles_in(files)
-    for path, line, names in found:
-        print(f"{path}:{line}: " + " → ".join(names) if names else f"{path}: more cycles exist: the list stops here")
-    return 1 if found else 0
+    bad, lines = cycles_in(files)
+    for line in lines: print(line)
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
