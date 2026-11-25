@@ -19,6 +19,7 @@
 - Le regole di ripristino sono quelle di oggi: mai sovrascrivere; «Sostituisci» solo dal dialogo di una cartella salvata per intera, dopo il controllo, e solo dove è permesso; un ripristino alla volta per tutta l'app (`AppModel.restoring`).
 - Messaggi all'utente in italiano; commenti nel codice in inglese, una riga, solo il perché.
 - Per gli avvisi di un backup comanda la cronologia dell'app, anche quando il suo indice è in memoria: «Cancella avvisi» li toglie anche dalla linea del tempo (decisione dell'utente; come i chip di oggi).
+- Una versione scelta conta come versione a sé solo se viene da un backup diverso da quello guardato (o da quello del risultato): solo allora la barra dice «versione del …»; altrimenti «dal backup di …», come sempre.
 - Le viste (Task 4–8) non hanno test automatici: la spec li affida alla compilazione e alla lista di prova a schermo `docs/prova-sfoglia-backup.md`.
 - I 323 test esistenti non cambiano e restano verdi. Dopo i Task 1–3 la suite è «363 test in 34 suite».
 - L'app si compila ancora con `swift build --product BackupMe` e con `scripts/build-app.sh`.
@@ -795,6 +796,11 @@ import Testing
         #expect(plan.action == .version(.init(file)))
         #expect(plan.from == older)
         #expect(plan.isVersion)
+        // the browsed backup's own version is not another version: the file is simply restored from it
+        let own = RestorePlanner.resolve(browsing(visible: [file], selected: [file], version: .init(backup: backup, entry: file)))
+        #expect(own.action == .items([.init(file)]))
+        #expect(own.from == backup)
+        #expect(!own.isVersion)
     }
 
     @Test func aVersionOfAnotherFileIsIgnored() {
@@ -820,6 +826,9 @@ import Testing
         #expect(versioned.action == .version(.init(file)))
         #expect(versioned.from == backup)
         #expect(versioned.isVersion)
+        // a version held by the result's own backup is the result itself
+        #expect(RestorePlanner.resolve(RestorePlanner.Selection(backup: backup, searching: true, hit: hit,
+                                                              version: .init(backup: older, entry: file))).action == .items([.init(file)]))
     }
 
     @Test func aSearchWithNothingSelectedRestoresNothing() {
@@ -849,6 +858,9 @@ import Testing
     @Test func theBarOfAVersion() {
         let selection = browsing(visible: [file], selected: [file], version: .init(backup: older, entry: file))
         #expect(bar(selection) == .init(icon: .file, name: "README.md", detail: "versione del 30 ott, 20:00", buttons: [.preview, .restore]))
+        // the bar names a version only when it comes from another backup than the one being viewed
+        let own = browsing(visible: [file], selected: [file], version: .init(backup: backup, entry: file))
+        #expect(bar(own) == .init(icon: .file, name: "README.md", detail: "dal backup di ieri alle 15:00", buttons: [.preview, .restore]))
     }
 
     @Test func theBarOfASavedFolderAndOfAllOfThem() {
@@ -1015,14 +1027,16 @@ public enum RestorePlanner {
         guard let backup = s.backup else { return Plan(action: .nothing, from: nil) }
         if s.searching {
             guard let hit = s.hit else { return Plan(action: .nothing, from: nil) }
-            if let v = s.version, v.entry.source == hit.entry.source, v.entry.path == hit.entry.path {
+            // only a version of another backup is a version of its own: the result's is the result
+            if let v = s.version, v.backup.id != hit.backup.id, v.entry.source == hit.entry.source, v.entry.path == hit.entry.path {
                 return Plan(action: .version(Item(v.entry)), from: v.backup, isVersion: true)
             }
             return Plan(action: .items([Item(hit.entry)]), from: hit.backup)
         }
         // a row without content («Nuovo») is on disk today and not in the backup: nothing comes back from it
         let restorable = s.visible.filter { s.selectedIDs.contains($0.restoreID) && $0.hasContent }
-        if restorable.count == 1, restorable[0].kind == .file, let v = s.version,
+        // the browsed backup's own version is not another version: the file is simply restored from it
+        if restorable.count == 1, restorable[0].kind == .file, let v = s.version, v.backup.id != backup.id,
            v.entry.source == restorable[0].source, v.entry.path == restorable[0].path {
             return Plan(action: .version(Item(v.entry)), from: v.backup, isVersion: true)
         }
