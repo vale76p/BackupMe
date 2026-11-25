@@ -3263,17 +3263,18 @@ The compiler cannot see them: two computed properties that read each other recur
 view that does it crashes at its first render. Views have no tests here, so this is the only guard before the app runs.
 
 Usage: check-view-cycles.py file.swift ...
-Prints every cycle found and exits 1; prints nothing and exits 0 when there is none. It goes by names: a local
-variable that shares a property's name can give a false cycle, and closures are not read.
+Prints every cycle found and exits 1; prints nothing and exits 0 when there is none. It goes by names, the whole
+body included: a property's name used for a local variable or inside a closure can give a false cycle, never a
+missed one.
 """
 import re
 import sys
 
 
 def properties(src):
-    """Name and body of every computed property (`var name: Type { … }`)."""
+    """Name and body of every computed property (`var name: Type { … }`), its attributes (`@ViewBuilder`, …) included."""
     found = {}
-    for m in re.finditer(r'^[ \t]*(?:private\s+|fileprivate\s+)?var\s+(\w+)\s*:\s*[^{=\n]+?\{', src, flags=re.M):
+    for m in re.finditer(r'^[ \t]*(?:@[\w.]+(?:\([^\n]*\))?\s*)*(?:private\s+|fileprivate\s+)?var\s+(\w+)\s*:\s*[^{=\n]+?\{', src, flags=re.M):
         name, start = m.group(1), m.end()
         depth, i = 1, start
         while i < len(src) and depth:
