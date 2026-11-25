@@ -1852,13 +1852,26 @@ struct RestoreInspector: View {
 }
 ```
 
-- [ ] **Step 1: `previewCopy`** in `Sources/BackupMe/RestoreModel.swift`. Subito prima della riga `/// A read-only temporary copy for Quick Look or comparing; nil (with an error shown) if it can't be read.` inserire:
+- [ ] **Step 1: La copia temporanea** in `Sources/BackupMe/RestoreModel.swift`. Sostituire la funzione `extracted` (dal suo commento `/// A read-only temporary copy for Quick Look or comparing…` alla parentesi di chiusura) con: una funzione privata che legge, e due che decidono cosa fare quando la lettura non riesce.
 
 ```swift
-    /// A read-only temporary copy for the inspector's card, which must not interrupt: nil, and a debug line in the log, if it can't be read.
+    /// A read-only temporary copy of a backed-up file.
+    private func copy(_ e: Entry) async throws -> URL {
+        try await withRepository { try Restorer(repository: $0).extract(e) }
+    }
+
+    /// A copy for the inspector's card, which must not interrupt: nil, and a debug line in the log, if it can't be read.
     func previewCopy(_ e: Entry) async -> URL? {
-        do { return try await withRepository { try Restorer(repository: $0).extract(e) } } catch {
+        do { return try await copy(e) } catch {
             Log.restore.debug("Anteprima nell'ispettore non disponibile: \(AppModel.describe(error))")
+            return nil
+        }
+    }
+
+    /// A copy for Quick Look or comparing; nil, with an error shown, if it can't be read.
+    func extracted(_ e: Entry) async -> URL? {
+        do { return try await copy(e) } catch {
+            self.error = ("Anteprima non disponibile", AppModel.describe(error))
             return nil
         }
     }
@@ -1917,12 +1930,13 @@ struct RestoreInspector: View {
 
     private func detail(_ entry: Entry) -> some View {
         let s = status(entry)
+        // the window clears the pick when the selection changes, one update later: until then it is nobody's
+        let version = picked.flatMap { $0.entry.source == entry.source && $0.entry.path == entry.path ? $0 : nil }
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 // the card shows the chosen version: what is seen is what Anteprima and Ripristina use
-                if entry.kind == .file, let picked {
-                    PreviewCard(model: model, entry: picked.entry,
-                                other: picked.snapshotID == snapshotID ? nil : picked, locale: locale)
+                if entry.kind == .file, let version {
+                    PreviewCard(model: model, entry: version.entry, other: version.snapshotID == snapshotID ? nil : version, locale: locale)
                 }
                 HStack(spacing: 10) {
                     Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 40, height: 40)
@@ -2104,14 +2118,16 @@ private struct PreviewCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        // the caption is hidden to accessibility, as part of the card: VoiceOver hears the version in the label
+        let otherVersion = other.flatMap { Snapshot.date(fromID: $0.snapshotID) }.map { WhenText.version($0, locale: locale) }
+        return VStack(alignment: .leading, spacing: 4) {
             card
-            if let date = other.flatMap({ Snapshot.date(fromID: $0.snapshotID) }) {
-                Text(WhenText.version(date, locale: locale)).font(.caption).foregroundStyle(.secondary)
+            if let otherVersion {
+                Text(otherVersion).font(.caption).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Anteprima di \(entry.name)")
+        .accessibilityLabel("Anteprima di \(entry.name)" + (otherVersion.map { ", " + $0 } ?? ""))
         .task(id: entry.hash) { await load() } // the content tells one version from another
     }
 
@@ -2159,7 +2175,18 @@ private enum PreviewLoader {
 
     nonisolated static func looksLikeText(_ head: Data?) -> Bool {
         guard let head else { return false }
-        return !head.contains(0) && String(data: head, encoding: .utf8) != nil
+        return !head.contains(0) && text(head) != nil
+    }
+
+    /// The text, or nil when it is not UTF-8; a character cut in half by the end is dropped first.
+    nonisolated static func text(_ data: Data) -> String? {
+        var data = data
+        for _ in 0..<4 {
+            if let text = String(data: data, encoding: .utf8) { return text }
+            guard !data.isEmpty else { return nil }
+            data.removeLast()
+        }
+        return nil
     }
 
     nonisolated static func head(_ url: URL) -> Data? {
@@ -2173,8 +2200,9 @@ private enum PreviewLoader {
         guard let data = try? Data(contentsOf: url, options: [.alwaysMapped]) else { return nil }
         var bytes = data.prefix(65_536)
         if data.count > 65_536, let last = bytes.lastIndex(of: 0x0A) { bytes = bytes.prefix(last + 1) }
-        guard let text = String(data: bytes, encoding: .utf8) else { return nil }
-        return text.split(separator: "\n", omittingEmptySubsequences: false).prefix(40).map { String($0.prefix(160)) }.joined(separator: "\n")
+        guard let text = text(bytes) else { return nil }
+        // a line ends with «\n», «\r\n» or «\r»: a Windows file shows its lines, not one cut line
+        return text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).prefix(40).map { String($0.prefix(160)) }.joined(separator: "\n")
     }
 }
 ```
@@ -3142,6 +3170,8 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 
 - [ ] Niente selezionato: «Nessuna selezione». Più elementi: «N elementi selezionati» con il riepilogo (cartelle, file, dimensione).
 - [ ] Un'immagine, un file di testo e un PDF mostrano il contenuto nella carta; un file sopra i 20 MB mostra l'icona.
+- [ ] Un file di testo con fine riga alla Windows (un CSV esportato da Excel, un `.bat`) mostra le sue prime righe nella carta, non una riga sola.
+- [ ] Scorrere con le frecce da un file all'altro: la carta non mostra per un attimo la versione scelta nel file precedente.
 - [ ] Scegliere una versione la evidenzia e cambia la riga della barra in «versione del …»; la carta mostra quella versione.
 - [ ] «Cerca le versioni in tutti i backup» legge gli altri backup come prima.
 - [ ] Selezionare molti file in fretta non blocca la finestra, e una carta lenta non sostituisce una selezione più recente.
