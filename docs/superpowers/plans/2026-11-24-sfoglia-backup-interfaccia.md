@@ -3267,7 +3267,8 @@ and a view that does it crashes at its first render. The compiler cannot see the
 so this is the only guard before the app runs.
 
 Usage: check-view-cycles.py file.swift ...   (every file of the module: an extension may live in another one)
-Prints each cycle found and exits 1; prints nothing and exits 0 when there is none; exits 2 on a usage error.
+Prints each cycle found (the first 100: a last line says when there are more) and exits 1; prints nothing and exits 0
+when there is none; exits 2 on a usage error.
 check-view-cycles-test.py, next to it, proves all of this: run it after changing this file.
 
 What counts as a property: every `var name: Type { … }`, whatever its attributes and modifiers, wherever its brace
@@ -3285,7 +3286,7 @@ import sys
 IDENT = r'[A-Za-z_][A-Za-z0-9_]*'
 QUALIFIED = IDENT + r'(?:\.' + IDENT + r')*'
 START = r'(?:^|[\n;{}])[ \t]*'
-ATTRIBUTES = r'(?:(?:@[\w.]+(?:\([^\n]*\))?)\s*)*'
+ATTRIBUTES = r'(?:(?:@[\w.]+(?:\((?:[^()]|\([^()]*\))*\))?)\s*)*'
 TYPE = re.compile(START + ATTRIBUTES + r'((?:[A-Za-z_]+\s+)*)(struct|class|actor|enum|protocol|extension)\s+'
                   r'(?!(?:var|func|let)\b)(' + QUALIFIED + r')')
 PROPERTY = re.compile(START + ATTRIBUTES + r'(?:' + IDENT + r'(?:\([^)\n]*\))?\s+)*?var\s+(' + IDENT + r')\s*:\s*'
@@ -3294,76 +3295,85 @@ OBSERVER = re.compile(r'\s*(?:willSet|didSet)\b')
 HIDDEN = re.compile(r'\b(?:private|fileprivate)\b')
 WORD = re.compile(IDENT)
 MEMBER = re.compile(r'\.\s*$')
-SELF = re.compile(r'\b(?:self|Self)\s*\.\s*$')
-REGEX_BEFORE = re.compile(r'(?:[=,(\[{:&|?;]|\b(?:return|case|else|try|await|throw|if|guard|in))\s*$')
-LIMIT = 1000
+SELF = re.compile(r'\b(?:self|Self)\s*\??\s*\.\s*$')
+REGEX_BEFORE = re.compile(r'(?:[=,(\[{:&|?;]|\b(?:return|case|else|try|await|throw|if|guard|in|while|where))\s*$')
+BUDGET = 200_000
+MAX_LISTED = 100
 
 
 def blanked(src):
     """The source with comments, strings and regex literals turned into spaces: braces and names inside them are not
-    code. The code inside a string interpolation stays, it runs like any other."""
+    code. The code inside a string interpolation stays, it runs like any other; a string inside it is skipped too."""
     out = list(src)
-    i, n = 0, len(src)
+    i, n, stack = 0, len(src), []
 
     def space(start, stop):
         for k in range(start, min(stop, n)):
             if out[k] != '\n': out[k] = ' '
 
     while i < n:
-        j = i
-        while src[j:j + 1] == '#': j += 1
-        hashes = j - i
-        if src.startswith('//', j):
-            end = src.find('\n', j)
-            space(i, n if end < 0 else end)
-            i = n if end < 0 else end
-        elif src.startswith('/*', j):
-            depth, k = 1, j + 2
-            while k < n and depth:
-                if src.startswith('/*', k): depth, k = depth + 1, k + 2
-                elif src.startswith('*/', k): depth, k = depth - 1, k + 2
-                else: k += 1
-            space(i, k)
-            i = k
-        elif src.startswith('"""', j) or src[j:j + 1] == '"':
-            quotes = src[i:j + 3] if src.startswith('"""', j) else src[i:j + 1]
-            closer = quotes[hashes:] + '#' * hashes
-            interpolation = '\\' + '#' * hashes + '('
-            space(i, i + len(quotes))
-            i += len(quotes)
-            while i < n:
-                if src.startswith(interpolation, i):
-                    # the interpolation's opening is not code; what is inside is, up to its closing parenthesis
-                    space(i, i + len(interpolation))
-                    i, depth = i + len(interpolation), 1
-                    while i < n and depth:
-                        depth += (src[i] == '(') - (src[i] == ')')
-                        if not depth: space(i, i + 1)
-                        i += 1
-                elif src[i] == '\\':
-                    k = i + 1
-                    while hashes and src[k:k + 1] == '#': k += 1
-                    space(i, k + 1)
-                    i = k + 1
-                elif src.startswith(closer, i):
-                    space(i, i + len(closer))
-                    i += len(closer)
-                    break
-                else:
-                    space(i, i + 1)
-                    i += 1
-        elif src[j:j + 1] == '/' and REGEX_BEFORE.search(src[:i]):
-            # a regex literal can hold quotes and braces: it ends at the slash its escapes do not protect
-            k = j + 1
-            while k < n and not src.startswith('/' + '#' * hashes, k):
-                if src[k] == '\\':
-                    k += 1
-                    while hashes and src[k:k + 1] == '#': k += 1
-                k += 1
-            space(i, min(k + 1 + hashes, n))
-            i = min(k + 1 + hashes, n)
-        else:
+        if stack and stack[-1][0] == 'string':
+            _, closer, opening, hashes = stack[-1]
+            if src.startswith(opening, i):
+                # the interpolation's opening is not code; what is inside is, up to its closing parenthesis
+                space(i, i + len(opening))
+                i += len(opening)
+                stack.append(['interpolation', 1])
+            elif src[i] == '\\':
+                k = i + 1
+                for _ in range(hashes):
+                    if k < n and src[k] == '#': k += 1
+                space(i, k + 1)
+                i = k + 1
+            elif src.startswith(closer, i):
+                space(i, i + len(closer))
+                i += len(closer)
+                stack.pop()
+            else:
+                space(i, i + 1)
+                i += 1
+        elif stack and src[i] == '(' and stack[-1][0] == 'interpolation':
+            stack[-1][1] += 1
             i += 1
+        elif stack and src[i] == ')' and stack[-1][0] == 'interpolation':
+            stack[-1][1] -= 1
+            if not stack[-1][1]: space(i, i + 1); stack.pop()
+            i += 1
+        else:
+            # code, at top level or inside an interpolation
+            j = i
+            while src[j:j + 1] == '#': j += 1
+            hashes = j - i
+            if src.startswith('//', j):
+                end = src.find('\n', j)
+                space(i, n if end < 0 else end)
+                i = n if end < 0 else end
+            elif src.startswith('/*', j):
+                depth, k = 1, j + 2
+                while k < n and depth:
+                    if src.startswith('/*', k): depth, k = depth + 1, k + 2
+                    elif src.startswith('*/', k): depth, k = depth - 1, k + 2
+                    else: k += 1
+                space(i, k)
+                i = k
+            elif src.startswith('"""', j) or src[j:j + 1] == '"':
+                quotes = src[i:j + 3] if src.startswith('"""', j) else src[i:j + 1]
+                space(i, i + len(quotes))
+                i += len(quotes)
+                stack.append(['string', quotes[hashes:] + '#' * hashes, '\\' + '#' * hashes + '(', hashes])
+            elif src[j:j + 1] == '/' and REGEX_BEFORE.search(src[:i]):
+                # a regex literal can hold quotes and braces: it ends at the slash its escapes do not protect
+                k = j + 1
+                while k < n and not src.startswith('/' + '#' * hashes, k):
+                    if src[k] == '\\':
+                        k += 1
+                        for _ in range(hashes):
+                            if k < n and src[k] == '#': k += 1
+                    k += 1
+                space(i, min(k + 1 + hashes, n))
+                i = min(k + 1 + hashes, n)
+            else:
+                i += 1
     return ''.join(out)
 
 
@@ -3377,21 +3387,31 @@ def closing(clean, opening):
 
 
 def declarations(clean):
-    """Each type declaration of a file, in order: (start, qualified name, hidden, end, extended). `hidden` says that
-    only the file can see the type; `extended` is the type an extension extends, None for a type."""
-    found, stack = [], []
+    """Each type declaration of a file, in order: (start, name, hidden, end, extended). `name` is qualified
+    (`Outer.Inner`), `hidden` says that only the file can see the type, `extended` is the type an extension
+    extends, None for a type."""
+    raw = []
     for m in TYPE.finditer(clean):
-        while stack and stack[-1][3] <= m.start(): stack.pop()
         brace = clean.find('{', m.end())
-        end = closing(clean, brace) if brace >= 0 else -1
-        if m.group(2) == 'extension':
-            # the extension's own modifiers say who sees its members, not who knows the type
-            found.append((m.start(), m.group(3), False, end, m.group(3)))
-            continue
-        name = stack[-1][1] + '.' + m.group(3) if stack else m.group(3)
-        hidden = HIDDEN.search(m.group(1)) is not None or (bool(stack) and stack[-1][2])
-        found.append((m.start(), name, hidden, end, None))
-        stack.append((m.start(), name, hidden, end))
+        raw.append((m.start(), m.group(2), m.group(3), HIDDEN.search(m.group(1)) is not None,
+                    closing(clean, brace) if brace >= 0 else -1))
+    hidden, found = {}, []
+    for _ in range(2):
+        # twice: a type nested in an extension and an extension of it learn of each other in the second pass
+        stack, found = [], []
+        for start, kind, simple, private, end in raw:
+            while stack and stack[-1][2] <= start: stack.pop()
+            if kind == 'extension':
+                # the extension's own modifiers say who sees its members; they hide a type nested in it, not its type
+                own = private or hidden.get(simple, False)
+                found.append((start, simple, own, end, simple))
+                stack.append((simple, own, end))
+            else:
+                name = stack[-1][0] + '.' + simple if stack else simple
+                own = private or (bool(stack) and stack[-1][1])
+                found.append((start, name, own, end, None))
+                hidden[name] = own
+                stack.append((name, own, end))
     return found
 
 
@@ -3422,13 +3442,42 @@ def properties(path, src):
     return found
 
 
-def owner(scope):
-    """The type's name, whether it is one every file can see or one that stays in its own file."""
-    return scope[1] if isinstance(scope, tuple) else scope
+def components(count, edges):
+    """The sets of properties that reach each other: a cycle can only run inside one of them."""
+    seen, order = set(), []
+    for i in range(count):
+        if i in seen: continue
+        seen.add(i)
+        stack = [(i, iter(sorted(edges[i])))]
+        while stack:
+            node, following = stack[-1]
+            j = next(following, None)
+            if j is None:
+                order.append(node)
+                stack.pop()
+            elif j not in seen:
+                seen.add(j)
+                stack.append((j, iter(sorted(edges[j]))))
+    back = {}
+    for i in range(count):
+        for j in edges[i]: back.setdefault(j, []).append(i)
+    seen, found = set(), []
+    for i in reversed(order):
+        if i in seen: continue
+        seen.add(i)
+        group, stack = [], [i]
+        while stack:
+            node = stack.pop()
+            group.append(node)
+            for j in back.get(node, []):
+                if j not in seen: seen.add(j); stack.append(j)
+        if len(group) > 1 or group[0] in edges[group[0]]: found.append(group)
+    return found
 
 
 def cycles_in(files):
-    """Each cycle once: the file and the line of its first property, and the names that form it, back to the first."""
+    """Each cycle once, at most MAX_LISTED: the file and the line of its first property, and the names that form it,
+    back to the first. A last entry without names says that the list stopped early."""
     nodes, by_name = [], {}
     for path, src in files:
         for scope, name, line, body in properties(path, src):
@@ -3442,16 +3491,18 @@ def cycles_in(files):
             if MEMBER.search(body, 0, word.start()) and not SELF.search(body, 0, word.start()): continue
             reads.add(word.group())
         edges.append({j for read in reads for j in by_name.get((scope, read), [])})
-    found = []
+    found, left = [], [BUDGET]
 
-    def walk(start, node, path):
+    def walk(members, start, node, path):
         # a cycle is listed from its first property, so each comes out once
         for j in sorted(edges[node]):
-            if len(found) >= LIMIT: return
+            if left[0] < 0 or len(found) >= MAX_LISTED: return
+            left[0] -= 1
             if j == start: found.append(path)
-            elif j > start and j not in path: walk(start, j, path + [j])
+            elif j in members and j > start and j not in path: walk(members, start, j, path + [j])
 
-    for start in range(len(nodes)): walk(start, start, [start])
+    for group in components(len(nodes), edges):
+        for start in sorted(group): walk(set(group), start, start, [start])
     cycles = []
     for loop in found:
         path, _, _, line, _ = nodes[loop[0]]
@@ -3460,7 +3511,14 @@ def cycles_in(files):
             type = owner(nodes[j][1])
             names.append(type + '.' + nodes[j][2] if type else nodes[j][2])
         cycles.append((path, line, names + [names[0]]))
+    cycles.sort(key=lambda c: (c[0], c[1], c[2]))
+    if found and (left[0] < 0 or len(found) >= MAX_LISTED): cycles.append((nodes[0][0], None, []))
     return cycles
+
+
+def owner(scope):
+    """The type's name, whether it is one every file can see or one that stays in its own file."""
+    return scope[1] if isinstance(scope, tuple) else scope
 
 
 def main(paths):
@@ -3477,7 +3535,7 @@ def main(paths):
             return 2
     found = cycles_in(files)
     for path, line, names in found:
-        print(f"{path}:{line}: " + " → ".join(names))
+        print(f"{path}:{line}: " + " → ".join(names) if names else f"{path}: more cycles exist: the list stops here")
     return 1 if found else 0
 
 
@@ -3499,12 +3557,14 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 
 SENTINEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check-view-cycles.py")
 
 # (what the case is about, its files, the cycles expected: for each, the properties that form it)
+CYCLE = ["S.a S.b"]
 CASES = [
-    ("two properties that read each other", {"S.swift": "struct S {\n    var a: Int { b }\n    var b: Int { a }\n}\n"}, ["S.a S.b"]),
+    ("two properties that read each other", {"S.swift": "struct S {\n    var a: Int { b }\n    var b: Int { a }\n}\n"}, CYCLE),
     ("a property that reads itself", {"S.swift": "struct S {\n    var a: Int { self.a }\n}\n"}, ["S.a"]),
     ("a stored property with an observer is not one", {"S.swift": "struct S {\n    var a: String? { didSet { load(a) } }\n}\n"}, []),
     ("the same name in two types: only the one that cycles", {"S.swift": """
@@ -3533,7 +3593,7 @@ CASES = [
             }
             var b: Int { a }
         }
-    '''}, ["S.a S.b"]),
+    '''}, CYCLE),
     ("a name inside a comment or a string is not a read", {"S.swift": r'''
         struct S {
             var a: Int { b }
@@ -3560,6 +3620,15 @@ CASES = [
             private var b: some View { a }
         }
     """}, ["T.a T.b"]),
+    ("an attribute written on several lines", {"S.swift": r'''
+        struct A {
+            @Attribute(
+                key: "value {"
+            )
+            var a: Int { b }
+            var b: Int { a }
+        }
+    '''}, ["A.a A.b"]),
     ("a brace on the next line", {"S.swift": """
         struct G
         {
@@ -3594,6 +3663,13 @@ CASES = [
         }
         extension Outer.Inner { var b: Int { a } }
     """}, ["Outer.Inner.a Outer.Inner.b"]),
+    ("a type nested in an extension, extended again", {"S.swift": """
+        struct Outer { }
+        extension Outer {
+            struct Inner { var a: Int { b } }
+        }
+        extension Outer.Inner { var b: Int { a } }
+    """}, ["Outer.Inner.a Outer.Inner.b"]),
     ("two unrelated types with the same names", {"S.swift": """
         struct P { var a: Int { b } }
         struct Q { var b: Int { 1 } }
@@ -3604,15 +3680,33 @@ CASES = [
         struct P { struct Inner { var x: Int { y }; var y: Int { 1 } } }
         struct Q { struct Inner { var y: Int { x }; var x: Int { 5 } } }
     """}, []),
+    ("types with the same name nested in two extensions are not one", {"S.swift": """
+        struct P { }
+        struct Q { }
+        extension P { struct Inner { var x: Int { y }; var y: Int { 1 } } }
+        extension Q { struct Inner { var y: Int { x }; var x: Int { 5 } } }
+    """}, []),
     ("private nested types with the same name in two files are not one",
      {"P.swift": "private struct Outer { struct Inner { var x: Int { y }; var y: Int { 1 } } }\n",
       "Q.swift": "private struct Outer { struct Inner { var y: Int { x }; var x: Int { 5 } } }\n"}, []),
+    ("types with the same name in two private extensions in two files are not one",
+     {"P.swift": "struct P { }\nprivate extension P { struct Helper { var x: Int { y }; var y: Int { 1 } } }\n",
+      "Q.swift": "struct Q { }\nprivate extension Q { struct Helper { var y: Int { x }; var x: Int { 5 } } }\n"}, []),
     ("a read inside a string interpolation", {"S.swift": r'''
         struct J {
             var title: String { "\(count)" }
             var count: Int { title.count }
         }
     '''}, ["J.title J.count"]),
+    ("a string inside an interpolation, holding a brace", {"S.swift": r'''
+        struct N {
+            var a: Int {
+                let s = "\(wrap("{"))"
+                return s.count + b
+            }
+            var b: Int { a }
+        }
+    '''}, ["N.a N.b"]),
     ("a raw string", {"S.swift": r'''
         struct R {
             var a: Int {
@@ -3636,6 +3730,36 @@ CASES = [
             var a: Int {
                 let s = "x"
                 return /^}$/.wholeMatch(in: s) == nil ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("a regex literal after `where`, holding a brace", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                var n = 0
+                for s in ["x", "y"] where /^}$/.wholeMatch(in: s) != nil { n += 1 }
+                return n > 0 ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("an extended regex literal", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let ok = #/^}$/#.wholeMatch(in: "x") == nil
+                return ok ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("a regex literal on several lines", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let r = /^
+                    }|{
+                    $/
+                return (r.wholeMatch(in: "x") == nil) ? 0 : b
             }
             var b: Int { a }
         }
@@ -3671,45 +3795,59 @@ CASES = [
     ("a stored property is not read as one", {"S.swift": "struct S {\n    var a: Int = 0\n    var b: Int { a }\n}\n"}, []),
 ]
 
+# (what the case is about, the files, the exit code expected, the seconds it may take): the exit code alone is checked
+DENSE = [
+    ("a type dense with reads and no cycle is fast", False, 0),
+    ("a type dense with reads and one cycle is answered in bounded time", True, 1),
+]
+
+
+def dense(count, back):
+    """A type whose every property reads all the later ones; with `back`, the last one reads the first."""
+    rows = ["    var p%d: Int { %s }" % (i, " ".join("p%d" % j for j in range(i + 1, count)) or "0") for i in range(count)]
+    if back: rows[-1] = "    var p%d: Int { p0 }" % (count - 1)
+    return {"D.swift": "struct D {\n" + "\n".join(rows) + "\n}\n"}
+
 
 def check(files):
-    """(exit code, for each cycle: its line and the properties that form it)"""
+    """(exit code, seconds, for each cycle: its line and the properties that form it)"""
     with tempfile.TemporaryDirectory() as folder:
         paths = []
         for name, src in files.items():
             paths.append(os.path.join(folder, name))
             with open(paths[-1], "w", encoding="utf-8") as f:
                 f.write(textwrap.dedent(src).lstrip("\n"))
+        started = time.time()
         out = subprocess.run([sys.executable, SENTINEL] + paths, capture_output=True, text=True)
         cycles = []
         for line in out.stdout.splitlines():
             where, names = line.rsplit(": ", 1)
-            cycles.append((int(where.rsplit(":", 1)[1]), sorted(set(names.split(" → ")))))
-        return out.returncode, cycles
+            cycles.append((int(where.rsplit(":", 1)[1]) if where.rsplit(":", 1)[-1].isdigit() else None,
+                           sorted(set(names.split(" → ")))))
+        return out.returncode, time.time() - started, cycles
 
 
 def main():
-    failed = 0
+    failed, passed = 0, 0
+
+    def ok(label, good, found):
+        nonlocal failed, passed
+        if good: passed += 1; print(f"ok   {label}")
+        else: failed += 1; print(f"NO   {label}: {found}")
+
     for label, files, expected in CASES:
-        code, cycles = check(files)
-        if code != (1 if expected else 0) or [names for _, names in cycles] != [sorted(name.split()) for name in expected]:
-            failed += 1
-            print(f"NO   {label}: expected {expected}, found {cycles} (exit {code})")
-        else:
-            print(f"ok   {label}")
-    line = check(CASES[0][1])[1][0][0]
-    if line != 2:
-        failed += 1
-        print(f"NO   the line of the first property: expected 2, found {line}")
-    else:
-        print("ok   the line of the first property")
+        code, _, cycles = check(files)
+        ok(label, code == (1 if expected else 0) and [names for _, names in cycles] == [sorted(name.split()) for name in expected],
+           f"expected {expected}, found {cycles} (exit {code})")
+    for label, back, expected in DENSE:
+        code, seconds, cycles = check(dense(40, back))
+        ok(label, code == expected and seconds < 10 and (not back or cycles[-1][0] is None),
+           f"expected exit {expected} in under 10 s, found exit {code} in {seconds:.1f} s with {len(cycles)} lines")
+    line = check(CASES[0][1])[2][0][0]
+    ok("the line of the first property", line == 2, f"expected 2, found {line}")
     code = subprocess.run([sys.executable, SENTINEL], capture_output=True).returncode
-    if code != 2:
-        failed += 1
-        print(f"NO   no file to check: expected exit 2, found exit {code}")
-    else:
-        print("ok   no file to check: exit 2")
-    print(f"{len(CASES) + 2 - failed} of {len(CASES) + 2} cases passed")
+    ok("no file to check: exit 2", code == 2, f"expected exit 2, found exit {code}")
+    print(f"{passed} of {passed + failed} cases passed")
     return 1 if failed else 0
 
 
@@ -3724,7 +3862,7 @@ Run: `chmod +x scripts/check-view-cycles.py scripts/check-view-cycles-test.py`
 - [ ] **Step 4: Provarla.**
 
 Run: `python3 scripts/check-view-cycles-test.py; echo "exit $?"`
-Expected: una riga `ok` per ogni caso, poi `32 of 32 cases passed` e `exit 0`.
+Expected: una riga `ok` per ogni caso, poi `42 of 42 cases passed` e `exit 0`.
 
 Run: `python3 scripts/check-view-cycles.py Sources/BackupMe/*.swift; echo "exit $?"`
 Expected: solo `exit 0` (nessuna riga prima).
