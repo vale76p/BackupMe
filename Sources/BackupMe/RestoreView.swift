@@ -245,7 +245,7 @@ struct RestoreView: View {
         s.path = model.currentPath
         s.visible = model.search.isEmpty ? rows : []
         s.selectedIDs = selectedIDs
-        if let e = barFile, let picked, picked.entry.source == e.source, picked.entry.path == e.path {
+        if let e = chosenFile, let picked, picked.entry.source == e.source, picked.entry.path == e.path {
             s.version = .init(backup: .init(id: picked.snapshotID, date: Snapshot.date(fromID: picked.snapshotID) ?? e.mtime),
                               entry: picked.entry)
         }
@@ -255,6 +255,9 @@ struct RestoreView: View {
 
     private var plan: RestorePlanner.Plan { RestorePlanner.resolve(selection) }
     private var bar: RestorePlanner.Bar { RestorePlanner.bar(plan, selection: selection, compare: canCompare) }
+
+    /// The rows chosen in the list, whatever they are.
+    private var selectedRows: [Entry] { selection.visible.filter { selectedIDs.contains($0.restoreID) } }
 
     /// The only selected file, when there is just one: the one that has saved versions.
     private var chosenFile: Entry? {
@@ -309,10 +312,12 @@ struct RestoreView: View {
     private var revealTitle: String { model.search.isEmpty ? "Mostra nel Finder" : "Mostra nel backup" }
     private var revealIcon: String { model.search.isEmpty ? "folder" : "clock.arrow.circlepath" }
 
-    /// What the action restores and is still on this Mac, to show in the Finder.
+    /// What the action restores and is still on this Mac, to show in the Finder; with nothing to restore, the rows chosen.
     private var todayURLs: [URL] {
         guard model.search.isEmpty else { return hit.map { [$0.entry.url] } ?? [] }
-        return plan.items.compactMap { item in
+        // «Nuovo» rows have nothing to restore: where they are today is the only thing there is to show
+        let items = plan.action == .nothing ? selectedRows.map { RestorePlanner.Item($0) } : plan.items
+        return items.compactMap { item in
             // the folder's rows were compared with the disk once, off the main thread; a chosen version wasn't, and there is one
             if let e = item.entry, e.kind != .directory {
                 let missing = model.status(of: e).map { $0.own == .missing } ?? (Restorer.status(of: e) == .missing)
