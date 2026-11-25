@@ -23,7 +23,7 @@ struct BackupMeApp: App {
         Window("Sfoglia backup", id: "restore") {
             RestoreView(model: RestoreModel(app: model)).onAppear { SystemServices.windowOpened() }
         }
-        .defaultSize(width: 1000, height: 640)
+        .defaultSize(width: 1100, height: 700)
 
         Window("Benvenuto in BackupMe", id: "welcome") {
             WelcomeView(model: model).onAppear { SystemServices.windowOpened() }
@@ -151,6 +151,24 @@ extension AppModel {
             return "Ultimo backup: \(f.string(from: last))"
         }
     }
+
+    /// The panel's status, in color and symbol, wherever it is repeated (the Sfoglia timeline too).
+    var statusColor: Color {
+        switch status {
+        case .idle: settings.paused || !settings.isConfigured ? .gray : hasWarnings ? .orange : .green
+        case .running: .accentColor
+        case .failed: .red
+        }
+    }
+
+    var statusSymbol: String {
+        switch status {
+        case .failed: "exclamationmark"
+        case .running: "arrow.triangle.2.circlepath"
+        case .idle: !settings.isConfigured ? "gearshape" : settings.paused ? "pause.fill"
+            : hasWarnings ? "exclamationmark.triangle" : "checkmark"
+        }
+    }
 }
 
 /// Where the backups go, as Impostazioni › Destinazione shows it, in the panel's width.
@@ -207,12 +225,12 @@ struct MenuContent: View {
             // would resize the panel and move the buttons under the pointer
             HStack(spacing: 10) {
                 ZStack {
-                    Circle().fill(statusColor.gradient)
+                    Circle().fill(model.statusColor.gradient)
                     if case .running(let p) = model.status {
                         ProgressView(value: p).progressViewStyle(.circular).controlSize(.small).tint(.white)
                             .accessibilityLabel("Backup in corso")
                     } else {
-                        Image(systemName: statusSymbol).font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
+                        Image(systemName: model.statusSymbol).font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
                     }
                 }
                 .frame(width: 38, height: 38)
@@ -291,23 +309,6 @@ struct MenuContent: View {
 
     private var primaryIcon: String {
         !model.settings.isConfigured ? "gearshape" : model.isRunning ? "stop.fill" : "play.fill"
-    }
-
-    private var statusColor: Color {
-        switch model.status {
-        case .idle: model.settings.paused || !model.settings.isConfigured ? .gray : model.hasWarnings ? .orange : .green
-        case .running: .accentColor
-        case .failed: .red
-        }
-    }
-
-    private var statusSymbol: String {
-        switch model.status {
-        case .failed: "exclamationmark"
-        case .running: "arrow.triangle.2.circlepath"
-        case .idle: !model.settings.isConfigured ? "gearshape" : model.settings.paused ? "pause.fill"
-            : model.hasWarnings ? "exclamationmark.triangle" : "checkmark"
-        }
     }
 
     private var moreMenu: some View {

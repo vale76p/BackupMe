@@ -6,7 +6,7 @@ Backup locale per macOS in stile Time Machine, gestito dalla barra dei menu. Pen
 - Archivio deduplicato: ogni file è salvato una volta sola, anche in cento backup
 - Conservazione: tutti nelle 24 h, poi giornalieri / settimanali / mensili configurabili
 - Tetto massimo allo spazio occupato
-- Ripristino di file o cartelle senza mai sovrascrivere
+- Ripristino di file o cartelle senza mai sovrascrivere, da una linea del tempo dei backup con anteprima dei file e confronto con oggi
 
 Design: [`docs/superpowers/specs/2026-11-05-backupme-backup-design.md`](docs/superpowers/specs/2026-11-05-backupme-backup-design.md)
 
@@ -119,6 +119,7 @@ I backup nella destinazione restano dove sono, insieme a `RIPRISTINO.command` e 
 
 ```bash
 swift test
+python3 scripts/check-view-cycles.py Sources/BackupMe/*.swift
 ```
 
-Il motore (`Sources/BackupCore`) non ha interfaccia ed è coperto da test; l'app (`Sources/BackupMe`) è solo UI e pianificazione.
+Il motore (`Sources/BackupCore`) non ha interfaccia ed è coperto da test; l'app (`Sources/BackupMe`) è solo UI e pianificazione. Le regole dell'interfaccia che non dipendono dalle viste stanno in `Sources/RestoreRules` e sono provate come il motore. Le viste non hanno test: due proprietà calcolate che si leggono l'una con l'altra fanno andare la finestra in crash al primo disegno, e lo scopre solo il secondo comando.

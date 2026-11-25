@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sfoglia backup · com'è oggi e tre direzioni</title>
+<style>
+:root{--accent:#0a7cff;--ink:#1d1d1f;--ink2:#6e6e73;--ink3:#8e8e93;--orange:#ff9500;--red:#ff3b30;--green:#34c759}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:#151517 radial-gradient(1100px 560px at 50% -160px,#34343a,rgba(0,0,0,0) 70%);color:#f5f5f7;font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.page{max-width:1244px;margin:0 auto;padding:28px 32px 72px}
+.top{display:flex;align-items:flex-end;justify-content:space-between;gap:20px 28px;flex-wrap:wrap}
+h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.02em}
+.lead{margin:6px 0 0;color:#a1a1a6;max-width:72ch}
+.tabs{display:flex;gap:4px;padding:4px;border-radius:12px;background:rgba(255,255,255,.07)}
+.tab{appearance:none;border:0;background:transparent;color:#c7c7cc;font:600 13px/1 inherit;padding:10px 14px;border-radius:9px;cursor:pointer;white-space:nowrap}
+.tab[aria-selected="true"]{background:#f5f5f7;color:#1d1d1f}
+.hint{margin:20px 0 10px;font-size:12.5px;color:#a1a1a6}
+.screen[hidden]{display:none}
+body.notes-mode .win-fit{display:none}
+.win-fit{position:relative;width:100%}
+.win{position:absolute;left:0;top:0;width:1180px;height:720px;transform-origin:0 0;overflow:hidden;border-radius:13px;background:#fff;color:var(--ink);box-shadow:0 0 0 1px rgba(255,255,255,.16),0 40px 90px rgba(0,0,0,.6),0 10px 28px rgba(0,0,0,.45);font-size:13px;line-height:1.3}
+
+/* ---------- note sotto i mockup ---------- */
+.notes{margin-top:24px;display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:32px}
+.notes h2{margin:0 0 6px;font-size:21px;letter-spacing:-.01em}
+.tag{display:inline-block;margin-left:8px;padding:3px 10px;border-radius:999px;background:rgba(48,209,88,.16);color:#30d158;font-size:11.5px;font-weight:600;vertical-align:4px}
+.thesis{color:#a1a1a6;margin:0 0 16px;max-width:80ch}
+.changes{list-style:none;margin:0;padding:0}
+.changes li{position:relative;padding:0 0 0 18px;margin:0 0 9px;color:#d7d7dc}
+.changes li::before{content:"";position:absolute;left:2px;top:.6em;width:6px;height:6px;border-radius:50%;background:#0a84ff}
+.changes b{color:#fff;font-weight:600}
+.side-notes{display:grid;gap:10px;align-content:start}
+.pc{border-radius:12px;padding:12px 15px;background:rgba(255,255,255,.06)}
+.pc h3{margin:0 0 6px;font-size:11.5px;text-transform:uppercase;letter-spacing:.06em}
+.pc ul{margin:0;padding-left:16px;color:#c7c7cc;font-size:13px}
+.pc li{margin-bottom:4px}
+.pc.pro h3{color:#30d158}.pc.con h3{color:#ff6961}
+.effort{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#a1a1a6}
+.effort b{color:#f5f5f7;font-weight:600}
+.pick{appearance:none;border:0;width:100%;height:44px;border-radius:12px;background:#0a84ff;color:#fff;font:600 14px/1 inherit;cursor:pointer;box-shadow:0 6px 18px rgba(10,132,255,.35)}
+.pick:hover{background:#2490ff}
+.foot-note{margin:30px 0 0;color:#a1a1a6;max-width:100ch}
+.legend{list-style:none;margin:18px 0 0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 28px}
+.legend li{display:flex;gap:10px;color:#d7d7dc;font-size:13.5px}
+.n{flex:none;width:22px;height:22px;border-radius:50%;background:#ff9f0a;color:#1d1d1f;font:700 12px/22px inherit;text-align:center}
+
+/* ---------- finestra ---------- */
+.win svg{display:block}
+.ic{width:16px;height:16px;fill:none;stroke:#4b4b52;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.tb{position:absolute;left:0;right:0;top:0;height:52px;display:flex;align-items:center;gap:10px;padding:0 14px 0 20px;z-index:6}
+.lights{display:flex;gap:8px;margin-right:8px}.lights i{width:12px;height:12px;border-radius:50%}
+.lights i:nth-child(1){background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.glass{display:inline-flex;align-items:center;height:30px;padding:0 5px;border-radius:9px;background:rgba(255,255,255,.68);box-shadow:inset 0 0 0 1px rgba(0,0,0,.055),0 1px 2px rgba(0,0,0,.05);white-space:nowrap}
+.ib{width:27px;height:24px;display:grid;place-items:center;border-radius:6px}.ib.off{opacity:.35}
+.sp{flex:1}
+.path{gap:0;padding:0 7px}.path .c{padding:0 5px;font-weight:500}.path .c.here{font-weight:600}.path .s{width:12px;height:12px;stroke:#a1a1a6;margin:0 -2px}
+.menu{gap:6px;padding:0 9px;font-weight:500}.menu .ic{width:14px;height:14px;stroke:#6e6e73}
+.search{width:190px;gap:6px;padding:0 9px;color:#8e8e93}.search .ic{width:14px;height:14px;stroke:#8e8e93}
+.side{position:absolute;left:0;top:0;bottom:0;width:var(--sx);background:linear-gradient(180deg,#f6f6f9,#ececf1);border-right:1px solid rgba(0,0,0,.07)}
+.insp{position:absolute;right:0;top:0;bottom:0;width:var(--ir);background:#fbfbfd;border-left:1px solid rgba(0,0,0,.07)}
+.mid{position:absolute;left:var(--sx);right:var(--ir);top:0;bottom:0;padding-top:52px;display:flex;flex-direction:column;background:#fff;min-width:0}
+.fi{width:20px;height:20px;flex:none}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#b0b0b8}
+.d-o{background:var(--orange)}.d-r{background:var(--red)}.d-g{background:var(--green)}
+
+/* righe dei file */
+.thead,.row{display:grid;grid-template-columns:minmax(0,1fr) 152px 84px 118px;gap:8px;align-items:center;padding:0 18px 0 12px}
+.thead{height:27px;font-size:11.5px;font-weight:500;color:#8e8e93;border-bottom:1px solid rgba(0,0,0,.07)}
+.row{height:31px}
+.row.sel{background:var(--accent);color:#fff}
+.nm{display:flex;align-items:center;gap:8px;min-width:0}.nm span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sz,.dt{color:#8e8e93;font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}.row.sel .sz,.row.sel .dt{color:rgba(255,255,255,.85)}
+.badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:6px;font-size:11.5px;font-weight:500;white-space:nowrap}
+.b-mod,.b-modin{background:#fff0dc;color:#b85c00}.b-del{background:#ffe7e5;color:#d70015}.b-new{background:#e2f5e8;color:#1d8a3a}
+.row.sel .badge{background:rgba(255,255,255,.26);color:#fff}
+.chips{display:flex;gap:6px;padding:0 20px 10px}
+.chipf{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:13px;background:rgba(120,120,128,.12);font-size:12px;font-weight:500;color:#3c3c43;white-space:nowrap}
+.chipf.on{background:#1d1d1f;color:#fff}
+.chipf .n{width:auto;height:auto;border-radius:0;background:transparent;color:#8e8e93;font:500 12px/1 inherit;padding:0}
+.chipf.on .n{color:rgba(255,255,255,.7)}
+
+/* pulsanti */
+.btn{height:32px;padding:0 12px;border-radius:9px;display:inline-flex;align-items:center;gap:6px;font:500 13px/1 inherit;color:var(--ink);background:rgba(255,255,255,.9);box-shadow:inset 0 0 0 1px rgba(0,0,0,.09),0 1px 2px rgba(0,0,0,.06);white-space:nowrap;cursor:default}
+.btn .ic{width:15px;height:15px;stroke:#6e6e73}
+.btn.pri{background:var(--accent);color:#fff;box-shadow:0 1px 2px rgba(10,124,255,.4)}.btn.pri .ic{stroke:#fff}
+.btn.sm{height:26px;padding:0 9px;font-size:12px;border-radius:7px}
+
+/* barra flottante di ripristino */
+.dock{position:absolute;left:calc(var(--sx) + 12px);right:calc(var(--ir) + 12px);bottom:10px;height:54px;display:flex;align-items:center;gap:9px;padding:0 8px 0 14px;border-radius:16px;background:rgba(248,248,251,.82);backdrop-filter:blur(22px) saturate(180%);box-shadow:inset 0 0 0 1px rgba(0,0,0,.06),0 12px 30px rgba(0,0,0,.14);z-index:4}
+.dock .fi{width:28px;height:28px}
+.who{min-width:0;margin-right:4px}.who b{display:block;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who span{display:block;font-size:11.5px;color:#8e8e93;white-space:nowrap}
+
+/* ispettore */
+.iwrap{position:absolute;inset:0;padding:60px 16px 14px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.preview{position:relative;height:142px;flex:none;border-radius:12px;background:linear-gradient(160deg,#f1f1f6,#e4e4ec);overflow:hidden;box-shadow:inset 0 0 0 1px rgba(0,0,0,.05)}
+.preview .doc{position:absolute;left:22px;right:22px;top:15px;bottom:0;background:#fff;border-radius:7px 7px 0 0;padding:11px 14px;box-shadow:0 1px 3px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.04);font-size:9px;line-height:1.55;color:#6e6e73;overflow:hidden}
+.preview .doc h4{margin:0 0 3px;font-size:12.5px;color:#1d1d1f}.preview .doc p{margin:0}
+.fhead{display:flex;gap:10px;align-items:center;min-width:0}.fhead .fi{width:34px;height:34px}
+.fhead b{display:block;font-size:14px;font-weight:600;margin-bottom:4px}
+.meta{display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 12px;margin:0;font-size:12px}
+.meta dt{color:#8e8e93}.meta dd{margin:0;text-align:right;color:#3c3c43;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vhead{display:flex;justify-content:space-between;align-items:baseline;margin-top:2px}.vhead b{font-size:12.5px;font-weight:600}.vhead span{font-size:11.5px;color:#8e8e93}
+.ver{position:relative;display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;min-height:29px;border-radius:7px;font-size:12px;padding-right:8px}
+.ver::before{content:"";position:absolute;left:8px;top:0;bottom:0;width:1.5px;background:rgba(60,60,67,.16)}
+.ver:first-child::before{top:50%}.ver:last-child::before{bottom:50%}
+.ver .dot{position:relative;width:8px;height:8px;margin-left:4.5px;background:#fff;box-shadow:0 0 0 1.5px #b0b0b8;border-radius:50%}
+.ver .d{font-variant-numeric:tabular-nums;white-space:nowrap}.ver .d small{display:block;font-size:10.5px;color:#8e8e93}
+.ver .s{color:#8e8e93;font-variant-numeric:tabular-nums;font-size:11.5px}
+.ver.here{background:rgba(10,124,255,.12)}.ver.here .dot{background:var(--accent);box-shadow:none}
+.acts{display:flex;gap:8px;margin-top:auto}
+
+/* ---------- A: timeline a sinistra ---------- */
+.state{position:absolute;left:10px;width:calc(var(--sx) - 20px);top:60px;display:flex;gap:10px;align-items:center;padding:9px 12px;border-radius:11px;background:rgba(255,255,255,.74);box-shadow:inset 0 0 0 1px rgba(0,0,0,.05)}
+.state .ok{flex:none;width:9px;height:9px;border-radius:50%;background:#30d158;box-shadow:0 0 0 3px rgba(48,209,88,.22)}
+.state b{display:block;font-size:12.5px;font-weight:600}
+.state span{display:block;font-size:11.5px;color:#8e8e93;line-height:1.3}
+.tl{position:absolute;left:0;width:var(--sx);top:124px;bottom:0;overflow-y:auto;scrollbar-width:none;padding-bottom:12px}
+.tl::-webkit-scrollbar{display:none}
+.tl-day{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:baseline;padding:7px 18px 4px;background:linear-gradient(180deg,#f1f1f5 80%,rgba(241,241,245,0));font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:#8e8e93}
+.tl-day .amt{text-transform:none;letter-spacing:0;font-weight:500;color:#a1a1a6;font-variant-numeric:tabular-nums}
+.bk{position:relative;display:grid;grid-template-columns:24px 44px minmax(0,1fr) 60px 14px;align-items:center;height:24px;margin:0 8px;padding-right:8px;border-radius:7px;font-variant-numeric:tabular-nums;cursor:default}
+.bk::before{content:"";position:absolute;left:15px;top:0;bottom:0;width:1.5px;background:rgba(60,60,67,.17)}
+.bk.edge-top::before{top:50%}.bk.edge-bot::before{bottom:50%}
+.bk .dot{position:relative;width:8px;height:8px;margin-left:11.5px;background:#fff;box-shadow:0 0 0 1.5px #b0b0b8;border-radius:50%}
+.bk.warn .dot{background:#ffe1b8;box-shadow:0 0 0 1.5px var(--orange)}
+.bk .t{font-weight:500;font-size:12.5px}
+.bk .bar{height:5px;border-radius:3px;background:rgba(60,60,67,.07);margin-right:8px;overflow:hidden}
+.bk .bar i{display:block;height:100%;border-radius:3px;background:#8a8a92}
+.bk.warn .bar i{background:var(--orange)}
+.bk .mb{font-size:11px;color:#8e8e93;text-align:right;white-space:nowrap}
+.bk .w{width:12px;height:12px;stroke:var(--orange);stroke-width:2}
+.bk.sel{background:var(--accent);color:#fff}
+.bk.sel .dot{background:#fff;box-shadow:none}
+.bk.sel .t{font-weight:700}
+.bk.sel .bar{background:rgba(255,255,255,.26)}.bk.sel .bar i{background:#fff}
+.bk.sel .mb{color:rgba(255,255,255,.88)}.bk.sel .w{stroke:#fff}
+.when{padding:10px 20px 8px}
+.eyebrow{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#8e8e93}
+.when h2{margin:1px 0 0;font-size:27px;line-height:1.15;font-weight:700;letter-spacing:-.02em}
+.when .sub{margin-top:3px;color:#8e8e93;font-size:12.5px}
+.tbl{flex:1;overflow:hidden;padding-bottom:76px}
+
+/* ---------- B: tempo in alto ---------- */
+.b-side{padding:58px 10px 0}
+.sh{padding:0 8px 5px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8e8e93}
+.sitem{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:7px;font-weight:500}
+.sitem.sel{background:var(--accent);color:#fff}
+.si{width:20px;height:20px;flex:none;fill:none;stroke:#0a7cff;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.tick{width:14px;height:14px;stroke:#8e8e93;margin-left:auto}.sitem.sel .tick{stroke:#fff}
+.band{position:absolute;left:var(--sx);right:0;top:52px;height:128px;z-index:1;display:grid;grid-template-columns:198px minmax(0,1fr) auto;align-items:end;gap:16px;padding:12px 16px 10px 20px;border-bottom:1px solid rgba(0,0,0,.07)}
+.whenB{align-self:center}
+.whenB .big{display:flex;align-items:center;gap:8px;margin:1px 0}
+.whenB h2{margin:0;font-size:34px;line-height:1.05;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.step{display:flex;gap:2px;margin-left:4px}.step .ib{background:rgba(120,120,128,.12);width:24px;height:22px;border-radius:6px}
+.whenB .d{font-size:14px;font-weight:600}
+.whenB .sub{margin-top:1px;font-size:12px;color:#8e8e93}
+.chart{display:flex;align-items:flex-end;height:100%;min-width:0;overflow:hidden}
+.dg{display:flex;flex-direction:column;justify-content:flex-end;padding:0 6px;border-left:1px solid rgba(0,0,0,.06)}
+.dg:first-child{border-left:0}
+.dg .bars{position:relative;display:flex;align-items:flex-end;justify-content:center;gap:2px;height:92px;padding-top:26px}
+.dg .bars i{position:relative;width:8px;flex:none;border-radius:3px;background:#c9c9d0;min-height:3px;box-sizing:border-box}
+.dg .bars i.none{background:#dedee3}.dg .bars i.warn{background:#ffc38a}
+.dg .bars i.sel{background:var(--accent)}
+.dg .bars i.sel::after{content:attr(data-t);position:absolute;left:50%;bottom:calc(100% + 5px);transform:translateX(-50%);background:var(--accent);color:#fff;font-size:10.5px;font-weight:600;line-height:1;padding:4px 6px;border-radius:6px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.dg .dl{height:20px;line-height:20px;text-align:center;font-size:11px;color:#8e8e93;white-space:nowrap}
+.dg .dl b{color:var(--ink);font-weight:600}
+.zoom{align-self:start;display:inline-flex;padding:2px;border-radius:7px;background:rgba(120,120,128,.13)}
+.zoom span{padding:4px 9px;border-radius:5px;font-size:11.5px;font-weight:500;color:#6e6e73;white-space:nowrap}
+.zoom .on{background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.16);color:var(--ink)}
+.b-mid{top:180px;padding-top:0}
+.win.b .insp{top:180px}
+.win.b .iwrap{padding-top:14px}
+.bhead{display:flex;align-items:baseline;gap:10px;padding:11px 20px 7px}
+.bhead b{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.bhead span{font-size:12px;color:#8e8e93}
+
+/* ---------- C: viaggio nel tempo ---------- */
+.caps{gap:2px;padding:0 4px}
+.caps .cl{display:flex;align-items:center;gap:7px;padding:0 6px;font-weight:600}
+.caps b{font-size:14px;font-variant-numeric:tabular-nums}
+.banner{height:38px;flex:none;display:flex;align-items:center;gap:9px;padding:0 14px;background:rgba(10,124,255,.085);border-bottom:1px solid rgba(10,124,255,.13);font-size:12.5px;color:#2c5c9e}
+.banner .ic{stroke:#2c7bd6}
+.tg{white-space:nowrap;font-weight:500;color:var(--ink)}
+.sw{position:relative;flex:none;width:30px;height:18px;border-radius:9px;background:var(--accent)}
+.sw::after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:#fff}
+.tlink{white-space:nowrap;font-weight:600;color:#0a62c9}
+.rail{position:absolute;right:0;top:0;bottom:0;width:var(--ir);background:linear-gradient(180deg,#f6f6f9,#ececf1);border-left:1px solid rgba(0,0,0,.07)}
+.now{position:absolute;left:0;right:0;top:58px;display:flex;justify-content:flex-end;align-items:baseline;gap:5px;padding:0 24px 6px 10px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8e8e93;border-bottom:1px solid rgba(60,60,67,.2)}
+.now b{font-size:12px;letter-spacing:0;text-transform:none;color:var(--ink)}
+.rlist{position:absolute;left:0;right:0;top:92px;bottom:0;overflow-y:auto;scrollbar-width:none}
+.rlist::-webkit-scrollbar{display:none}
+.rday{position:sticky;top:0;z-index:2;padding:8px 24px 4px 0;text-align:right;font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8e8e93;background:linear-gradient(180deg,#f1f1f5 80%,rgba(241,241,245,0))}
+.rk{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 50px 18px;align-items:center;height:26px;padding-left:10px;font-variant-numeric:tabular-nums;cursor:default}
+.rk::before{content:"";position:absolute;right:16px;top:0;bottom:0;width:1.5px;background:rgba(60,60,67,.17)}
+.rk.edge-top::before{top:50%}.rk.edge-bot::before{bottom:50%}
+.rk::after{content:"";position:absolute;right:13px;width:7.5px;height:1.5px;background:rgba(60,60,67,.3)}
+.rk .bar{justify-self:end;height:4px;border-radius:2px;background:#8a8a92}
+.rk.warn .bar{background:var(--orange)}
+.rk .t{text-align:center;font-size:11.5px;font-weight:500;line-height:20px;border-radius:6px}
+.rk.sel .t{background:var(--accent);color:#fff;font-weight:700}
+.rk.sel .bar{background:var(--accent)}
+.card{position:absolute;left:calc(var(--sx) + 12px);right:calc(var(--ir) + 12px);bottom:10px;height:64px;display:flex;align-items:center;gap:11px;padding:0 8px 0 16px;border-radius:18px;background:rgba(248,248,251,.84);backdrop-filter:blur(22px) saturate(180%);box-shadow:inset 0 0 0 1px rgba(0,0,0,.06),0 12px 30px rgba(0,0,0,.14);z-index:4}
+.card .fi{width:32px;height:32px}
+.card .who b{font-size:14px}.card .who span{display:flex;align-items:center;gap:5px}
+.pop{position:absolute;right:calc(var(--ir) + 22px);bottom:84px;width:298px;padding:10px 10px 8px;border-radius:13px;background:rgba(255,255,255,.95);backdrop-filter:blur(24px);box-shadow:0 0 0 1px rgba(0,0,0,.06),0 18px 50px rgba(0,0,0,.22);z-index:5}
+.pop .ph{padding:3px 8px 6px 26px;font-size:12.5px;font-weight:600}
+.pop .pf{padding:6px 8px 2px 26px;font-size:11px;color:#8e8e93}
+
+/* ---------- oggi ---------- */
+.o-side{overflow:hidden;padding:58px 0 0}
+.oh{display:flex;justify-content:space-between;align-items:baseline;padding:4px 16px 1px;font-size:12.5px;font-weight:600;color:#7a7a80}
+.oh span{font-variant-numeric:tabular-nums;font-weight:500}
+.ogrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:2px 8px 8px}
+.chip{height:22px;border-radius:11px;border:1px solid rgba(60,60,67,.22);display:flex;align-items:center;justify-content:center;font-size:12px;font-variant-numeric:tabular-nums;color:var(--ink)}
+.chip.sel{background:var(--accent);border-color:transparent;color:#fff}
+.chip.warn{color:var(--orange);border-color:rgba(255,149,0,.7)}
+.o-mid{bottom:54px}
+.ofilter{display:flex;align-items:center;gap:12px;padding:7px 12px}
+.seg{display:inline-flex;padding:2px;border-radius:6px;background:rgba(120,120,128,.14)}
+.seg span{padding:3px 10px;border-radius:5px;font-size:12px;color:var(--ink);white-space:nowrap}
+.seg .on{background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.16);font-weight:500}
+.cap{font-size:11.5px;color:#8e8e93;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.o-tbl .row{height:24px}
+.o-tbl .fi{width:16px;height:16px}
+.pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;line-height:1.35;white-space:nowrap}
+.p-mod,.p-modin{background:rgba(255,149,0,.15);color:#d97706}.p-new{background:rgba(52,199,89,.15);color:#1d8a3a}
+.row.sel .pill{background:rgba(255,255,255,.26);color:#fff}
+.o-insp{padding:56px 14px 0;font-size:13px}
+.o-insp .top{display:flex;gap:10px;align-items:flex-start;margin-bottom:12px}
+.o-insp .fi{width:44px;height:44px}
+.o-insp h4{margin:0 0 5px;font-size:13px;font-weight:600;line-height:1.25}
+.lc{display:flex;justify-content:space-between;gap:10px;padding:3px 0}
+.lc span:first-child{color:#7a7a80}.lc span:last-child{text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.o-insp hr{border:0;border-top:1px solid rgba(0,0,0,.08);margin:8px 0}
+.o-insp .vt{font-size:11.5px;font-weight:600;margin-bottom:5px}
+.ov{display:flex;justify-content:space-between;padding:4px 8px;border-radius:6px;font-size:12px;font-variant-numeric:tabular-nums}
+.ov.here{background:rgba(10,124,255,.18)}
+.ov small{display:block;font-size:10px;color:#8e8e93}
+.ov span:last-child{color:#8e8e93}
+.o-note{font-size:10.5px;color:#8e8e93;margin:6px 0 8px}
+.o-btns{display:flex;gap:6px}.o-btns .sp{flex:1}
+.old-bar{position:absolute;left:var(--sx);right:var(--ir);bottom:0;height:54px;display:flex;align-items:center;gap:10px;padding:0 14px;background:rgba(246,246,248,.94);border-top:1px solid rgba(0,0,0,.07)}
+.pin{position:absolute;z-index:9;width:22px;height:22px;border-radius:50%;background:#ff9f0a;color:#1d1d1f;font:700 12px/22px inherit;text-align:center;box-shadow:0 3px 8px rgba(0,0,0,.35)}
+
+/* barra unica sotto lista e ispettore */
+.dock.wide{right:12px}
+.win.wide-dock .iwrap{padding-bottom:86px}
+.empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:0 30px 70px;text-align:center;color:var(--ink3);font-size:12px;line-height:1.4}
+.empty .big{width:38px;height:38px;stroke:#b4b4bb;stroke-width:1.4;margin-bottom:6px}
+.empty b{color:var(--ink);font-size:13.5px;font-weight:600}
+.menu-pop{position:absolute;right:6px;bottom:calc(100% + 8px);min-width:238px;padding:5px;border-radius:10px;background:rgba(250,250,252,.88);backdrop-filter:blur(30px) saturate(180%);box-shadow:inset 0 0 0 1px rgba(0,0,0,.07),0 14px 40px rgba(0,0,0,.24);z-index:7}
+.mi{display:flex;align-items:center;gap:9px;height:28px;padding:0 8px;border-radius:6px;font-size:13px}
+.mi .ic{width:15px;height:15px;stroke:#0a7cff}
+.mi .sc{margin-left:auto;padding-left:26px;color:#8e8e93;font-size:12px}
+.msep{height:1px;margin:5px 10px;background:rgba(0,0,0,.08)}
+.st .thead,.st .row{grid-template-columns:minmax(0,1.1fr) 140px minmax(0,1fr) 112px}
+.sz.pc{text-align:left;overflow:hidden;text-overflow:ellipsis;color:var(--ink2)}
+.search.on{width:206px;color:var(--ink)}
+.x{margin-left:auto;width:14px;height:14px;border-radius:50%;background:rgba(120,120,128,.28);color:#fff;font:600 10px/14px inherit;text-align:center}
+.sub{display:flex;flex-wrap:wrap;gap:6px;margin:20px 0 4px}
+.sub button{appearance:none;border:1px solid rgba(255,255,255,.14);background:transparent;color:#c7c7cc;font:600 12.5px/1 inherit;padding:9px 14px;border-radius:999px;cursor:pointer}
+.sub button[aria-selected="true"]{background:#f5f5f7;border-color:#f5f5f7;color:#1d1d1f}
+.state-view[hidden]{display:none}
+.sub + .state-view .hint{margin-top:12px}
+.vs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:14px}
+.vs-item{margin:0;padding:14px;border-radius:14px;background:rgba(255,255,255,.06);border:2px solid transparent;cursor:pointer}
+.vs-item.selected{border-color:#0a84ff}
+.crop{position:relative;height:116px;border-radius:10px;overflow:hidden;background:linear-gradient(#fff,#f3f3f7);box-shadow:inset 0 0 0 1px rgba(0,0,0,.06)}
+.ghost{position:absolute;inset:0;padding-top:8px;opacity:.55;filter:blur(1.4px)}
+.grow{display:flex;align-items:center;gap:9px;height:31px;padding:0 12px}
+.grow i{height:8px;border-radius:4px;background:#d4d4db}
+.plainbar{position:absolute;left:0;right:0;bottom:0;height:54px;display:flex;align-items:center;gap:9px;padding:0 10px 0 16px;background:rgba(246,246,248,.97);border-top:1px solid rgba(0,0,0,.08)}
+.crop .dock{left:12px;right:12px;bottom:10px}
+.bigic{width:26px;height:26px;stroke:#4b4b52}
+.crop{color:var(--ink)}
+.vs-item figcaption{display:block;margin:12px 4px 2px;font-size:13px;line-height:1.5;color:#a1a1a6}
+.vs-item figcaption b{display:block;margin-bottom:3px;color:#f5f5f7;font-size:14px}
+h3.q{margin:34px 0 4px;font-size:18px;letter-spacing:-.01em}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<linearGradient id="gFolder" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7cc2ff"/><stop offset="1" stop-color="#2f8ef5"/></linearGradient>
+<symbol id="i-folder" viewBox="0 0 32 32"><path stroke="none" d="M3 10a3 3 0 0 1 3-3h7.2a3 3 0 0 1 2.1.9L17 9h9a3 3 0 0 1 3 3v11a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3z" fill="#3b93f1"/><path stroke="none" d="M3 13.5a2 2 0 0 1 2-2h22a2 2 0 0 1 2 2V23a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3z" fill="url(#gFolder)"/></symbol>
+<symbol id="i-doc" viewBox="0 0 32 32"><path d="M8 3h11l7 7v17a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z" fill="#fff" stroke="#b9b9c0" stroke-width="1.2"/><path d="M19 3v5a2 2 0 0 0 2 2h5" fill="#e9e9ee" stroke="#b9b9c0" stroke-width="1.2" stroke-linejoin="round"/></symbol>
+<symbol id="i-doc-lines" viewBox="0 0 32 32"><path d="M8 3h11l7 7v17a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z" fill="#fff" stroke="#b9b9c0" stroke-width="1.2"/><path d="M19 3v5a2 2 0 0 0 2 2h5" fill="#e9e9ee" stroke="#b9b9c0" stroke-width="1.2" stroke-linejoin="round"/><path d="M10 16h12M10 20h12M10 24h8" stroke="#c9c9d0" stroke-width="1.5" stroke-linecap="round"/></symbol>
+<symbol id="i-left" viewBox="0 0 16 16"><path d="M10 3.2 5.2 8 10 12.8"/></symbol>
+<symbol id="i-right" viewBox="0 0 16 16"><path d="M6 3.2 10.8 8 6 12.8"/></symbol>
+<symbol id="i-down" viewBox="0 0 16 16"><path d="M3.5 6.2 8 10.7l4.5-4.5"/></symbol>
+<symbol id="i-search" viewBox="0 0 16 16"><circle cx="6.8" cy="6.8" r="4.4"/><path d="M10.3 10.3 14 14"/></symbol>
+<symbol id="i-panel" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2.6"/><path d="M5.6 2.75v10.5"/></symbol>
+<symbol id="i-panel-r" viewBox="0 0 16 16"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2.6"/><path d="M10.4 2.75v10.5"/></symbol>
+<symbol id="i-laptop" viewBox="0 0 16 16"><rect x="2.2" y="3.2" width="11.6" height="8" rx="1.6"/><path d="M1 13.4h14"/></symbol>
+<symbol id="i-drive" viewBox="0 0 16 16"><rect x="1.75" y="3" width="12.5" height="6.4" rx="2"/><path d="M1.75 9.4l1.3 2.9a1.2 1.2 0 0 0 1.1.7h7.7a1.2 1.2 0 0 0 1.1-.7l1.3-2.9"/></symbol>
+<symbol id="i-restore" viewBox="0 0 16 16"><path d="M6.6 3.4 3 7l3.6 3.6"/><path d="M3 7h6.6a3.5 3.5 0 0 1 0 7H7.2"/></symbol>
+<symbol id="i-back" viewBox="0 0 16 16"><path d="M2.6 8a5.4 5.4 0 1 0 1.6-3.8"/><path d="M2.6 2.9v3.4H6"/></symbol>
+<symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.4 14.4 13.3H1.6z"/><path d="M8 6.8v3"/><path d="M8 11.6v.1"/></symbol>
+<symbol id="i-check" viewBox="0 0 16 16"><path d="M3.4 8.4 6.4 11.4 12.6 4.8"/></symbol>
+<symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.6 8s2.4-4.4 6.4-4.4S14.4 8 14.4 8s-2.4 4.4-6.4 4.4S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="2"/></symbol>
+<symbol id="i-compare" viewBox="0 0 16 16"><path d="M3.2 5.4h9.6M10.4 3l2.4 2.4-2.4 2.4"/><path d="M12.8 10.6H3.2M5.6 8.2 3.2 10.6l2.4 2.4"/></symbol>
+<symbol id="i-stack" viewBox="0 0 16 16"><path d="M2.2 5.4 8 2.4l5.8 3L8 8.4z"/><path d="M2.2 8.2l5.8 3 5.8-3"/><path d="M2.2 11l5.8 3 5.8-3"/></symbol>
+<symbol id="i-folder-s" viewBox="0 0 16 16"><path d="M1.75 4.6a1.75 1.75 0 0 1 1.75-1.75h3.1l1.5 1.5h4.4c.97 0 1.75.78 1.75 1.75v4.9a1.75 1.75 0 0 1-1.75 1.75h-9a1.75 1.75 0 0 1-1.75-1.75z"/></symbol>
+</defs></svg>
+
+<div class="page">
+<header class="top">
+  <div>
+    <h1>Sfoglia backup: com'è oggi e tre direzioni</h1>
+    <p class="lead">Mockup 1:1 di una finestra 1180×720. A, B e C non tolgono nessuna funzione di oggi: cambia dove stanno il tempo, i file e i dettagli. Nei tre nuovi puoi cliccare un backup per cambiare momento.</p>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="a">A · Timeline a sinistra</button>
+    <button class="tab" role="tab" data-tab="a2">A · Gli altri stati</button>
+    <button class="tab" role="tab" data-tab="b">B · Tempo in alto</button>
+    <button class="tab" role="tab" data-tab="c">C · Viaggio nel tempo</button>
+    <button class="tab" role="tab" data-tab="o">Com'è oggi</button>
+  </div>
+</header>
+
+<!-- ============ A ============ -->
+<section class="screen" data-screen="a">
+  <div class="hint">Clicca un backup nella linea del tempo per cambiare momento.</div>
+  <div class="win-fit"><div class="win a wide-dock" data-live style="--sx:252px;--ir:312px">
+    <div class="side"></div>
+    <div class="state"><span class="ok"></span><div><b>Tutto a posto</b><span>Ultimo backup oggi alle 20:00</span></div></div>
+    <div class="tl" data-r="list"></div>
+    <div class="mid">
+      <div class="when"><div class="eyebrow">Stai guardando il backup di</div><h2 data-when="title"></h2><div class="sub" data-when="sub"></div></div>
+      <div class="chips"><span class="chipf on">Tutto <span class="n">11</span></span><span class="chipf"><i class="dot d-o"></i>Modificati <span class="n">4</span></span><span class="chipf"><i class="dot d-r"></i>Eliminati <span class="n">1</span></span><span class="chipf"><i class="dot d-g"></i>Nuovi <span class="n">1</span></span></div>
+      <div class="tbl"><div class="thead"><span>Nome</span><span>Rispetto a oggi</span><span>Dimensione</span><span>Modificato</span></div><div data-r="rows"></div></div>
+    </div>
+    <div class="insp"><div class="iwrap" data-r="insp"></div></div>
+    <div class="dock wide" data-r="dock"></div>
+    <div class="tb" data-r="tb"></div>
+  </div></div>
+  <div class="notes">
+    <div>
+      <h2>A · Timeline a sinistra<span class="tag">Consigliata</span></h2>
+      <p class="thesis">È la finestra che hai già (backup a sinistra, file al centro, dettagli a destra), ma la barra laterale diventa una linea del tempo e in alto c'è sempre scritto in quale momento ti trovi.</p>
+      <ul class="changes">
+        <li><b>Linea del tempo vera.</b> Ogni backup è un punto sulla linea, in ordine di tempo: ora, barra e MB salvati, avviso arancione per quelli parziali. I giorni sono le intestazioni.</li>
+        <li><b>«Ieri alle 15:00» sempre visibile.</b> Il titolo dice data e ora del backup, quanti dati ha salvato e se è completo. Oggi lo dice solo il chip blu.</li>
+        <li><b>Stato dell'archivio in cima.</b> Una carta dice com'è andato l'ultimo backup, così non serve leggere il primo chip.</li>
+        <li><b>Cosa è cambiato da allora.</b> Riepilogo e filtri (Tutto, Modificati, Eliminati, Nuovi, con il conteggio) in cima alla lista, come tag.</li>
+        <li><b>Ispettore con anteprima.</b> Sotto il nome la pagina del file; le versioni su una linea del tempo, con quella del backup evidenziata.</li>
+        <li><b>Un solo «Ripristina», in una barra sola.</b> Il clic fa quello che fa oggi (accanto all'originale; su una cartella salvata per intero chiede); nel menu «Ripristina in…» e le altre azioni. I dettagli sono in «A · Gli altri stati».</li>
+      </ul>
+    </div>
+    <div class="side-notes">
+      <div class="pc pro"><h3>Pro</h3><ul><li><code>RestoreModel</code> resta com'è: cambia quasi solo <code>RestoreView</code>.</li><li>Funziona con qualsiasi numero di backup.</li><li>Le scorciatoie di oggi restano valide.</li></ul></div>
+      <div class="pc con"><h3>Contro</h3><ul><li>È la meno scenografica delle tre.</li><li>Con molti backup orari la lista è lunga: per saltare a un mese serve scorrere.</li></ul></div>
+      <div class="pc effort"><span>Sforzo</span><b>Medio-basso</b></div>
+      <button class="pick" data-choice="A">Sceglio la direzione A</button>
+    </div>
+  </div>
+<p class="hint foot-note">Nota: in A, B e C la barra di ripristino in basso è una capsula flottante. Oggi <code>Glass.swift</code> riserva il vetro al pannello del menu: se preferisci tenerlo fuori dalle finestre, la barra diventa una barra normale e il resto non cambia.</p>
+</section>
+
+
+
+<!-- ============ A: gli altri stati ============ -->
+<section class="screen" data-screen="a2" hidden>
+  <div class="sub" role="tablist">
+    <button role="tab" aria-selected="true" data-go="root">Tutte le cartelle</button>
+    <button role="tab" aria-selected="false" data-go="menu">Menu di «Ripristina»</button>
+    <button role="tab" aria-selected="false" data-go="search">Ricerca</button>
+    <button role="tab" aria-selected="false" data-go="multi">Selezione multipla</button>
+  </div>
+  <div class="state-view" data-state="root"><div class="hint">Livello «Tutte le cartelle», niente selezionato: la barra offre «Ripristina tutto…», quello che serve su un Mac nuovo.</div><div class="win-fit"></div></div>
+  <div class="state-view" data-state="menu" hidden><div class="hint">Un file selezionato e il menu del pulsante aperto: «Ripristina in…» e le azioni meno frequenti.</div><div class="win-fit"></div></div>
+  <div class="state-view" data-state="search" hidden><div class="hint">Ricerca in tutti i backup: la linea del tempo resta a sinistra, la lista diventa l'elenco dei risultati.</div><div class="win-fit"></div></div>
+  <div class="state-view" data-state="multi" hidden><div class="hint">Selezione multipla: un ripristino solo per tutti gli elementi scelti.</div><div class="win-fit"></div></div>
+
+  <div class="notes">
+    <div>
+      <h2>Cosa cambia rispetto al primo mockup</h2>
+      <ul class="changes">
+        <li><b>Una sola barra per le azioni.</b> Passa sotto anche l'ispettore e raccoglie Anteprima, Confronta con oggi e Ripristina. L'ispettore resta solo informazioni.</li>
+        <li><b>«Ripristina in…» sta nel menu del pulsante</b>, con «Mostra nel Finder» e «Mostra versioni del file».</li>
+        <li><b>Il clic su «Ripristina» fa quello che fa oggi.</b> Accanto all'originale, senza sovrascrivere. Su una cartella salvata per intero chiede come ora (Sostituisci, accanto, in…). A «Tutte le cartelle» ripristina tutto in una cartella scelta.</li>
+        <li><b>Non c'è più «Ripristina» nell'ispettore.</b> Scegli una versione nella lista e la barra ripristina quella: lo dice la riga sotto il nome.</li>
+        <li><b>Correzione ai dati del primo mockup.</b> Se non cambia niente non viene scritto un backup nuovo, quindi ogni riga ha i suoi dati. Barra e MB però ci sono solo per i backup fatti da questo Mac nelle ultime 50 esecuzioni: per gli altri, e per gli altri computer, resta l'ora e l'eventuale avviso.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 class="q">Quale barra di ripristino? Clicca quella che preferisci.</h3>
+  <div class="vs cards">
+    <figure class="vs-item" data-choice="capsula-flottante" onclick="toggleSelect(this)">
+      <div class="crop"><div class="ghost"><div class="grow"><svg class="fi"><use href="#i-doc"/></svg><i style="width:34%"></i></div><div class="grow"><svg class="fi"><use href="#i-doc-lines"/></svg><i style="width:46%"></i></div><div class="grow"><svg class="fi"><use href="#i-doc"/></svg><i style="width:28%"></i></div></div><div class="dock wide"><svg class="fi"><use href="#i-doc-lines"/></svg><div class="who"><b>README.md</b><span>dal backup di ieri alle 15:00</span></div><span class="sp"></span><span class="btn">Anteprima</span><span class="btn pri">Ripristina</span></div></div>
+      <figcaption><b>Capsula flottante<span class="tag">Consigliata</span></b><span>Vetro su macOS 26 e successivi, capsula opaca su 14 e 15. È la formula che diede glitch in 0.3.0: va costruita col contenitore di vetro e controllata appena pronta; se dà fastidio, torna la barra normale.</span></figcaption>
+    </figure>
+    <figure class="vs-item" data-choice="barra-normale" onclick="toggleSelect(this)">
+      <div class="crop"><div class="ghost"><div class="grow"><svg class="fi"><use href="#i-doc"/></svg><i style="width:34%"></i></div><div class="grow"><svg class="fi"><use href="#i-doc-lines"/></svg><i style="width:46%"></i></div><div class="grow"><svg class="fi"><use href="#i-doc"/></svg><i style="width:28%"></i></div></div><div class="plainbar"><svg class="fi"><use href="#i-doc-lines"/></svg><div class="who"><b>README.md</b><span>dal backup di ieri alle 15:00</span></div><span class="sp"></span><span class="btn">Anteprima</span><span class="btn pri">Ripristina</span></div></div>
+      <figcaption><b>Barra normale</b><span>Com'è oggi, fatta meglio: nessun rischio di glitch e aspetto identico su ogni macOS. Meno moderna.</span></figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ B ============ -->
+<section class="screen" data-screen="b" hidden>
+  <div class="hint">Clicca una barra della striscia per cambiare momento.</div>
+  <div class="win-fit"><div class="win b" data-live style="--sx:206px;--ir:300px">
+    <div class="side b-side">
+      <div class="sh">Cartelle</div>
+      <div class="sitem"><svg class="si"><use href="#i-drive"/></svg>Tutte le cartelle</div>
+      <div class="sitem sel"><svg class="si"><use href="#i-folder"/></svg>Progetti</div>
+      <div class="sitem"><svg class="si"><use href="#i-folder"/></svg>Documenti</div>
+      <div class="sitem"><svg class="si"><use href="#i-folder"/></svg>Scrivania</div>
+      <div class="sh" style="margin-top:18px">Computer</div>
+      <div class="sitem"><svg class="si"><use href="#i-laptop"/></svg>MacBook-Pro<svg class="ic tick"><use href="#i-check"/></svg></div>
+      <div class="sitem"><svg class="si"><use href="#i-laptop"/></svg>iMac-Studio</div>
+    </div>
+    <div class="band">
+      <div class="whenB"><div class="eyebrow">Backup di</div><div class="big"><h2 data-when="time"></h2><div class="step"><span class="ib"><svg class="ic"><use href="#i-left"/></svg></span><span class="ib"><svg class="ic"><use href="#i-right"/></svg></span></div></div><div class="d" data-when="day"></div><div class="sub" data-when="sub2"></div></div>
+      <div class="chart" data-r="strip"></div>
+      <div class="zoom"><span>24 h</span><span class="on">7 g</span><span>30 g</span><span>Tutto</span></div>
+    </div>
+    <div class="mid b-mid">
+      <div class="bhead"><b>BackupMe</b><span>~/Progetti › BackupMe</span></div>
+      <div class="chips"><span class="chipf on">Tutto <span class="n">11</span></span><span class="chipf"><i class="dot d-o"></i>Modificati <span class="n">4</span></span><span class="chipf"><i class="dot d-r"></i>Eliminati <span class="n">1</span></span><span class="chipf"><i class="dot d-g"></i>Nuovi <span class="n">1</span></span></div>
+      <div class="tbl"><div class="thead"><span>Nome</span><span>Rispetto a oggi</span><span>Dimensione</span><span>Modificato</span></div><div data-r="rows"></div></div>
+    </div>
+    <div class="insp"><div class="iwrap" data-r="insp"></div></div>
+    <div class="dock" data-r="dock"></div>
+    <div class="tb" data-r="tb"></div>
+  </div></div>
+  <div class="notes">
+    <div>
+      <h2>B · Tempo in alto</h2>
+      <p class="thesis">Il tempo diventa una striscia in alto, sempre in vista mentre sfogli: una barra per ogni backup, alta quanto i dati che ha salvato. A sinistra vanno le cartelle, come nel Finder.</p>
+      <ul class="changes">
+        <li><b>Striscia del tempo.</b> Una barra per backup, raggruppate per giorno: l'altezza sono i MB salvati, l'arancione i parziali, l'ora scritta sopra quella scelta. Zoom: 24 ore, 7 giorni, 30 giorni, tutto.</li>
+        <li><b>Cartelle a sinistra.</b> Come nel Finder: Tutte le cartelle, Progetti, Documenti… «Ripristina tutto…» diventa l'azione di «Tutte le cartelle». Qui si sceglie anche il computer.</li>
+        <li><b>Più spazio ai file.</b> Nessuna colonna per i backup: lista più larga, ispettore con anteprima e versioni.</li>
+        <li><b>Passi tra i backup.</b> Le frecce accanto all'ora, oltre alle scorciatoie di oggi.</li>
+      </ul>
+    </div>
+    <div class="side-notes">
+      <div class="pc pro"><h3>Pro</h3><ul><li>Al primo colpo d'occhio dice quando ha salvato e quanto.</li><li>Il momento vicino a quello scelto è la barra accanto.</li><li>Struttura familiare a chi usa il Finder.</li></ul></div>
+      <div class="pc con"><h3>Contro</h3><ul><li>Cambio di modello: i backup non sono più la barra laterale.</li><li>Con centinaia di backup le barre diventano sottili: serve lo zoom.</li><li>Più codice nuovo: un controllo disegnato su misura.</li></ul></div>
+      <div class="pc effort"><span>Sforzo</span><b>Medio</b></div>
+      <button class="pick" data-choice="B">Sceglio la direzione B</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ C ============ -->
+<section class="screen" data-screen="c" hidden>
+  <div class="hint">Clicca un'ora sulla linea a destra per cambiare momento.</div>
+  <div class="win-fit"><div class="win c" data-live style="--sx:196px;--ir:150px">
+    <div class="side b-side">
+      <div class="sh">Cartelle</div>
+      <div class="sitem"><svg class="si"><use href="#i-drive"/></svg>Tutte le cartelle</div>
+      <div class="sitem sel"><svg class="si"><use href="#i-folder"/></svg>Progetti</div>
+      <div class="sitem"><svg class="si"><use href="#i-folder"/></svg>Documenti</div>
+      <div class="sitem"><svg class="si"><use href="#i-folder"/></svg>Scrivania</div>
+    </div>
+    <div class="mid">
+      <div class="banner"><svg class="ic"><use href="#i-back"/></svg><span data-when="banner"></span><span class="sp"></span><span class="tg">Mostra solo le differenze</span><span class="sw"></span><span class="tlink">Torna a oggi</span></div>
+      <div class="tbl"><div class="thead"><span>Nome</span><span>Rispetto a oggi</span><span>Dimensione</span><span>Modificato</span></div><div data-r="rows"></div></div>
+    </div>
+    <div class="rail"><div class="now">Ora <b>20:15</b></div><div class="rlist" data-r="rail"></div></div>
+    <div class="pop"><div class="ph">Versioni di README.md</div><div data-r="vers"></div><div class="pf">Una per ogni contenuto diverso, dalla più recente.</div></div>
+    <div class="card"><svg class="fi"><use href="#i-doc-lines"/></svg><div class="who"><b>README.md</b><span><i class="dot d-o"></i>Modificato da allora · 4 versioni</span></div><span class="sp"></span><span class="btn sm"><svg class="ic"><use href="#i-eye"/></svg>Anteprima</span><span class="btn sm"><svg class="ic"><use href="#i-compare"/></svg>Confronta</span><span class="btn sm"><svg class="ic"><use href="#i-back"/></svg>Versioni<svg class="ic"><use href="#i-down"/></svg></span><span class="btn pri">Ripristina<svg class="ic"><use href="#i-down"/></svg></span></div>
+    <div class="tb" data-r="tb"></div>
+  </div></div>
+  <div class="notes">
+    <div>
+      <h2>C · Viaggio nel tempo</h2>
+      <p class="thesis">L'idea di Time Machine in una finestra normale: sfogli le cartelle e ti muovi nel tempo con la linea sul bordo destro. I dettagli del file stanno in una scheda in basso, non in una colonna.</p>
+      <ul class="changes">
+        <li><b>Linea del tempo a destra.</b> Ore e giorni come su un righello, una barra per i dati salvati, il momento scelto segnato; in alto «Ora».</li>
+        <li><b>Data grande al centro.</b> La capsula nella barra degli strumenti dice quando sei e ha le frecce per andare avanti e indietro. La fascia sotto lo ripete e offre «Torna a oggi».</li>
+        <li><b>File a tutta larghezza.</b> Due colonne invece di tre; lo stato di ogni elemento resta visibile.</li>
+        <li><b>Scheda del file.</b> Selezioni un file e in basso compaiono anteprima, confronto, versioni (in un popover, qui mostrato aperto) e ripristino.</li>
+      </ul>
+    </div>
+    <div class="side-notes">
+      <div class="pc pro"><h3>Pro</h3><ul><li>È il modello che chi conosce Time Machine si aspetta: prima il dove, poi il quando.</li><li>Molta aria per i file; nessuna terza colonna da nascondere.</li></ul></div>
+      <div class="pc con"><h3>Contro</h3><ul><li>È la svolta più grande: navigazione, dettagli e ripristino vanno ripensati.</li><li>Versioni e confronto sono un clic in più, dentro un popover.</li><li>Somiglia all'opzione «Time Machine» scartata a novembre (qui però in finestra normale, non a tutto schermo).</li></ul></div>
+      <div class="pc effort"><span>Sforzo</span><b>Alto</b></div>
+      <button class="pick" data-choice="C">Sceglio la direzione C</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ oggi ============ -->
+<section class="screen" data-screen="o" hidden>
+  <div class="hint">La finestra di oggi, ridisegnata dal codice. I numeri arancioni indicano i punti deboli.</div>
+  <div class="win-fit"><div class="win" style="--sx:212px;--ir:272px">
+    <div class="side o-side" data-r="chips"></div>
+    <div class="mid o-mid">
+      <div class="ofilter"><div class="seg"><span class="on">Tutto</span><span>Modificati 4</span><span>Eliminati 1</span><span>Nuovi 1</span></div><span class="cap">Confronto con oggi</span></div>
+      <div class="tbl o-tbl"><div class="thead"><span>Nome</span><span>Rispetto a oggi</span><span>Dimensione</span><span>Modificato</span></div><div data-r="rows-old"></div></div>
+    </div>
+    <div class="insp o-insp">
+      <div class="top"><svg class="fi"><use href="#i-doc-lines"/></svg><div><h4>README.md</h4><span class="pill p-mod">Modificato da allora</span></div></div>
+      <div class="lc"><span>Dimensione</span><span>15 KB</span></div>
+      <div class="lc"><span>Modificato</span><span>23 nov 2026, 14:02</span></div>
+      <div class="lc"><span>Posizione</span><span>~/Progetti/BackupMe</span></div>
+      <hr>
+      <div class="vt">Versioni salvate</div>
+      <div data-r="vers-old"></div>
+      <div class="o-note">Una riga per ogni contenuto diverso, dalla più recente.</div>
+      <div class="o-btns"><span class="btn sm">Anteprima</span><span class="sp"></span><span class="btn sm pri">Ripristina</span></div>
+    </div>
+    <div class="old-bar"><span class="cap">«README.md» · dal backup di ieri alle 15:00</span><span class="sp"></span><span class="btn"><svg class="ic"><use href="#i-folder-s"/></svg>Ripristina in…</span><span class="btn pri"><svg class="ic"><use href="#i-restore"/></svg>Ripristina</span></div>
+    <div class="tb" data-r="tb"></div>
+    <span class="pin" style="left:197px;top:271px">1</span>
+    <span class="pin" style="left:197px;top:83px">2</span>
+    <span class="pin" style="left:886px;top:300px">3</span>
+    <span class="pin" style="left:900px;top:684px">4</span>
+  </div></div>
+  <ol class="legend">
+    <li><span class="n">1</span><span>In quale momento sei lo dice solo il chip blu (e la barra in fondo, se hai selezionato qualcosa): il titolo con la data non è più nella barra degli strumenti.</span></li>
+    <li><span class="n">2</span><span>Le ore in capsule non formano una linea del tempo. Quanti dati ha salvato un backup sta solo nel suggerimento; in intestazione c'è il totale del giorno.</span></li>
+    <li><span class="n">3</span><span>Ispettore da 270 pt: dettagli e versioni in un elenco, senza anteprima (Quick Look è a parte).</span></li>
+    <li><span class="n">4</span><span>Due pulsanti «Ripristina» (barra in fondo e ispettore), più il menu tasto destro. Cosa fa davvero lo dice il suggerimento.</span></li>
+  </ol>
+</section>
+
+
+</div>
+
+<script>
+(function(){
+  var $=function(s,r){return (r||document).querySelector(s)}, $$=function(s,r){return [].slice.call((r||document).querySelectorAll(s))};
+  var svg=function(id,cls){return '<svg class="'+(cls||'ic')+'"><use href="#'+id+'"/></svg>'};
+  var BT='<span class="btn">'+svg('i-eye')+'Anteprima</span><span class="btn">'+svg('i-compare')+'Confronta con oggi</span><span class="btn pri">Ripristina'+svg('i-down')+'</span>';
+  var MB0=[4,1,96,14,3,2,88,210,6,1,124,38,12], MB1=[1,70,2,12,88,210,44,1,6,2,1,22,3,4];
+  var DAYS=[
+    {k:'d0',lab:'Oggi',dl:'24 nov',long:'martedì 24 novembre 2026',h0:8,h1:20,mb:MB0},
+    {k:'d1',lab:'Ieri',dl:'23 nov',long:'lunedì 23 novembre 2026',h0:10,h1:23,mb:MB1},
+    {k:'d2',lab:'Domenica 22',dl:'22 nov',long:'domenica 22 novembre 2026',mb:[33]},
+    {k:'d3',lab:'Sabato 21',dl:'21 nov',long:'sabato 21 novembre 2026',mb:[1]},
+    {k:'d4',lab:'Venerdì 20',dl:'20 nov',long:'venerdì 20 novembre 2026',mb:[150]},
+    {k:'d5',lab:'Giovedì 19',dl:'19 nov',long:'giovedì 19 novembre 2026',mb:[57],warn:true},
+    {k:'d6',lab:'Mercoledì 18',dl:'18 nov',long:'mercoledì 18 novembre 2026',mb:[2]}
+  ];
+  var BKS=[]; DAYS.forEach(function(d,di){ var a=d.h0||20, z=d.h1||20; for(var h=a;h<=z;h++){ var n=d.mb[h-a]; BKS.push({d:d,di:di,h:h,key:d.k+'-'+h,n:n,warn:!!d.warn}); } });
+  var byKey={}; BKS.forEach(function(b){byKey[b.key]=b});
+  var hh=function(h){return (h<10?'0':'')+h+':00'};
+  var dayMB=function(d){return d.mb.reduce(function(a,b){return a+b},0)};
+  var when=function(b){return b.di===0?'Oggi alle '+hh(b.h):b.di===1?'Ieri alle '+hh(b.h):b.d.lab+' alle '+hh(b.h)};
+  var sub=function(b){return b.d.long+' · '+(b.n?'+'+b.n+' MB salvati':'nessun file nuovo')+' · '+(b.warn?'1 avviso: backup parziale':'completo')};
+  var sub2=function(b){return (b.n?'+'+b.n+' MB salvati':'nessun file nuovo')+' · '+(b.warn?'1 avviso':'completo')};
+  var day=function(b){return b.di===0?'Oggi · mar 24 nov':b.di===1?'Ieri · lun 23 nov':b.d.long};
+  var cap=function(b){return (b.di===0?'Oggi':b.di===1?'Ieri':b.d.lab)+', '+hh(b.h)};
+  var bar=function(n){return Math.min(100,n/2.1)};
+
+  var FILES=[
+    {name:'Sources',dir:1,st:'modin',label:'Contiene modifiche',size:'—',date:'23 nov 14:58'},
+    {name:'Tests',dir:1,size:'—',date:'22 nov 18:10'},
+    {name:'docs',dir:1,st:'modin',label:'Contiene modifiche',size:'—',date:'23 nov 12:40'},
+    {name:'scripts',dir:1,size:'—',date:'12 nov 11:29'},
+    {name:'Package.swift',size:'715 B',date:'6 nov 22:06'},
+    {name:'README.md',doc:1,st:'mod',label:'Modificato',size:'15 KB',date:'23 nov 14:02',sel:1},
+    {name:'CHANGELOG.md',doc:1,st:'mod',label:'Modificato',size:'38 KB',date:'23 nov 11:30'},
+    {name:'NOTES.md',doc:1,st:'del',label:'Eliminato',size:'4 KB',date:'20 nov 09:12'},
+    {name:'CLAUDE.md',doc:1,size:'366 B',date:'6 nov 23:46'},
+    {name:'AGENTS.md',doc:1,st:'new',label:'Nuovo',size:'366 B',date:'8 nov 08:28'},
+    {name:'.gitignore',size:'55 B',date:'5 nov 22:06'}
+  ];
+  var VERS=[{d:'Oggi',t:'20:00',s:'18 KB'},{d:'Oggi',t:'15:00',s:'17 KB'},{d:'Ieri',t:'15:00',s:'15 KB',here:1},{d:'30 ott',t:'20:00',s:'12 KB'}];
+
+  var R={
+    rows:function(el){ el.innerHTML=FILES.map(function(f){ return '<div class="row'+(f.sel?' sel':'')+'"><div class="nm"><svg class="fi"><use href="#'+(f.dir?'i-folder':f.doc?'i-doc-lines':'i-doc')+'"/></svg><span>'+f.name+'</span></div><div>'+(f.st?'<span class="badge b-'+f.st+'">'+f.label+'</span>':'')+'</div><div class="sz">'+f.size+'</div><div class="dt">'+f.date+'</div></div>'; }).join(''); },
+    'rows-old':function(el){ el.innerHTML=FILES.map(function(f){ return '<div class="row'+(f.sel?' sel':'')+'"><div class="nm"><svg class="fi"><use href="#'+(f.dir?'i-folder':f.doc?'i-doc-lines':'i-doc')+'"/></svg><span>'+f.name+'</span></div><div>'+(f.st?'<span class="pill p-'+f.st+'">'+f.label+'</span>':'')+'</div><div class="sz">'+f.size+'</div><div class="dt">'+f.date+'</div></div>'; }).join(''); },
+    list:function(el){ var html='', all=BKS; html+=DAYS.map(function(d,di){ var rows=all.filter(function(b){return b.di===di}); return '<div class="tl-day"><span>'+(di<2?d.lab+' · '+d.dl:d.lab+' '+d.dl.slice(3))+'</span><span class="amt">'+(dayMB(d)?'+'+dayMB(d)+' MB':'')+'</span></div>'+rows.slice().reverse().map(function(b){ var i=all.indexOf(b); return '<div class="bk'+(b.n?'':' none')+(b.warn?' warn':'')+(i===0?' edge-top':'')+(i===all.length-1?' edge-bot':'')+'" data-bk="'+b.key+'"><i class="dot"></i><span class="t">'+hh(b.h)+'</span><span class="bar"><i style="width:'+bar(b.n)+'%"></i></span><span class="mb">'+(b.n?'+'+b.n+' MB':'—')+'</span>'+(b.warn?svg('i-warn','ic w'):'<span></span>')+'</div>'; }).join(''); }).join(''); el.innerHTML=html; },
+    strip:function(el){ el.innerHTML=DAYS.slice().reverse().map(function(d){ var di=DAYS.indexOf(d); return '<div class="dg"><div class="bars">'+BKS.filter(function(b){return b.di===di}).map(function(b){ return '<i class="'+(b.n?'':'none ')+(b.warn?'warn ':'')+'" data-bk="'+b.key+'" data-t="'+hh(b.h)+'" style="height:'+Math.max(4,bar(b.n))+'%"></i>'; }).join('')+'</div><span class="dl">'+(di===0?'<b>Oggi</b>':di===1?'<b>Ieri</b>':d.dl)+'</span></div>'; }).join(''); },
+    rail:function(el){ var all=BKS; el.innerHTML=DAYS.map(function(d,di){ var rows=all.filter(function(b){return b.di===di}); return '<div class="rday">'+(di<2?d.lab:d.dl)+'</div>'+rows.slice().reverse().map(function(b){ var i=all.indexOf(b); return '<div class="rk'+(b.warn?' warn':'')+(i===0?' edge-top':'')+(i===all.length-1?' edge-bot':'')+'" data-bk="'+b.key+'"><span class="bar" style="width:'+Math.max(3,bar(b.n)*0.62)+'px"></span><span class="t">'+hh(b.h)+'</span></div>'; }).join(''); }).join(''); },
+    chips:function(el){ el.innerHTML=DAYS.map(function(d,di){ var rows=BKS.filter(function(b){return b.di===di}); return '<div class="oh"><span>'+(di<2?d.lab:d.lab)+'</span><span>'+(dayMB(d)?'+'+dayMB(d)+' MB':'')+'</span></div><div class="ogrid">'+rows.slice().reverse().map(function(b){ return '<span class="chip'+(b.key==='d1-15'?' sel':b.warn?' warn':'')+'">'+hh(b.h)+'</span>'; }).join('')+'</div>'; }).join('')+'<div class="oh"><span>Novembre</span></div><div class="ogrid"><span class="chip">lun 9</span><span class="chip">lun 2</span></div>'; },
+    vers:function(el){ el.innerHTML=VERS.map(function(v){ return '<div class="ver'+(v.here?' here':'')+'"><i class="dot"></i><span class="d">'+v.d+' '+v.t+(v.here?'<small>in questo backup</small>':'')+'</span><span class="s">'+v.s+'</span></div>'; }).join(''); },
+    'vers-old':function(el){ el.innerHTML=VERS.map(function(v){ return '<div class="ov'+(v.here?' here':'')+'"><span>'+v.d+', '+v.t+(v.here?'<small>in questo backup</small>':'')+'</span><span>'+v.s+'</span></div>'; }).join(''); },
+    insp:function(el){ el.innerHTML='<div class="preview"><div class="doc"><h4>BackupMe</h4><p>Backup locale per macOS in stile Time Machine, gestito dalla barra dei menu. Pensato per Mac gestiti da MDM dove Time Machine è disabilitato: salva le cartelle dei progetti (.git incluso) in una cartella qualsiasi, tipicamente quella di OneDrive sincronizzata, che poi carica il client OneDrive.</p><p>Backup pianificati (ogni 1–24 ore) e su richiesta. Archivio deduplicato: ogni file è salvato una volta sola.</p></div></div>'
+      +'<div class="fhead"><svg class="fi"><use href="#i-doc-lines"/></svg><div style="min-width:0"><b>README.md</b><span class="badge b-mod">Modificato da allora</span></div></div>'
+      +'<dl class="meta"><dt>Posizione</dt><dd>~/Progetti/BackupMe</dd><dt>Dimensione</dt><dd>15 KB allora · 18 KB oggi</dd><dt>Modificato</dt><dd>23 nov 2026, 14:02</dd></dl>'
+      +'<div class="vhead"><b>Versioni</b><span>4 salvate</span></div><div class="vers">'+VERS.map(function(v){ return '<div class="ver'+(v.here?' here':'')+'"><i class="dot"></i><span class="d">'+v.d+' '+v.t+(v.here?'<small>in questo backup</small>':'')+'</span><span class="s">'+v.s+'</span></div>'; }).join('')+'</div>'
+     ''; },
+    dock:function(el){ el.innerHTML='<svg class="fi"><use href="#i-doc-lines"/></svg><div class="who"><b>README.md</b><span data-when="from"></span></div><span class="sp"></span>'+BT; },
+    tb:function(el){ var w=el.parentNode, isB=w.classList.contains('b'), isC=w.classList.contains('c'); el.innerHTML='<div class="lights"><i></i><i></i><i></i></div>'
+      +'<div class="glass"><span class="ib">'+svg('i-panel')+'</span></div>'
+      +'<div class="glass"><span class="ib">'+svg('i-left')+'</span><span class="ib off">'+svg('i-right')+'</span></div>'
+      +'<div class="glass path">'+svg('i-drive')+'<span class="c">Progetti</span>'+svg('i-right','ic s')+'<span class="c here">BackupMe</span></div>'
+      +'<span class="sp"></span>'
+      +(isC?'<div class="glass caps"><span class="ib">'+svg('i-left')+'</span><span class="cl">'+svg('i-back')+'<b data-when="capsule"></b>'+svg('i-down')+'</span><span class="ib">'+svg('i-right')+'</span></div><span class="sp"></span>':'')
+      +(isB?'':'<div class="glass menu">'+svg('i-laptop')+'MacBook-Pro'+svg('i-down')+'</div>')
+      +'<div class="glass search">'+svg('i-search')+'Cerca in tutti i backup</div>'
+      +(isC?'':'<div class="glass"><span class="ib">'+svg('i-panel-r')+'</span></div>'); }
+  };
+  $$('[data-r]').forEach(function(el){ var f=R[el.getAttribute('data-r')]; if(f) f(el); });
+
+  $$('.win[data-live]').forEach(function(win){
+    function set(key){
+      var b=byKey[key]; if(!b) return;
+      $$('[data-bk]',win).forEach(function(el){ el.classList.toggle('sel',el.getAttribute('data-bk')===key); });
+      $$('[data-when]',win).forEach(function(el){
+        var m=el.getAttribute('data-when');
+        el.textContent = m==='title'?when(b) : m==='sub'?sub(b) : m==='sub2'?sub2(b) : m==='time'?hh(b.h) : m==='day'?day(b) : m==='capsule'?cap(b) : m==='from'?'dal backup di '+when(b).toLowerCase() : m==='banner'?'Stai guardando «BackupMe» com\'era '+when(b).toLowerCase()+'.' : '';
+      });
+      var sc=win.querySelector('.tl,.rlist'); if(sc){ var s=win.querySelector('[data-bk].sel'); if(s){ var top=s.offsetTop; if(top-28<sc.scrollTop) sc.scrollTop=Math.max(0,top-28); else if(top+26>sc.scrollTop+sc.clientHeight) sc.scrollTop=top+26-sc.clientHeight+12; } }
+    }
+    win.addEventListener('click',function(e){ var t=e.target.closest('[data-bk]'); if(t) set(t.getAttribute('data-bk')); });
+    set('d1-15');
+  });
+
+  // ---- A: gli altri stati ----
+  function frag(fn){ var t=document.createElement('div'); fn(t); return t.innerHTML; }
+  function whenHTML(a,b,c){ return '<div class="when"><div class="eyebrow">'+a+'</div><h2>'+b+'</h2><div class="sub">'+c+'</div></div>'; }
+  function chipsHTML(list){ return '<div class="chips">'+list.map(function(c){ return '<span class="chipf'+(c.on?' on':'')+'">'+(c.dot?'<i class="dot '+c.dot+'"></i>':'')+c.label+(c.n?' <span class="n">'+c.n+'</span>':'')+'</span>'; }).join('')+'</div>'; }
+  var HEAD=['Nome','Rispetto a oggi','Dimensione','Modificato'];
+  function tableHTML(head,rows,cls){ return '<div class="tbl'+(cls?' '+cls:'')+'"><div class="thead">'+head.map(function(h){return '<span>'+h+'</span>'}).join('')+'</div>'+rows+'</div>'; }
+  function rowHTML(o){ return '<div class="row'+(o.sel?' sel':'')+'"><div class="nm"><svg class="fi"><use href="#'+(o.dir?'i-folder':o.doc?'i-doc-lines':'i-doc')+'"/></svg><span>'+o.name+'</span></div><div>'+(o.st?'<span class="badge b-'+o.st+'">'+o.label+'</span>':'')+'</div><div class="sz'+(o.path?' pc':'')+'">'+(o.path||o.size)+'</div><div class="dt">'+o.date+'</div></div>'; }
+  function emptyHTML(icon,title,text){ return '<div class="empty"><svg class="ic big"><use href="#'+icon+'"/></svg><b>'+title+'</b><span>'+text+'</span></div>'; }
+  function dockHTML(icon,name,sub,buttons,menu){ return '<div class="dock wide"><svg class="'+(icon.indexOf('i-doc')===0?'fi':'ic bigic')+'"><use href="#'+icon+'"/></svg><div class="who"><b>'+name+'</b><span>'+sub+'</span></div><span class="sp"></span>'+buttons+(menu?'<div class="menu-pop">'+menu+'</div>':'')+'</div>'; }
+  function mi(icon,label,sc){ return '<div class="mi">'+svg(icon)+'<span>'+label+'</span>'+(sc?'<span class="sc">'+sc+'</span>':'')+'</div>'; }
+  function tbA(cfg){ return '<div class="lights"><i></i><i></i><i></i></div><div class="glass"><span class="ib">'+svg('i-panel')+'</span></div><div class="glass"><span class="ib'+(cfg.search?' off':'')+'">'+svg('i-left')+'</span><span class="ib off">'+svg('i-right')+'</span></div>'
+      +(cfg.search?'':'<div class="glass path">'+svg('i-drive')+'<span class="c'+(cfg.root?' here':'')+'">Tutte le cartelle</span>'+(cfg.root?'':svg('i-right','ic s')+'<span class="c">Progetti</span>'+svg('i-right','ic s')+'<span class="c here">BackupMe</span>')+'</div>')
+      +'<span class="sp"></span><div class="glass menu">'+svg('i-laptop')+'MacBook-Pro'+svg('i-down')+'</div>'
+      +(cfg.search?'<div class="glass search on">'+svg('i-search')+'readme<span class="x">×</span></div>':'<div class="glass search">'+svg('i-search')+'Cerca in tutti i backup</div>')
+      +'<div class="glass"><span class="ib">'+svg('i-panel-r')+'</span></div>'; }
+  function winA(cfg){ var tl=frag(R.list).replace('class="bk" data-bk="d1-15"','class="bk sel" data-bk="d1-15"');
+    return '<div class="win a wide-dock" style="--sx:252px;--ir:312px"><div class="side"></div><div class="state"><span class="ok"></span><div><b>Tutto a posto</b><span>Ultimo backup oggi alle 20:00</span></div></div><div class="tl">'+tl+'</div><div class="mid">'+cfg.mid+'</div><div class="insp"><div class="iwrap">'+cfg.insp+'</div></div>'+cfg.dock+'<div class="tb">'+tbA(cfg)+'</div></div>'; }
+  var SRC=[{name:'Progetti',dir:1,st:'modin',label:'Contiene modifiche',size:'—',date:'23 nov 14:58'},{name:'Documenti',dir:1,st:'modin',label:'Contiene modifiche',size:'—',date:'22 nov 18:10'},{name:'Scrivania',dir:1,size:'—',date:'20 nov 09:12'}];
+  var HITS=[{name:'README.md',doc:1,sel:1,st:'mod',label:'Modificato',path:'Progetti › BackupMe',date:'ieri, 15:00'},{name:'README.md',doc:1,path:'Progetti › BackupMe',date:'30 ott, 20:00'},{name:'README.md',doc:1,path:'Progetti › sito-azienda',date:'oggi, 20:00'},{name:'README.md',doc:1,st:'del',label:'Eliminato',path:'Documenti › appunti',date:'12 nov, 20:00'}];
+  var WHEN=whenHTML('Stai guardando il backup di','Ieri alle 15:00','lunedì 23 novembre 2026 · +210 MB salvati · completo');
+  var CHIPS=chipsHTML([{label:'Tutto',n:11,on:1},{label:'Modificati',n:4,dot:'d-o'},{label:'Eliminati',n:1,dot:'d-r'},{label:'Nuovi',n:1,dot:'d-g'}]);
+  var rowsSel=function(names){ return FILES.map(function(f){ var o={dir:f.dir,doc:f.doc,name:f.name,st:f.st,label:f.label,size:f.size,date:f.date,sel:names?names.indexOf(f.name)>=0:!!f.sel}; return rowHTML(o); }).join(''); };
+  var MENU=mi('i-folder-s','Ripristina in…','⇧⌘R')+'<div class="msep"></div>'+mi('i-folder-s','Mostra nel Finder')+mi('i-back','Mostra versioni del file');
+  var STATES={
+    root:{root:1,mid:WHEN+chipsHTML([{label:'Tutto',n:3,on:1},{label:'Modificati',n:2,dot:'d-o'},{label:'Eliminati',dot:'d-r'},{label:'Nuovi',dot:'d-g'}])+tableHTML(HEAD,SRC.map(rowHTML).join('')),insp:emptyHTML('i-stack','Nessuna selezione','Seleziona un file per vederne dettagli e versioni.'),dock:dockHTML('i-drive','Tutte le cartelle','3 cartelle · dal backup di ieri alle 15:00','<span class="btn pri">'+svg('i-restore')+'Ripristina tutto…</span>')},
+    menu:{mid:WHEN+CHIPS+tableHTML(HEAD,rowsSel()),insp:frag(R.insp),dock:dockHTML('i-doc-lines','README.md','dal backup di ieri alle 15:00',BT,MENU)},
+    search:{search:1,mid:whenHTML('Ricerca in tutti i backup','«readme»','4 risultati · per ogni file la versione più recente')+chipsHTML([{label:'Tutti',n:4,on:1},{label:'Solo eliminati',n:1,dot:'d-r'}])+tableHTML(['Nome','Rispetto a oggi','Percorso','Backup del'],HITS.map(rowHTML).join(''),'st'),insp:frag(R.insp),dock:dockHTML('i-doc-lines','README.md','dal backup di ieri alle 15:00',BT)},
+    multi:{mid:WHEN+CHIPS+tableHTML(HEAD,rowsSel(['Sources','docs','CHANGELOG.md'])),insp:emptyHTML('i-stack','3 elementi selezionati','2 cartelle e 1 file · 2,4 MB. Seleziona un solo file per vederne dettagli e versioni.'),dock:dockHTML('i-stack','3 elementi','2,4 MB · dal backup di ieri alle 15:00','<span class="btn pri">Ripristina'+svg('i-down')+'</span>')}
+  };
+  $$('[data-state]').forEach(function(v){ var st=STATES[v.getAttribute('data-state')]; if(st) $('.win-fit',v).innerHTML=winA(st); });
+  $$('.sub button').forEach(function(b){ b.addEventListener('click',function(){ $$('.sub button').forEach(function(o){ o.setAttribute('aria-selected',o===b) }); $$('[data-state]').forEach(function(v){ v.hidden=v.getAttribute('data-state')!==b.getAttribute('data-go'); }); fit(); }); });
+
+  var tabs=$$('.tab'), screens=$$('.screen');
+  function fit(){ $$('.win-fit').forEach(function(f){ var w=f.clientWidth; if(!w) return; var s=w/1180; $('.win',f).style.transform='scale('+s+')'; f.style.height=Math.round(720*s)+'px'; }); }
+  function show(id){ tabs.forEach(function(t){ t.setAttribute('aria-selected',t.dataset.tab===id) }); screens.forEach(function(s){ s.hidden=s.dataset.screen!==id }); if(history.replaceState) history.replaceState(null,'','#'+id); fit(); }
+  tabs.forEach(function(t){ t.addEventListener('click',function(){ show(t.dataset.tab) }); });
+  if(!window.toggleSelect) window.toggleSelect=function(el){ $$('.vs-item',el.parentNode).forEach(function(o){ o.classList.toggle('selected',o===el) }); };
+  var h=location.hash.slice(1), hp=h.split('-'); show(['a','a2','b','c','o'].indexOf(hp[0])>=0?hp[0]:'a2');
+  if(hp[0]==='a2'&&hp[1]) { var sb=$$('.sub button').filter(function(o){ return o.getAttribute('data-go')===hp[1] })[0]; if(sb) sb.click(); }
+  window.addEventListener('resize',fit);
+})();
+</script>
+</body>
+</html>

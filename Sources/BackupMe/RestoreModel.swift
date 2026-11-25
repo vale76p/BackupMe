@@ -1,21 +1,13 @@
 import AppKit
 import BackupCore
 import Foundation
+import RestoreRules
 
 struct SearchHit: Hashable, Identifiable {
     var snapshotID: String
     var entry: Entry
     var id: Self { self }
 }
-
-/// A row against this Mac's disk; folders also say whether something inside them changed or disappeared.
-struct RowStatus: Equatable, Sendable {
-    var own: EntryStatus
-    var modifiedInside = false
-    var missingInside = false
-}
-
-enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
 
 @MainActor @Observable final class RestoreModel {
     let app: AppModel
@@ -197,6 +189,15 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
 
     func added() -> [Entry] { addedItems[folderKey] ?? [] }
     func isAdded(_ e: Entry) -> Bool { e.kind != .directory && e.hash == nil && e.linkTarget == nil && added().contains(e) }
+
+    /// A row against a filter: «Nuovi» is for today's files the backup lacks, so a row of the backup never is one.
+    func matches(_ e: Entry, _ f: ChangeFilter) -> Bool {
+        switch f {
+        case .all: true
+        case .added: isAdded(e)
+        case .modified, .missing: status(of: e)?.passes(f) ?? false
+        }
+    }
 
     private var folderKey: String { "\(statusEpoch)\u{0}\(selectedID ?? "")\u{0}\(source ?? "")\u{0}\(currentPath)" }
 
@@ -398,9 +399,28 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
         }
     }
 
-    /// A read-only temporary copy for Quick Look or comparing; nil (with an error shown) if it can't be read.
+    /// A read-only temporary copy of a backed-up file.
+    private func copy(_ e: Entry, into base: URL? = nil) async throws -> URL {
+        try await withRepository { repository in
+            let restorer = Restorer(repository: repository)
+            return try base.map { try restorer.extract(e, into: $0) } ?? restorer.extract(e)
+        }
+    }
+
+    /// Where the inspector's cards read their copies: each its own folder, deleted once read; what a crash leaves is deleted at launch.
+    nonisolated static let cardCopies = FileManager.default.temporaryDirectory.appending(path: "BackupMe-schede", directoryHint: .isDirectory)
+
+    /// A copy for the inspector's card, in `folder` (the card deletes it), which must not interrupt: nil, and a debug line in the log, if it can't be read.
+    func previewCopy(_ e: Entry, in folder: URL) async -> URL? {
+        do { return try await copy(e, into: folder) } catch {
+            Log.restore.debug("Anteprima nell'ispettore non disponibile: \(AppModel.describe(error))")
+            return nil
+        }
+    }
+
+    /// A copy for Quick Look or comparing; nil, with an error shown, if it can't be read.
     func extracted(_ e: Entry) async -> URL? {
-        do { return try await withRepository { try Restorer(repository: $0).extract(e) } } catch {
+        do { return try await copy(e) } catch {
             self.error = ("Anteprima non disponibile", AppModel.describe(error))
             return nil
         }

@@ -11,6 +11,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .target(name: "BackupCore"),
-        .executableTarget(name: "BackupMe", dependencies: ["BackupCore"]),
-    ] + (hasTests ? [.testTarget(name: "BackupCoreTests", dependencies: ["BackupCore"], resources: [.copy("Fixtures")])] : [])
+        // The rules of the Sfoglia window that need no interface, apart so the tests can reach them
+        .target(name: "RestoreRules", dependencies: ["BackupCore"]),
+        .executableTarget(name: "BackupMe", dependencies: ["BackupCore", "RestoreRules"]),
+    ] + (hasTests ? [.testTarget(name: "BackupCoreTests", dependencies: ["BackupCore", "RestoreRules"], resources: [.copy("Fixtures")])] : [])
 )

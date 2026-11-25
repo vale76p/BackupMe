@@ -2,6 +2,16 @@
 
 Il formato segue [Keep a Changelog](https://keepachangelog.com/it/1.1.0/) e la numerazione [Semantic Versioning](https://semver.org/lang/it/). La versione si cambia in `Resources/Info.plist` (`CFBundleShortVersionString` solo numerico, `BackupMeVersionLabel` col nome completo mostrato nel menu, es. `1.0.0-rc2`, e `CFBundleVersion` +1 a ogni rilascio).
 
+## [1.1.0] - 2026-11-25
+
+La finestra di Sfoglia backup è nuova, con le correzioni della revisione avversativa che l'ha preceduta. Il motore, il formato dell'archivio e il kit di ripristino non cambiano.
+
+### Cambiato
+- Sfoglia backup rifatta. La barra laterale è una linea del tempo: ogni backup è un punto sulla linea, con l'ora, una barra lunga quanto i dati salvati e «+N MB»; un backup con avvisi è arancione. In cima una carta ripete lo stato del pannello della barra dei menu. Il pannello centrale dice in grande «Ieri alle 15:00», con la data, i dati salvati e gli avvisi; i filtri Modificati, Eliminati e Nuovi sono tag. L'ispettore, più largo, mostra un'anteprima del file (immagini, testo, anteprima rapida degli altri tipi, fino a 20 MB) e le versioni su una linea. Le azioni stanno in una capsula in fondo, sotto lista e ispettore: Anteprima, Confronta con oggi e un solo «Ripristina» con menu («Ripristina in…», «Mostra nel Finder», che in una ricerca è «Mostra nel backup», «Mostra versioni del file»). Scegliendo una versione nell'ispettore, «Ripristina» ripristina quella. Le regole non cambiano: cosa si ripristina, da quale backup e quando chiede prima lo decide il target nuovo `RestoreRules`, provato con 46 test. La finestra si apre 1100×700. La carta dell'anteprima si legge un attimo dopo la selezione, così scorrere con le frecce non estrae un file dopo l'altro, e la sua copia temporanea si cancella appena letta; le immagini vi arrivano come miniature.
+
+### Corretto
+- «dal backup dell'8 novembre», «versione dell'11 nov»: davanti all'1, all'8 e all'11 l'articolo è «dell'», non «del».
+
 ## [1.0.1] - 2026-11-24
 
 Correzioni dalla revisione avversativa sullo standby, con il suo giro di conferma: letture dell'archivio e delle cartelle che dopo il risveglio falliscono per un momento (file del cloud che si riscarica, disco o NAS che si ricollega). Il formato dell'archivio e il kit di ripristino non cambiano. Da sapere: un file già salvato che non si riesce più a leggere ora rende il backup parziale (icona rossa e nuovo tentativo) finché non si legge di nuovo o lo escludi, invece di sparire alla lunga dai backup.
