@@ -198,6 +198,12 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     func added() -> [Entry] { addedItems[folderKey] ?? [] }
     func isAdded(_ e: Entry) -> Bool { e.kind != .directory && e.hash == nil && e.linkTarget == nil && added().contains(e) }
 
+    /// A row against a filter: a folder counts when something inside it changed or vanished.
+    func matches(_ e: Entry, _ f: ChangeFilter) -> Bool {
+        guard let s = status(of: e) else { return false }
+        return f == .modified ? s.own == .modified || s.modifiedInside : s.own == .missing || s.missingInside
+    }
+
     private var folderKey: String { "\(statusEpoch)\u{0}\(selectedID ?? "")\u{0}\(source ?? "")\u{0}\(currentPath)" }
 
     /// Stats the folder being viewed off the main thread, once: table redraws only read the cache.

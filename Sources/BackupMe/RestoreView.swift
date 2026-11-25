@@ -800,20 +800,6 @@ struct RestoreView: View {
     }
 }
 
-/// One NSWorkspace lookup per extension: the table asks for an icon on every redraw.
-@MainActor private enum FileIcon {
-    static var cache: [String: NSImage] = [:]
-
-    static func image(for e: Entry) -> NSImage {
-        let key = e.kind == .directory ? "/" : e.kind == .symlink ? "@" : (e.name as NSString).pathExtension.lowercased()
-        if let image = cache[key] { return image }
-        let type: UTType = e.kind == .directory ? .folder : e.kind == .symlink ? .symbolicLink : UTType(filenameExtension: key) ?? .data
-        let image = NSWorkspace.shared.icon(for: type)
-        cache[key] = image
-        return image
-    }
-}
-
 private struct StatusPill: View {
     let text: String
     let color: Color
