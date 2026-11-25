@@ -13,8 +13,6 @@ struct RestoreActions {
     /// From a backup, into a folder of choice.
     var restoreInto: (String, [(source: String, path: String)]) -> Void
     var compare: (Entry) -> Void
-    /// Opens the inspector.
-    var showVersions: () -> Void
     /// Leaves the search and opens the folder holding a result, the file selected.
     var reveal: (SearchHit) -> Void
     /// Space in the list: Quick Look of the selected file, or close it. False when there is nothing to show.
@@ -40,6 +38,7 @@ struct RestoreBrowser: View {
     @Binding var sortOrder: [KeyPathComparator<Entry>]
     @Binding var columns: TableColumnCustomization<Entry>
     let locale: Locale
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -107,7 +106,7 @@ struct RestoreBrowser: View {
         .accessibilityAddTraits(deletedOnly == deleted ? .isSelected : [])
     }
 
-    /// A filter as a tag: dark when it is the one in use.
+    /// A filter as a tag: dark when it is the one in use; a pale capsule in Dark Mode, where primary is white.
     private func capsule(_ text: String, dot: Color? = nil, on: Bool) -> some View {
         HStack(spacing: 6) {
             if let dot { Circle().fill(dot).frame(width: 7, height: 7) }
@@ -116,7 +115,7 @@ struct RestoreBrowser: View {
         .font(.callout.weight(.medium))
         .padding(.horizontal, 10).frame(height: 26)
         .foregroundStyle(on ? Color.white : Color.primary)
-        .background(on ? Color.primary : Color.secondary.opacity(0.16), in: Capsule())
+        .background(on ? (colorScheme == .dark ? Color.white.opacity(0.28) : Color.primary) : Color.secondary.opacity(0.16), in: Capsule())
         .contentShape(Capsule())
     }
 
@@ -125,6 +124,7 @@ struct RestoreBrowser: View {
     private func counted(_ f: ChangeFilter) -> String {
         let name = f == .all ? "Tutto" : f == .modified ? "Modificati" : f == .missing ? "Eliminati" : "Nuovi"
         guard model.statusReady else { return name }
+        // «Nuovi» are kept apart from the rows of the backup: they are counted where they are
         let n = f == .added ? model.added().count : model.children().filter { model.matches($0, f) }.count
         return n == 0 ? name : "\(name) \(n)"
     }
@@ -155,8 +155,8 @@ struct RestoreBrowser: View {
             TableColumn("Rispetto a oggi") { e in
                 if let b = StatusBadge.change(model.status(of: e), added: model.isAdded(e), since: false) { b }
             }
-                .width(min: 90, ideal: 130, max: 170)
-                .customizationID("stato")
+            .width(min: 90, ideal: 130, max: 170)
+            .customizationID("stato")
             TableColumn("Dimensione", value: \.size) { e in
                 Text(e.kind == .file ? ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file) : "—")
                     .foregroundStyle(.secondary).monospacedDigit()
@@ -203,7 +203,7 @@ struct RestoreBrowser: View {
             TableColumn("Rispetto a oggi") { h in
                 if let b = StatusBadge.change(model.resultStatus[h].map { RowStatus(own: $0) }, added: false, since: false) { b }
             }
-                .width(min: 90, ideal: 130, max: 170)
+            .width(min: 90, ideal: 130, max: 170)
             TableColumn("Percorso") { h in
                 Text(((h.entry.source as NSString).lastPathComponent as NSString).appendingPathComponent(h.entry.path))
                     .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -264,7 +264,6 @@ struct RestoreBrowser: View {
     private func icon(_ e: Entry) -> some View {
         Image(nsImage: FileIcon.image(for: e)).resizable().frame(width: 20, height: 20)
     }
-
 }
 
 /// Words in a tinted box: the change since this backup reads without hovering.
@@ -296,7 +295,7 @@ struct StatusBadge: View {
 
 /// One NSWorkspace lookup per extension: the table asks for an icon on every redraw.
 @MainActor enum FileIcon {
-    static var cache: [String: NSImage] = [:]
+    private static var cache: [String: NSImage] = [:]
 
     static func image(for e: Entry) -> NSImage {
         let key = e.kind == .directory ? "/" : e.kind == .symlink ? "@" : (e.name as NSString).pathExtension.lowercased()

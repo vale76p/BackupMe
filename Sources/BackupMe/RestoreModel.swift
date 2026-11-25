@@ -1,21 +1,13 @@
 import AppKit
 import BackupCore
 import Foundation
+import RestoreRules
 
 struct SearchHit: Hashable, Identifiable {
     var snapshotID: String
     var entry: Entry
     var id: Self { self }
 }
-
-/// A row against this Mac's disk; folders also say whether something inside them changed or disappeared.
-struct RowStatus: Equatable, Sendable {
-    var own: EntryStatus
-    var modifiedInside = false
-    var missingInside = false
-}
-
-enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
 
 @MainActor @Observable final class RestoreModel {
     let app: AppModel
@@ -198,10 +190,13 @@ enum ChangeFilter: String, CaseIterable { case all, modified, missing, added }
     func added() -> [Entry] { addedItems[folderKey] ?? [] }
     func isAdded(_ e: Entry) -> Bool { e.kind != .directory && e.hash == nil && e.linkTarget == nil && added().contains(e) }
 
-    /// A row against a filter: a folder counts when something inside it changed or vanished.
+    /// A row against a filter: «Nuovi» is for today's files the backup lacks, so a row of the backup never is one.
     func matches(_ e: Entry, _ f: ChangeFilter) -> Bool {
-        guard let s = status(of: e) else { return false }
-        return f == .modified ? s.own == .modified || s.modifiedInside : s.own == .missing || s.missingInside
+        switch f {
+        case .all: true
+        case .added: isAdded(e)
+        case .modified, .missing: status(of: e)?.passes(f) ?? false
+        }
     }
 
     private var folderKey: String { "\(statusEpoch)\u{0}\(selectedID ?? "")\u{0}\(source ?? "")\u{0}\(currentPath)" }

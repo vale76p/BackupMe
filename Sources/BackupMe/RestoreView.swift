@@ -1,6 +1,7 @@
 import AppKit
 import BackupCore
 import QuickLook
+import RestoreRules
 import SwiftUI
 import UniformTypeIdentifiers
 
