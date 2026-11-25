@@ -1477,7 +1477,7 @@ Expected: `Test run with 42 tests in 5 suites passed`
     }
 ```
 
-- [ ] **Step 6: La finestra vecchia,** in `Sources/BackupMe/RestoreView.swift`. Prima aggiungere `import RestoreRules` subito dopo `import QuickLook`: la finestra usa `ChangeFilter` e `RowStatus`, che ora stanno lì. Poi togliere in fondo al file il vecchio `FileIcon`: questo blocco e la riga vuota che lo segue (righe 803–816):
+- [ ] **Step 6: La finestra vecchia,** in `Sources/BackupMe/RestoreView.swift`. Prima aggiungere `import RestoreRules` subito dopo `import QuickLook`: la finestra usa `ChangeFilter` e `RowStatus`, che ora stanno lì. Poi togliere in fondo al file il vecchio `FileIcon`: questo blocco e la riga vuota che lo segue (righe 803–816 prima dell'import, 804–817 dopo):
 
 ```swift
 /// One NSWorkspace lookup per extension: the table asks for an icon on every redraw.
@@ -3126,7 +3126,7 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 ## Titolo e filtri
 
 - [ ] Sopra la lista: «Stai guardando il backup di», «Ieri alle 15:00», «lunedì 23 novembre 2026 · +210 MB salvati · 1 avviso» (senza dati resta la data sola).
-- [ ] I tag Tutto, Modificati, Eliminati, Nuovi hanno gli stessi conteggi di prima e filtrano allo stesso modo.
+- [ ] I tag Tutto, Modificati, Eliminati, Nuovi filtrano allo stesso modo di prima. «Modificati», «Eliminati» e «Nuovi» mostrano gli stessi conteggi di prima; «Tutto» il totale delle righe della cartella (prima non aveva un numero).
 - [ ] Un filtro che nasconde una riga selezionata la deseleziona: la barra non la elenca più.
 - [ ] Con l'archivio di un altro computer: niente carta, niente tag, niente colonna «Rispetto a oggi».
 
