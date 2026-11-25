@@ -3289,7 +3289,7 @@ START = r'(?:^|[\n;{}])[ \t]*'
 ATTRIBUTES = r'(?:(?:@[\w.]+(?:\((?:[^()]|\([^()]*\))*\))?)\s*)*'
 TYPE = re.compile(START + ATTRIBUTES + r'((?:[A-Za-z_]+\s+)*)(struct|class|actor|enum|protocol|extension)\s+'
                   r'(?!(?:var|func|let)\b)(' + QUALIFIED + r')')
-PROPERTY = re.compile(START + ATTRIBUTES + r'(?:' + IDENT + r'(?:\([^)\n]*\))?\s+)*?var\s+(' + IDENT + r')\s*:\s*'
+PROPERTY = re.compile(START + ATTRIBUTES + r'((?:' + IDENT + r'(?:\([^)\n]*\))?\s+)*)var\s+(' + IDENT + r')\s*:\s*'
                       r'[^{=\n]*?(?:\n[ \t]*)?\{')
 OBSERVER = re.compile(r'\s*(?:willSet|didSet)\b')
 HIDDEN = re.compile(r'\b(?:private|fileprivate)\b')
@@ -3319,12 +3319,10 @@ def blanked(src):
                 space(i, i + len(opening))
                 i += len(opening)
                 stack.append(['interpolation', 1])
-            elif src[i] == '\\':
-                k = i + 1
-                for _ in range(hashes):
-                    if k < n and src[k] == '#': k += 1
-                space(i, k + 1)
-                i = k + 1
+            elif src[i] == '\\' and (not hashes or src.startswith('\\' + '#' * hashes, i)):
+                # in a raw string only a backslash followed by its hashes escapes: a lone one is a character
+                space(i, i + 2 + hashes)
+                i += 2 + hashes
             elif src.startswith(closer, i):
                 space(i, i + len(closer))
                 i += len(closer)
@@ -3365,10 +3363,7 @@ def blanked(src):
                 # a regex literal can hold quotes and braces: it ends at the slash its escapes do not protect
                 k = j + 1
                 while k < n and not src.startswith('/' + '#' * hashes, k):
-                    if src[k] == '\\':
-                        k += 1
-                        for _ in range(hashes):
-                            if k < n and src[k] == '#': k += 1
+                    if src[k] == '\\' and (not hashes or src.startswith('\\' + '#' * hashes, k)): k += 1 + hashes
                     k += 1
                 space(i, min(k + 1 + hashes, n))
                 i = min(k + 1 + hashes, n)
@@ -3438,7 +3433,9 @@ def properties(path, src):
         # a stored property has braces too, for its observers, and reading it in its own didSet is no recursion
         if OBSERVER.match(body): continue
         owners = [k for k, d in zip(keys, decls) if d[0] <= m.start() and end <= d[3]]
-        found.append((owners[-1] if owners else (path, ''), m.group(1), src.count('\n', 0, m.start(1)) + 1, body))
+        # a property at the top level is the whole module's, unless it is declared private
+        key = owners[-1] if owners else ((path, '') if HIDDEN.search(m.group(1)) else '')
+        found.append((key, m.group(2), src.count('\n', 0, m.start(2)) + 1, body))
     return found
 
 
@@ -3476,8 +3473,8 @@ def components(count, edges):
 
 
 def cycles_in(files):
-    """Each cycle once, at most MAX_LISTED: the file and the line of its first property, and the names that form it,
-    back to the first. A last entry without names says that the list stopped early."""
+    """(whether a cycle exists, the lines to print). Each cycle is listed from its first property, so it comes out
+    once; at most MAX_LISTED of them, then a line says so."""
     nodes, by_name = [], {}
     for path, src in files:
         for scope, name, line, body in properties(path, src):
@@ -3491,29 +3488,34 @@ def cycles_in(files):
             if MEMBER.search(body, 0, word.start()) and not SELF.search(body, 0, word.start()): continue
             reads.add(word.group())
         edges.append({j for read in reads for j in by_name.get((scope, read), [])})
+
+    def label(j):
+        declared_in = owner(nodes[j][1])
+        return declared_in + '.' + nodes[j][2] if declared_in else nodes[j][2]
+
+    groups = components(len(nodes), edges)
     found, left = [], [BUDGET]
 
     def walk(members, start, node, path):
-        # a cycle is listed from its first property, so each comes out once
         for j in sorted(edges[node]):
-            if left[0] < 0 or len(found) >= MAX_LISTED: return
+            if left[0] < 0: return
             left[0] -= 1
             if j == start: found.append(path)
             elif j in members and j > start and j not in path: walk(members, start, j, path + [j])
 
-    for group in components(len(nodes), edges):
+    for group in groups:
         for start in sorted(group): walk(set(group), start, start, [start])
-    cycles = []
-    for loop in found:
-        path, _, _, line, _ = nodes[loop[0]]
-        names = []
-        for j in loop:
-            type = owner(nodes[j][1])
-            names.append(type + '.' + nodes[j][2] if type else nodes[j][2])
-        cycles.append((path, line, names + [names[0]]))
-    cycles.sort(key=lambda c: (c[0], c[1], c[2]))
-    if found and (left[0] < 0 or len(found) >= MAX_LISTED): cycles.append((nodes[0][0], None, []))
-    return cycles
+    loops = sorted([(nodes[loop[0]][0], nodes[loop[0]][3], [label(j) for j in loop]) for loop in found],
+                   key=lambda l: (l[0], l[1], l[2]))
+    lines = [f"{path}:{line}: " + " → ".join(names + [names[0]]) for path, line, names in loops[:MAX_LISTED]]
+    if not loops:
+        # the search gave up before it could list one: the group it ran in still names the properties
+        lines += [f"{nodes[g[0]][0]}:{nodes[g[0]][3]}: a cycle runs among: " + ", ".join(label(j) for j in sorted(g))
+                  for g in groups]
+    if len(loops) > MAX_LISTED or left[0] < 0:
+        path = loops[MAX_LISTED][0] if len(loops) > MAX_LISTED else lines[-1].rsplit(":", 2)[0]
+        lines.append(f"{path}: more cycles exist: the list stops here")
+    return bool(groups), lines
 
 
 def owner(scope):
@@ -3533,10 +3535,9 @@ def main(paths):
         except OSError as error:
             print(error, file=sys.stderr)
             return 2
-    found = cycles_in(files)
-    for path, line, names in found:
-        print(f"{path}:{line}: " + " → ".join(names) if names else f"{path}: more cycles exist: the list stops here")
-    return 1 if found else 0
+    bad, lines = cycles_in(files)
+    for line in lines: print(line)
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
@@ -3716,6 +3717,36 @@ CASES = [
             var b: Int { a }
         }
     '''}, ["R.a R.b"]),
+    ("computed properties at the top level of two files", {"A.swift": "var a: Int { b }\n", "B.swift": "var b: Int { a }\n"}, ["a b"]),
+    ("private computed properties at the top level of two files are not one",
+     {"A.swift": "private var a: Int { b }\n", "B.swift": "private var b: Int { a }\n"}, []),
+    ("a string inside an interpolation of a raw string, holding a brace", {"S.swift": r'''
+        struct N {
+            var a: Int {
+                let s = #"\#(wrap("{"))"#
+                return s.count + b
+            }
+            var b: Int { a }
+        }
+    '''}, ["N.a N.b"]),
+    ("a raw string that ends with a backslash", {"S.swift": r'''
+        struct R {
+            var a: Int {
+                let s = #"a\"#
+                return s.count + b
+            }
+            var b: Int { a }
+        }
+    '''}, ["R.a R.b"]),
+    ("an extended regex literal with a lone backslash", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let r = #/a\*/#
+                return r == nil ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
     ("a regex literal", {"S.swift": r'''
         struct X {
             var a: Int {
@@ -3795,18 +3826,26 @@ CASES = [
     ("a stored property is not read as one", {"S.swift": "struct S {\n    var a: Int = 0\n    var b: Int { a }\n}\n"}, []),
 ]
 
-# (what the case is about, the files, the exit code expected, the seconds it may take): the exit code alone is checked
-DENSE = [
-    ("a type dense with reads and no cycle is fast", False, 0),
-    ("a type dense with reads and one cycle is answered in bounded time", True, 1),
-]
-
-
 def dense(count, back):
     """A type whose every property reads all the later ones; with `back`, the last one reads the first."""
     rows = ["    var p%d: Int { %s }" % (i, " ".join("p%d" % j for j in range(i + 1, count)) or "0") for i in range(count)]
     if back: rows[-1] = "    var p%d: Int { p0 }" % (count - 1)
     return {"D.swift": "struct D {\n" + "\n".join(rows) + "\n}\n"}
+
+
+def pairs(count):
+    """`count` types of two properties that read each other: as many cycles, and not one more."""
+    return {"P.swift": "".join("struct P%d {\n    var a: Int { b }\n    var b: Int { a }\n}\n" % i for i in range(count))}
+
+
+# (what the case is about, its files, the exit code expected, how many cycles must be listed, whether a last line
+# says there are more)
+BOUNDED = [
+    ("a type dense with reads and no cycle is fast", lambda: dense(40, False), 0, 0, False),
+    ("a type dense with reads and one cycle is answered in bounded time", lambda: dense(24, True), 1, 100, True),
+    ("a hundred cycles are all listed, and no line says there are more", lambda: pairs(100), 1, 100, False),
+    ("a hundred and one cycles: a hundred listed, then a line that says there are more", lambda: pairs(101), 1, 100, True),
+]
 
 
 def check(files):
@@ -3839,10 +3878,12 @@ def main():
         code, _, cycles = check(files)
         ok(label, code == (1 if expected else 0) and [names for _, names in cycles] == [sorted(name.split()) for name in expected],
            f"expected {expected}, found {cycles} (exit {code})")
-    for label, back, expected in DENSE:
-        code, seconds, cycles = check(dense(40, back))
-        ok(label, code == expected and seconds < 10 and (not back or cycles[-1][0] is None),
-           f"expected exit {expected} in under 10 s, found exit {code} in {seconds:.1f} s with {len(cycles)} lines")
+    for label, files, expected, listed, more in BOUNDED:
+        code, seconds, cycles = check(files())
+        listed_here = [line for line, _ in cycles if line is not None]
+        ok(label, code == expected and seconds < 10 and len(listed_here) == listed and (len(cycles) > len(listed_here)) == more,
+           f"expected exit {expected} with {listed} cycles listed and a last line saying there are more: {more}; "
+           f"found exit {code} in {seconds:.1f} s with {len(listed_here)} cycles listed and {len(cycles) - len(listed_here)} other lines")
     line = check(CASES[0][1])[2][0][0]
     ok("the line of the first property", line == 2, f"expected 2, found {line}")
     code = subprocess.run([sys.executable, SENTINEL], capture_output=True).returncode
@@ -3862,7 +3903,7 @@ Run: `chmod +x scripts/check-view-cycles.py scripts/check-view-cycles-test.py`
 - [ ] **Step 4: Provarla.**
 
 Run: `python3 scripts/check-view-cycles-test.py; echo "exit $?"`
-Expected: una riga `ok` per ogni caso, poi `42 of 42 cases passed` e `exit 0`.
+Expected: una riga `ok` per ogni caso, poi `49 of 49 cases passed` e `exit 0`.
 
 Run: `python3 scripts/check-view-cycles.py Sources/BackupMe/*.swift; echo "exit $?"`
 Expected: solo `exit 0` (nessuna riga prima).
