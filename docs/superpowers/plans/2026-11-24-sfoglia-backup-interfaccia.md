@@ -20,6 +20,7 @@
 - Messaggi all'utente in italiano; commenti nel codice in inglese, una riga, solo il perché.
 - Per gli avvisi di un backup comanda la cronologia dell'app, anche quando il suo indice è in memoria: «Cancella avvisi» li toglie anche dalla linea del tempo (decisione dell'utente; come i chip di oggi).
 - Una versione scelta conta come versione a sé solo se viene da un backup diverso da quello guardato (o da quello del risultato): solo allora la barra dice «versione del …»; altrimenti «dal backup di …», come sempre.
+- Un risultato della ricerca si ripristina anche prima che un backup sia guardato (mentre il suo indice carica), come nella finestra di oggi.
 - Le viste (Task 4–8) non hanno test automatici: la spec li affida alla compilazione e alla lista di prova a schermo `docs/prova-sfoglia-backup.md`.
 - I 323 test esistenti non cambiano e restano verdi. Dopo i Task 1–3 la suite è «363 test in 34 suite».
 - L'app si compila ancora con `swift build --product BackupMe` e con `scripts/build-app.sh`.
@@ -693,7 +694,7 @@ public enum RestorePlanner {
     }
     public struct Plan: Equatable, Sendable {
         public enum Action: Equatable, Sendable { case nothing, items([Item]), version(Item), wholeFolder(String), wholeBackup }
-        public var action: Action; public var from: Backup?; public var isVersion: Bool
+        public var action: Action; public var from: Backup?; public var isVersion: Bool { get }   // derived from action
         public var asksFirst: Bool { get }; public var items: [Item] { get }
     }
     public static func resolve(_ s: Selection) -> Plan
@@ -755,6 +756,10 @@ import Testing
     @Test func theSelectedRowsAndOnlyThose() {
         let plan = RestorePlanner.resolve(browsing(visible: [folder, file, added], selected: [file, folder]))
         #expect(plan.action == .items([.init(folder), .init(file)]))
+        // a link has no hash: its target is its content, so it is restored like a file
+        var link = Rules.entry("BackupMe/link", kind: .symlink)
+        link.linkTarget = "../README.md"
+        #expect(RestorePlanner.resolve(browsing(visible: [link], selected: [link])).action == .items([.init(link)]))
     }
 
     @Test func aRowTheFilterHidesIsNotSelected() {
@@ -811,8 +816,11 @@ import Testing
     }
 
     @Test func aFolderHasNoVersion() {
-        let plan = RestorePlanner.resolve(browsing(visible: [folder], selected: [folder], version: .init(backup: older, entry: file)))
+        // the same path held as a file by another backup: a folder row never becomes a version
+        let plan = RestorePlanner.resolve(browsing(visible: [folder], selected: [folder],
+                                                   version: .init(backup: older, entry: Rules.entry("BackupMe", size: 15_000))))
         #expect(plan.action == .items([.init(folder)]))
+        #expect(plan.from == backup)
     }
 
     @Test func aSearchResult() {
@@ -826,6 +834,10 @@ import Testing
         #expect(versioned.action == .version(.init(file)))
         #expect(versioned.from == backup)
         #expect(versioned.isVersion)
+        // before any backup is browsed (its index still loads), a result is restored all the same
+        let early = RestorePlanner.resolve(RestorePlanner.Selection(searching: true, hit: hit))
+        #expect(early.action == .items([.init(file)]))
+        #expect(early.from == older)
         // a version held by the result's own backup is the result itself
         #expect(RestorePlanner.resolve(RestorePlanner.Selection(backup: backup, searching: true, hit: hit,
                                                               version: .init(backup: older, entry: file))).action == .items([.init(file)]))
@@ -858,6 +870,8 @@ import Testing
     @Test func theBarOfAVersion() {
         let selection = browsing(visible: [file], selected: [file], version: .init(backup: older, entry: file))
         #expect(bar(selection) == .init(icon: .file, name: "README.md", detail: "versione del 30 ott, 20:00", buttons: [.preview, .restore]))
+        #expect(bar(selection, compare: true) == .init(icon: .file, name: "README.md", detail: "versione del 30 ott, 20:00",
+                                                        buttons: [.preview, .compare, .restore]))
         // the bar names a version only when it comes from another backup than the one being viewed
         let own = browsing(visible: [file], selected: [file], version: .init(backup: backup, entry: file))
         #expect(bar(own) == .init(icon: .file, name: "README.md", detail: "dal backup di ieri alle 15:00", buttons: [.preview, .restore]))
@@ -868,12 +882,16 @@ import Testing
         #expect(bar(one) == .init(icon: .folder, name: "Progetti", detail: "cartella intera · dal backup di ieri alle 15:00", buttons: [.restore]))
         let all = browsing(source: nil, path: "", visible: [saved, savedOther], selected: [])
         #expect(bar(all) == .init(icon: .drive, name: "Tutte le cartelle", detail: "2 cartelle · dal backup di ieri alle 15:00", buttons: [.restoreAll]))
+        var single = browsing(source: nil, path: "", visible: [saved], selected: [])
+        single.sources = [source]
+        #expect(bar(single) == .init(icon: .drive, name: "Tutte le cartelle", detail: "1 cartella · dal backup di ieri alle 15:00", buttons: [.restoreAll]))
     }
 
     @Test func thePlanListsWhatItRestores() {
         #expect(RestorePlanner.resolve(browsing(visible: [folder, file], selected: [folder, file])).items == [.init(folder), .init(file)])
         #expect(RestorePlanner.resolve(browsing(source: nil, path: "", visible: [saved], selected: [saved])).items == [.init(source: source, path: "")])
         #expect(RestorePlanner.resolve(browsing(source: nil, path: "", visible: [saved], selected: [])).items.isEmpty)
+        #expect(RestorePlanner.resolve(browsing(visible: [file], selected: [file], version: .init(backup: older, entry: file))).items == [.init(file)])
         #expect(RestorePlanner.resolve(RestorePlanner.Selection()).items.isEmpty)
     }
 
@@ -924,7 +942,7 @@ public enum SelectionSummary {
         if folders > 0 { parts.append(folders == 1 ? "1 cartella" : "\(folders) cartelle") }
         if files > 0 { parts.append(files == 1 ? "1 file" : "\(files) file") }
         var text = parts.joined(separator: " e ")
-        if !parts.isEmpty, size > 0 { text += " · " + size.formatted(.byteCount(style: .file).locale(locale)) }
+        if !parts.isEmpty, size > 0 { text += " · " + BackupTimeline.bytesText(size, locale: locale) }
         return text
     }
 }
@@ -1005,7 +1023,7 @@ public enum RestorePlanner {
         /// The backup the restore reads from.
         public var from: Backup?
         /// `from` holds a chosen version, not the backup being browsed or the result's.
-        public var isVersion = false
+        public var isVersion: Bool { if case .version = action { return true }; return false }
         /// A whole saved folder asks before anything is written.
         public var asksFirst: Bool { if case .wholeFolder = action { return true }; return false }
 
@@ -1019,26 +1037,24 @@ public enum RestorePlanner {
             }
         }
 
-        init(action: Action, from: Backup?, isVersion: Bool = false) { self.action = action; self.from = from; self.isVersion = isVersion }
+        init(action: Action, from: Backup?) { self.action = action; self.from = from }
     }
 
     /// The same rules as ever: what is selected is what gets restored, beside the original, and a whole saved folder asks first.
     public static func resolve(_ s: Selection) -> Plan {
-        guard let backup = s.backup else { return Plan(action: .nothing, from: nil) }
+        // a result stands on its own: it is restored even while no backup is browsed yet (its index still loads)
         if s.searching {
             guard let hit = s.hit else { return Plan(action: .nothing, from: nil) }
-            // only a version of another backup is a version of its own: the result's is the result
-            if let v = s.version, v.backup.id != hit.backup.id, v.entry.source == hit.entry.source, v.entry.path == hit.entry.path {
-                return Plan(action: .version(Item(v.entry)), from: v.backup, isVersion: true)
+            if let v = otherVersion(s.version, of: hit.entry, than: hit.backup) {
+                return Plan(action: .version(Item(v.entry)), from: v.backup)
             }
             return Plan(action: .items([Item(hit.entry)]), from: hit.backup)
         }
+        guard let backup = s.backup else { return Plan(action: .nothing, from: nil) }
         // a row without content («Nuovo») is on disk today and not in the backup: nothing comes back from it
         let restorable = s.visible.filter { s.selectedIDs.contains($0.restoreID) && $0.hasContent }
-        // the browsed backup's own version is not another version: the file is simply restored from it
-        if restorable.count == 1, restorable[0].kind == .file, let v = s.version, v.backup.id != backup.id,
-           v.entry.source == restorable[0].source, v.entry.path == restorable[0].path {
-            return Plan(action: .version(Item(v.entry)), from: v.backup, isVersion: true)
+        if restorable.count == 1, let v = otherVersion(s.version, of: restorable[0], than: backup) {
+            return Plan(action: .version(Item(v.entry)), from: v.backup)
         }
         if !restorable.isEmpty {
             if restorable.count == 1, restorable[0].path.isEmpty { return Plan(action: .wholeFolder(restorable[0].source), from: backup) }
@@ -1051,6 +1067,12 @@ public enum RestorePlanner {
         }
         if s.path.isEmpty { return Plan(action: .wholeFolder(source), from: backup) }
         return Plan(action: .items([Item(source: source, path: s.path)]), from: backup)
+    }
+
+    /// The chosen version of the one file `entry`, when a backup other than `own` holds it: that backup's own version is not another version.
+    private static func otherVersion(_ v: Hit?, of entry: Entry, than own: Backup) -> Hit? {
+        guard let v, entry.kind == .file, v.backup.id != own.id, v.entry.source == entry.source, v.entry.path == entry.path else { return nil }
+        return v
     }
 
     /// What the bar shows.
@@ -2944,13 +2966,14 @@ extension View {
 }
 
 extension Entry: Identifiable {
-    public var id: String { source + "\u{0}" + path }
+    public var id: String { restoreID }
 }
 ```
 
 Cosa cambia, per chi rivede:
 
 - Lo stato in più: `picked` (la versione scelta), `reveal` (lo scorrimento della linea del tempo), `columnVisibility` e `sidebarWidth` (per far partire la barra dove finisce la barra laterale).
+- `Entry.id` (Identifiable) ora è `restoreID` di `RestoreRules`: l'espressione che distingue una riga sta in un posto solo.
 - `matches` (una riga contro un filtro) sta nel modello dal Task 5: la usano la lista e la finestra, senza due copie.
 - `selection`, `plan`, `bar` vengono da `RestoreRules`; `restoreTargets` e `restoreTargetsInto` seguono `plan.action`. Sono le stesse decisioni della vecchia `targets`: le prova `RestorePlannerTests`.
 - `askWholeFolder(source:id:)` è il vecchio ramo della cartella salvata per intera: `check`, `checking` e il dialogo non cambiano.
