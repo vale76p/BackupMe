@@ -119,6 +119,7 @@ I backup nella destinazione restano dove sono, insieme a `RIPRISTINO.command` e 
 
 ```bash
 swift test
+python3 scripts/check-view-cycles.py Sources/BackupMe/*.swift
 ```
 
-Il motore (`Sources/BackupCore`) non ha interfaccia ed è coperto da test; l'app (`Sources/BackupMe`) è solo UI e pianificazione.
+Il motore (`Sources/BackupCore`) non ha interfaccia ed è coperto da test; l'app (`Sources/BackupMe`) è solo UI e pianificazione. Le regole dell'interfaccia che non dipendono dalle viste stanno in `Sources/RestoreRules` e sono provate come il motore. Le viste non hanno test: due proprietà calcolate che si leggono l'una con l'altra fanno andare la finestra in crash al primo disegno, e lo scopre solo il secondo comando.
