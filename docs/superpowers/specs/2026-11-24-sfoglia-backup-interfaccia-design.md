@@ -120,7 +120,7 @@ I mockup sono in `docs/superpowers/mockups/2026-11-24-sfoglia-backup-direzioni.h
 ### Barra
 
 - **Capsula flottante** (Valentino): in fondo, staccata dai bordi, per tutta la larghezza di lista e ispettore; con l'ispettore chiuso, della lista sola.
-- **A sinistra**: icona, nome e una riga che dice da dove (mia): «dal backup di ieri alle 15:00», oppure «versione del 30 ott, 20:00» quando la versione scelta è di un altro backup.
+- **A sinistra**: icona, nome e una riga che dice da dove (mia): «dal backup di ieri alle 15:00», oppure «versione del 30 ott, 20:00» quando la versione scelta è di un altro backup. Davanti a una data l'articolo è «del», come in «versione del»: «dal backup del 9 novembre alle 20:00» (Valentino, deciso durante l'esecuzione).
 - **A destra**, secondo la selezione (mia):
 
 | Selezione | Pulsanti |
@@ -181,7 +181,7 @@ Le regole che non dipendono dall'interfaccia escono dalla finestra e vanno in un
 - **Linea del tempo**: sezione di ogni backup (giorni dell'ultima settimana, poi mesi; «Oggi» e «Ieri»), titolo della sezione, ordine dal più recente, etichetta dell'ora, larghezza delle barre, totale di una sezione.
 - **Titolo**: «Oggi alle 14:00», «Ieri alle 23:15», «Domenica 22 alle 20:00», «9 novembre alle 20:00»; terza riga con dati, avvisi o niente.
 - **Bersaglio del ripristino**: dati luogo, selezione visibile, elementi «Nuovi», risultato della ricerca e versione scelta, dicono cosa «Ripristina» ripristina, da quale backup, se chiede prima e se è spento. Un caso per riga delle due tabelle della barra, più: un filtro che nasconde una riga selezionata (non si ripristina), una versione scelta di un altro backup, una ricerca senza risultato selezionato.
-- **Riga della barra**: nome, e «dal backup di» oppure «versione del».
+- **Riga della barra**: nome, e «dal backup di» o «dal backup del» oppure «versione del».
 - **Riepilogo della selezione multipla**: «2 cartelle e 1 file · 2,4 MB».
 - **Date ai confini**, con un'ora e un fuso fissi: mezzanotte, cambio d'ora (giorni di 23 e 25 ore), cambio di mese e d'anno, due backup nella stessa ora.
 
