@@ -46,12 +46,13 @@ struct RestoreInspector: View {
 
     private func detail(_ entry: Entry) -> some View {
         let s = status(entry)
+        // the window clears the pick when the selection changes, one update later: until then it is nobody's
+        let version = picked.flatMap { $0.entry.source == entry.source && $0.entry.path == entry.path ? $0 : nil }
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 // the card shows the chosen version: what is seen is what Anteprima and Ripristina use
-                if entry.kind == .file, let picked {
-                    PreviewCard(model: model, entry: picked.entry,
-                                other: picked.snapshotID == snapshotID ? nil : picked, locale: locale)
+                if entry.kind == .file, let version {
+                    PreviewCard(model: model, entry: version.entry, other: version.snapshotID == snapshotID ? nil : version, locale: locale)
                 }
                 HStack(spacing: 10) {
                     Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 40, height: 40)
@@ -233,14 +234,16 @@ private struct PreviewCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        // the caption is hidden to accessibility, as part of the card: VoiceOver hears the version in the label
+        let otherVersion = other.flatMap { Snapshot.date(fromID: $0.snapshotID) }.map { WhenText.version($0, locale: locale) }
+        return VStack(alignment: .leading, spacing: 4) {
             card
-            if let date = other.flatMap({ Snapshot.date(fromID: $0.snapshotID) }) {
-                Text(WhenText.version(date, locale: locale)).font(.caption).foregroundStyle(.secondary)
+            if let otherVersion {
+                Text(otherVersion).font(.caption).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Anteprima di \(entry.name)")
+        .accessibilityLabel("Anteprima di \(entry.name)" + (otherVersion.map { ", " + $0 } ?? ""))
         .task(id: entry.hash) { await load() } // the content tells one version from another
     }
 
@@ -288,7 +291,18 @@ private enum PreviewLoader {
 
     nonisolated static func looksLikeText(_ head: Data?) -> Bool {
         guard let head else { return false }
-        return !head.contains(0) && String(data: head, encoding: .utf8) != nil
+        return !head.contains(0) && text(head) != nil
+    }
+
+    /// The text, or nil when it is not UTF-8; a character cut in half by the end is dropped first.
+    nonisolated static func text(_ data: Data) -> String? {
+        var data = data
+        for _ in 0..<4 {
+            if let text = String(data: data, encoding: .utf8) { return text }
+            guard !data.isEmpty else { return nil }
+            data.removeLast()
+        }
+        return nil
     }
 
     nonisolated static func head(_ url: URL) -> Data? {
@@ -302,7 +316,8 @@ private enum PreviewLoader {
         guard let data = try? Data(contentsOf: url, options: [.alwaysMapped]) else { return nil }
         var bytes = data.prefix(65_536)
         if data.count > 65_536, let last = bytes.lastIndex(of: 0x0A) { bytes = bytes.prefix(last + 1) }
-        guard let text = String(data: bytes, encoding: .utf8) else { return nil }
-        return text.split(separator: "\n", omittingEmptySubsequences: false).prefix(40).map { String($0.prefix(160)) }.joined(separator: "\n")
+        guard let text = text(bytes) else { return nil }
+        // a line ends with «\n», «\r\n» or «\r»: a Windows file shows its lines, not one cut line
+        return text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).prefix(40).map { String($0.prefix(160)) }.joined(separator: "\n")
     }
 }
