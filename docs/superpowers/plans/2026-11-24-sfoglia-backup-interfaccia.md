@@ -4,7 +4,7 @@
 
 **Goal:** La finestra «Sfoglia backup…» ha una linea del tempo vera al posto dei chip, dice in grande in quale momento si è, un ispettore più largo con l'anteprima e una sola barra per le azioni, senza che cambi una regola di ripristino.
 
-**Architecture:** Le regole che non dipendono dall'interfaccia (in che sezione va ogni backup, i testi di data e ora, cosa «Ripristina» ripristina e da quale backup) escono dalla finestra e vanno in un target di libreria senza SwiftUI, `RestoreRules`, provato da quaranta test. La finestra si divide in cinque file: `RestoreView` (finestra, stato, azioni, ricerca), `RestoreTimeline`, `RestoreBrowser` (titolo, filtri, lista), `RestoreInspector`, `RestoreActionBar`. `RestoreModel` cambia di una funzione sola, `BackupCore` non cambia affatto.
+**Architecture:** Le regole che non dipendono dall'interfaccia (in che sezione va ogni backup, i testi di data e ora, cosa «Ripristina» ripristina e da quale backup) escono dalla finestra e vanno in un target di libreria senza SwiftUI, `RestoreRules`, provato da quarantadue test. La finestra si divide in cinque file: `RestoreView` (finestra, stato, azioni, ricerca), `RestoreTimeline`, `RestoreBrowser` (titolo, filtri, lista), `RestoreInspector`, `RestoreActionBar`. `RestoreModel` cambia di una funzione sola, `BackupCore` non cambia affatto.
 
 **Tech Stack:** Swift 6, SwiftUI, Foundation, Quick Look Thumbnailing, Swift Testing. Nessuna dipendenza.
 
@@ -22,7 +22,7 @@
 - Una versione scelta conta come versione a sé solo se viene da un backup diverso da quello guardato (o da quello del risultato): solo allora la barra dice «versione del …»; altrimenti «dal backup di …», come sempre.
 - Un risultato della ricerca si ripristina anche prima che un backup sia guardato (mentre il suo indice carica), come nella finestra di oggi.
 - Le viste (Task 4–8) non hanno test automatici: la spec li affida alla compilazione e alla lista di prova a schermo `docs/prova-sfoglia-backup.md`.
-- I 323 test esistenti non cambiano e restano verdi. Dopo i Task 1–3 la suite è «363 test in 34 suite».
+- I 323 test esistenti non cambiano e restano verdi. Dopo i Task 1–3 la suite è «363 test in 34 suite», dopo il Task 5 «365 test in 35 suite».
 - L'app si compila ancora con `swift build --product BackupMe` e con `scripts/build-app.sh`.
 - Il branch è `feat/sfoglia-backup-interfaccia`. Ogni task finisce con un commit; nessun push.
 - `docs/prova-reale-rc1.md` e `AGENTS.md` non sono tracciati e non fanno parte di questo piano: non aggiungerli.
@@ -45,16 +45,17 @@
 | `Sources/RestoreRules/BackupTimeline.swift` (nuovo) | `TimelineItem`, `TimelineSection`, `BackupTimeline`: sezioni, titoli, barre, suggerimento |
 | `Sources/RestoreRules/WhenText.swift` (nuovo) | `WhenText`: «Ieri alle 15:00», «dal backup di …», la terza riga del titolo, «versione del …» |
 | `Sources/RestoreRules/RestorePlanner.swift` (nuovo) | `Entry.restoreID`, `SelectionSummary`, `RestorePlanner`: cosa si ripristina e cosa dice la barra |
+| `Sources/RestoreRules/ChangeFilter.swift` (nuovo) | `ChangeFilter`, `RowStatus` e la regola: quali righe passano un filtro |
 | `Sources/BackupMe/RestoreTimeline.swift` (nuovo) | La carta dello stato e la linea del tempo |
 | `Sources/BackupMe/RestoreBrowser.swift` (nuovo) | `RestoreActions`, il titolo, i tag, la tabella, i risultati; `StatusBadge`, `FileIcon` |
 | `Sources/BackupMe/RestoreInspector.swift` (nuovo) | L'ispettore: dettagli, carta d'anteprima, versioni |
 | `Sources/BackupMe/RestoreActionBar.swift` (nuovo) | La capsula delle azioni e il suo menu |
 | `Sources/BackupMe/RestoreView.swift` | Riscritto: finestra, stato, azioni, ricerca, avvisi; la barra |
-| `Sources/BackupMe/RestoreModel.swift` | `matches`: una riga contro un filtro (Task 5); `previewCopy`: la copia temporanea silenziosa per la carta (Task 6) |
+| `Sources/BackupMe/RestoreModel.swift` | `matches`: una riga contro un filtro, con `ChangeFilter` e `RowStatus` presi da `RestoreRules` (Task 5); `previewCopy`: la copia temporanea silenziosa per la carta (Task 6) |
 | `Sources/BackupMe/BackupMeApp.swift` | Finestra 1100×700; colore e simbolo di stato condivisi col pannello |
 | `Sources/BackupMe/Glass.swift` | Il commento: il vetro vale anche per la barra di Sfoglia |
 | `Tests/BackupCoreTests/RestoreRulesTestSupport.swift` (nuovo) | `Rules`: un calendario, un fuso e una lingua fissi per i test |
-| `Tests/BackupCoreTests/BackupTimelineTests.swift`, `WhenTextTests.swift`, `RestorePlannerTests.swift` (nuovi) | I quaranta test delle regole |
+| `Tests/BackupCoreTests/BackupTimelineTests.swift`, `WhenTextTests.swift`, `RestorePlannerTests.swift`, `RowFilterTests.swift` (nuovi) | I quarantadue test delle regole |
 | `docs/prova-sfoglia-backup.md` (nuovo), `CHANGELOG.md` | La lista di prova a schermo e la voce del changelog |
 
 ---
@@ -323,7 +324,7 @@ import Testing
 
 - [ ] **Step 3: Lanciarli e vederli fallire.**
 
-Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests"`
+Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests|RowFilterTests"`
 Expected: la compilazione si ferma su `error: … Source files for target RestoreRules should be located under 'Sources/RestoreRules'` (il target c'è, i sorgenti no).
 
 - [ ] **Step 4: Scrivere la regola.** Creare `Sources/RestoreRules/BackupTimeline.swift`:
@@ -504,7 +505,7 @@ public enum BackupTimeline {
 
 - [ ] **Step 5: Lanciare i test e vederli passare.**
 
-Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests"`
+Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests|RowFilterTests"`
 Expected: `Test run with 14 tests in 1 suite passed`
 
 - [ ] **Step 6: L'app compila ancora.**
@@ -596,7 +597,7 @@ import Testing
 
 - [ ] **Step 2: Lanciarli e vederli fallire.**
 
-Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests"`
+Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests|RowFilterTests"`
 Expected: `error: cannot find 'WhenText' in scope`
 
 - [ ] **Step 3: Scrivere la regola.** Creare `Sources/RestoreRules/WhenText.swift`:
@@ -646,7 +647,7 @@ public enum WhenText {
 
 - [ ] **Step 4: Lanciare i test e vederli passare.**
 
-Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests"`
+Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests|RowFilterTests"`
 Expected: `Test run with 18 tests in 2 suites passed` (i 14 del Task 1 e questi 4).
 
 - [ ] **Step 5: Commit**
@@ -919,7 +920,7 @@ import Testing
 
 - [ ] **Step 2: Lanciarli e vederli fallire.**
 
-Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests"`
+Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests|RowFilterTests"`
 Expected: `error: cannot find type 'RestorePlanner' in scope`
 
 - [ ] **Step 3: Scrivere la regola.** Creare `Sources/RestoreRules/RestorePlanner.swift`:
@@ -1127,7 +1128,7 @@ public enum RestorePlanner {
 
 - [ ] **Step 4: Lanciare i test e vederli passare.**
 
-Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests"`
+Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests|RowFilterTests"`
 Expected: `Test run with 40 tests in 4 suites passed`
 
 - [ ] **Step 5: L'intera suite.**
@@ -1339,22 +1340,35 @@ git commit -m "feat(app): la vista della linea del tempo in Sfoglia"
 ### Task 5: La vista `RestoreBrowser`
 
 **Files:**
-- Modify: `Sources/BackupMe/RestoreModel.swift` (una funzione)
+- Test: `Tests/BackupCoreTests/RowFilterTests.swift`
+- Create: `Sources/RestoreRules/ChangeFilter.swift`
+- Modify: `Sources/BackupMe/RestoreModel.swift` (un import, via due tipi, `matches`)
+- Modify: `Sources/BackupMe/RestoreView.swift` (un import, e via il vecchio `FileIcon`)
 - Create: `Sources/BackupMe/RestoreBrowser.swift`
-- Modify: `Sources/BackupMe/RestoreView.swift` (solo per togliere il vecchio `FileIcon`)
+
+`ChangeFilter` e `RowStatus` nascevano nell'app. La regola «questa riga passa quel filtro» va provata, e i test non arrivano all'app: i due tipi piccoli si spostano in `RestoreRules` insieme alla regola. Senza, il tag «Tutto» contava gli eliminati.
 
 `RestoreBrowser.swift` dichiara `FileIcon` interno, e la finestra vecchia ne ha uno privato con lo stesso nome: nello stesso modulo è una ridichiarazione. Si toglie quello vecchio; la finestra vecchia usa quello nuovo, che ha la stessa firma.
 
 **Interfaces — Produces:**
 
 ```swift
+// RestoreRules
+public enum ChangeFilter: String, CaseIterable, Sendable { case all, modified, missing, added }
+public struct RowStatus: Equatable, Sendable {
+    public var own: EntryStatus; public var modifiedInside: Bool; public var missingInside: Bool
+    public init(own: EntryStatus, modifiedInside: Bool = false, missingInside: Bool = false)
+    public func passes(_ filter: ChangeFilter) -> Bool   // «Tutto» prende ogni riga; nessuna riga del backup è «Nuovo»
+}
+// RestoreModel
+func matches(_ e: Entry, _ f: ChangeFilter) -> Bool     // «Nuovi» chiede a isAdded, gli altri allo stato
+
 struct RestoreActions {
     var enter: (Entry) -> Void
     var preview: (Entry) -> Void
     var restore: (String, [(source: String, path: String)]) -> Void
     var restoreInto: (String, [(source: String, path: String)]) -> Void
     var compare: (Entry) -> Void
-    var showVersions: () -> Void
     var reveal: (SearchHit) -> Void
     var quickLook: () -> Bool
     var dragProvider: (Entry) -> NSItemProvider?
@@ -1370,22 +1384,100 @@ struct StatusBadge: View {
     init(_ text: String, color: Color)
     static func change(_ s: RowStatus?, added: Bool, since: Bool) -> StatusBadge?   // nil when nothing changed
 }
-// RestoreModel
-func matches(_ e: Entry, _ f: ChangeFilter) -> Bool
 @MainActor enum FileIcon { static func image(for e: Entry) -> NSImage }
 ```
 
-- [ ] **Step 1: `matches` nel modello,** in `Sources/BackupMe/RestoreModel.swift`. Subito dopo la riga `func isAdded(_ e: Entry) -> Bool { … }` inserire (con una riga vuota prima):
+**Interfaces — Consumes:** `TimelineItem`, `WhenText.title`, `WhenText.subtitle` (Task 1–2).
+
+- [ ] **Step 1: Scrivere i test che devono fallire.** Creare `Tests/BackupCoreTests/RowFilterTests.swift`:
 
 ```swift
-    /// A row against a filter: a folder counts when something inside it changed or vanished.
+import Testing
+@testable import BackupCore
+@testable import RestoreRules
+
+@Suite struct RowFilterTests {
+    let changed = RowStatus(own: .modified), same = RowStatus(own: .unchanged), gone = RowStatus(own: .missing)
+    let holdsChanged = RowStatus(own: .unchanged, modifiedInside: true), holdsGone = RowStatus(own: .unchanged, missingInside: true)
+
+    @Test func modifiedAndDeletedLookAtTheStatus() {
+        #expect(changed.passes(.modified) && !changed.passes(.missing))
+        #expect(gone.passes(.missing) && !gone.passes(.modified))
+        // a folder counts when something inside it changed or vanished
+        #expect(holdsChanged.passes(.modified) && !holdsChanged.passes(.missing))
+        #expect(holdsGone.passes(.missing) && !holdsGone.passes(.modified))
+        #expect(!same.passes(.modified) && !same.passes(.missing))
+    }
+
+    @Test func everythingPassesTuttoAndNoRowOfTheBackupIsNew() {
+        // «Tutto» once counted the deletions: its number was that of «Eliminati»
+        for s in [changed, same, gone, holdsChanged, holdsGone] {
+            #expect(s.passes(.all))
+            #expect(!s.passes(.added))
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Lanciarli e vederli fallire.**
+
+Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests|RowFilterTests"`
+Expected: `error: cannot find type 'RowStatus' in scope`
+
+- [ ] **Step 3: Scrivere la regola.** Creare `Sources/RestoreRules/ChangeFilter.swift`:
+
+```swift
+import BackupCore
+import Foundation
+
+/// What the list shows of a folder: everything, or only what differs from this Mac's disk.
+public enum ChangeFilter: String, CaseIterable, Sendable { case all, modified, missing, added }
+
+/// A row against this Mac's disk; folders also say whether something inside them changed or disappeared.
+public struct RowStatus: Equatable, Sendable {
+    public var own: EntryStatus
+    public var modifiedInside = false
+    public var missingInside = false
+
+    public init(own: EntryStatus, modifiedInside: Bool = false, missingInside: Bool = false) {
+        self.own = own; self.modifiedInside = modifiedInside; self.missingInside = missingInside
+    }
+
+    /// Whether a row with this status passes a filter: a folder counts when something inside it changed or vanished.
+    /// «Tutto» takes every row, and no row of the backup is «Nuovo»: those are today's files, kept apart.
+    public func passes(_ filter: ChangeFilter) -> Bool {
+        switch filter {
+        case .all: true
+        case .modified: own == .modified || modifiedInside
+        case .missing: own == .missing || missingInside
+        case .added: false
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Lanciare i test e vederli passare.**
+
+Run: `swift test --filter "BackupTimelineTests|WhenTextTests|RestorePlannerTests|SelectionSummaryTests|RowFilterTests"`
+Expected: `Test run with 42 tests in 5 suites passed`
+
+- [ ] **Step 5: Il modello,** in `Sources/BackupMe/RestoreModel.swift`:
+  - aggiungere `import RestoreRules` subito dopo `import Foundation`;
+  - cancellare le due dichiarazioni che stanno sotto `struct SearchHit`: `struct RowStatus { … }` con la sua riga di commento, ed `enum ChangeFilter { … }` (ora vengono da `RestoreRules`);
+  - subito dopo la riga `func isAdded(_ e: Entry) -> Bool { … }` inserire (con una riga vuota prima):
+
+```swift
+    /// A row against a filter: «Nuovi» is for today's files the backup lacks, so a row of the backup never is one.
     func matches(_ e: Entry, _ f: ChangeFilter) -> Bool {
-        guard let s = status(of: e) else { return false }
-        return f == .modified ? s.own == .modified || s.modifiedInside : s.own == .missing || s.missingInside
+        switch f {
+        case .all: true
+        case .added: isAdded(e)
+        case .modified, .missing: status(of: e)?.passes(f) ?? false
+        }
     }
 ```
 
-- [ ] **Step 2: Togliere il vecchio `FileIcon`** da `Sources/BackupMe/RestoreView.swift`: cancellare, in fondo al file, questo blocco e la riga vuota che lo segue (righe 803–816):
+- [ ] **Step 6: La finestra vecchia,** in `Sources/BackupMe/RestoreView.swift`. Prima aggiungere `import RestoreRules` subito dopo `import QuickLook`: la finestra usa `ChangeFilter` e `RowStatus`, che ora stanno lì. Poi togliere in fondo al file il vecchio `FileIcon`: questo blocco e la riga vuota che lo segue (righe 803–816):
 
 ```swift
 /// One NSWorkspace lookup per extension: the table asks for an icon on every redraw.
@@ -1405,7 +1497,7 @@ func matches(_ e: Entry, _ f: ChangeFilter) -> Bool
 
 Restano, in fondo a `RestoreView.swift`, `private struct StatusPill`, `private struct EntryInspector`, l'estensione `hidingToolbarTitle` e `extension Entry: Identifiable`.
 
-- [ ] **Step 3: Creare** `Sources/BackupMe/RestoreBrowser.swift`:
+- [ ] **Step 7: Creare** `Sources/BackupMe/RestoreBrowser.swift`:
 
 ```swift
 import AppKit
@@ -1423,8 +1515,6 @@ struct RestoreActions {
     /// From a backup, into a folder of choice.
     var restoreInto: (String, [(source: String, path: String)]) -> Void
     var compare: (Entry) -> Void
-    /// Opens the inspector.
-    var showVersions: () -> Void
     /// Leaves the search and opens the folder holding a result, the file selected.
     var reveal: (SearchHit) -> Void
     /// Space in the list: Quick Look of the selected file, or close it. False when there is nothing to show.
@@ -1450,6 +1540,7 @@ struct RestoreBrowser: View {
     @Binding var sortOrder: [KeyPathComparator<Entry>]
     @Binding var columns: TableColumnCustomization<Entry>
     let locale: Locale
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1517,7 +1608,7 @@ struct RestoreBrowser: View {
         .accessibilityAddTraits(deletedOnly == deleted ? .isSelected : [])
     }
 
-    /// A filter as a tag: dark when it is the one in use.
+    /// A filter as a tag: dark when it is the one in use; a pale capsule in Dark Mode, where primary is white.
     private func capsule(_ text: String, dot: Color? = nil, on: Bool) -> some View {
         HStack(spacing: 6) {
             if let dot { Circle().fill(dot).frame(width: 7, height: 7) }
@@ -1526,7 +1617,7 @@ struct RestoreBrowser: View {
         .font(.callout.weight(.medium))
         .padding(.horizontal, 10).frame(height: 26)
         .foregroundStyle(on ? Color.white : Color.primary)
-        .background(on ? Color.primary : Color.secondary.opacity(0.16), in: Capsule())
+        .background(on ? (colorScheme == .dark ? Color.white.opacity(0.28) : Color.primary) : Color.secondary.opacity(0.16), in: Capsule())
         .contentShape(Capsule())
     }
 
@@ -1535,6 +1626,7 @@ struct RestoreBrowser: View {
     private func counted(_ f: ChangeFilter) -> String {
         let name = f == .all ? "Tutto" : f == .modified ? "Modificati" : f == .missing ? "Eliminati" : "Nuovi"
         guard model.statusReady else { return name }
+        // «Nuovi» are kept apart from the rows of the backup: they are counted where they are
         let n = f == .added ? model.added().count : model.children().filter { model.matches($0, f) }.count
         return n == 0 ? name : "\(name) \(n)"
     }
@@ -1565,8 +1657,8 @@ struct RestoreBrowser: View {
             TableColumn("Rispetto a oggi") { e in
                 if let b = StatusBadge.change(model.status(of: e), added: model.isAdded(e), since: false) { b }
             }
-                .width(min: 90, ideal: 130, max: 170)
-                .customizationID("stato")
+            .width(min: 90, ideal: 130, max: 170)
+            .customizationID("stato")
             TableColumn("Dimensione", value: \.size) { e in
                 Text(e.kind == .file ? ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file) : "—")
                     .foregroundStyle(.secondary).monospacedDigit()
@@ -1613,7 +1705,7 @@ struct RestoreBrowser: View {
             TableColumn("Rispetto a oggi") { h in
                 if let b = StatusBadge.change(model.resultStatus[h].map { RowStatus(own: $0) }, added: false, since: false) { b }
             }
-                .width(min: 90, ideal: 130, max: 170)
+            .width(min: 90, ideal: 130, max: 170)
             TableColumn("Percorso") { h in
                 Text(((h.entry.source as NSString).lastPathComponent as NSString).appendingPathComponent(h.entry.path))
                     .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -1674,7 +1766,6 @@ struct RestoreBrowser: View {
     private func icon(_ e: Entry) -> some View {
         Image(nsImage: FileIcon.image(for: e)).resizable().frame(width: 20, height: 20)
     }
-
 }
 
 /// Words in a tinted box: the change since this backup reads without hovering.
@@ -1706,7 +1797,7 @@ struct StatusBadge: View {
 
 /// One NSWorkspace lookup per extension: the table asks for an icon on every redraw.
 @MainActor enum FileIcon {
-    static var cache: [String: NSImage] = [:]
+    private static var cache: [String: NSImage] = [:]
 
     static func image(for e: Entry) -> NSImage {
         let key = e.kind == .directory ? "/" : e.kind == .symlink ? "@" : (e.name as NSString).pathExtension.lowercased()
@@ -1719,21 +1810,22 @@ struct StatusBadge: View {
 }
 ```
 
-- [ ] **Step 4: Compilare.**
+- [ ] **Step 8: Compilare.**
 
 Run: `swift build --product BackupMe`
 Expected: `Build complete!`
 
-- [ ] **Step 5: I test restano verdi.**
+- [ ] **Step 9: L'intera suite.**
 
 Run: `swift test 2>&1 | tail -3`
-Expected: `Test run with 363 tests in 34 suites passed`
+Expected: `Test run with 365 tests in 35 suites passed` (i 323 di prima e i 42 nuovi).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
+git add Sources/RestoreRules/ChangeFilter.swift Tests/BackupCoreTests/RowFilterTests.swift
 git add Sources/BackupMe/RestoreModel.swift Sources/BackupMe/RestoreBrowser.swift Sources/BackupMe/RestoreView.swift
-git commit -m "feat(app): la vista del titolo, dei filtri e della lista in Sfoglia"
+git commit -m "feat(app): la vista del titolo, dei filtri e della lista in Sfoglia; la regola dei filtri provata"
 ```
 
 ---
@@ -2095,7 +2187,7 @@ Expected: `Build complete!`
 - [ ] **Step 4: I test restano verdi.**
 
 Run: `swift test 2>&1 | tail -3`
-Expected: `Test run with 363 tests in 34 suites passed`
+Expected: `Test run with 365 tests in 35 suites passed`
 
 - [ ] **Step 5: Commit**
 
@@ -2679,7 +2771,6 @@ struct RestoreView: View {
             restore: { id, items in model.restore(snapshotID: id, items: items, mode: .besideOriginal) },
             restoreInto: { id, items in chooseFolder { dir in model.restore(snapshotID: id, items: items, mode: .into(dir)) } },
             compare: { model.compare($0) },
-            showVersions: { showInspector = true },
             reveal: { h in model.reveal(h); reveal += 1 },
             quickLook: quickLook,
             dragProvider: dragProvider)
@@ -2988,7 +3079,7 @@ Expected: `Build complete!`
 - [ ] **Step 6: L'intera suite.**
 
 Run: `swift test 2>&1 | tail -3`
-Expected: `Test run with 363 tests in 34 suites passed`
+Expected: `Test run with 365 tests in 35 suites passed`
 
 - [ ] **Step 7: Compilare l'app come si installa** (universale: prova anche che il codice compila per Intel).
 
@@ -3017,7 +3108,7 @@ git commit -m "feat(app): Sfoglia backup con la finestra nuova"
 
 Da fare con un archivio vero (OneDrive o un disco esterno) dopo `scripts/build-app.sh --install`, nell'ordine. Ogni riga va segnata quando passa; una che non passa va scritta in fondo a questa lista, con cosa si è visto.
 
-I test automatici coprono le regole (le sezioni della linea del tempo, i testi di data e ora, cosa «Ripristina» ripristina): quaranta test in `Tests/BackupCoreTests`, i cui nomi cominciano con `BackupTimelineTests`, `WhenTextTests`, `RestorePlannerTests` e `SelectionSummaryTests`. Quello che segue è ciò che solo a schermo si vede.
+I test automatici coprono le regole (le sezioni della linea del tempo, i testi di data e ora, cosa «Ripristina» ripristina, quali righe passano i filtri): quarantadue test in `Tests/BackupCoreTests`, i cui nomi cominciano con `BackupTimelineTests`, `WhenTextTests`, `RestorePlannerTests`, `SelectionSummaryTests` e `RowFilterTests`. Quello che segue è ciò che solo a schermo si vede.
 
 ## Linea del tempo
 
@@ -3028,6 +3119,7 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 - [ ] I backup più vecchi delle ultime 50 esecuzioni, e quelli dell'archivio di un altro computer, hanno solo punto e ora.
 - [ ] Il suggerimento e VoiceOver leggono data completa, MB e avvisi.
 - [ ] ⌥⌘↑ e ⌥⌘↓ cambiano backup e l'elenco scorre fino a mostrarlo; un clic su una riga non fa scorrere niente.
+- [ ] Un clic sul bordo sinistro e su quello destro di una riga sceglie proprio quella riga.
 - [ ] Scegliere molti backup in fretta non blocca l'app.
 - [ ] Durante una ricerca, un clic su una riga chiude la ricerca e mostra quel backup.
 
@@ -3070,10 +3162,14 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 - [ ] La capsula sta in fondo sotto lista e ispettore; con l'ispettore chiuso, o la barra laterale nascosta, si allarga.
 - [ ] Il vetro non dà glitch su macOS 26 o successivi (e, se disponibile, la capsula opaca su 14 o 15).
 
+## Aspetto scuro
+
+- [ ] Con l'aspetto scuro di macOS: il tag del filtro in uso, i badge di stato e la barra delle azioni si leggono (niente bianco su bianco).
+
 ## Ricerca
 
 - [ ] Il titolo è la ricerca tra virgolette, con il conteggio dei risultati; i tag sono Tutti e Solo eliminati.
-- [ ] Doppio clic su un risultato: «Mostra nel backup» chiude la ricerca, apre la cartella e seleziona il file.
+- [ ] Doppio clic su un risultato: «Mostra nel backup» chiude la ricerca, apre la cartella e seleziona il file; se il suo backup sta fuori schermo, la linea del tempo scorre fino a mostrarlo.
 - [ ] Senza risultati, e con «Solo eliminati» senza risultati: i testi di prima.
 
 ## Stati vuoti
@@ -3092,7 +3188,7 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 ## [Non pubblicato]
 
 ### Cambiato
-- Sfoglia backup rifatta. La barra laterale è una linea del tempo: ogni backup è un punto sulla linea, con l'ora, una barra lunga quanto i dati salvati e «+N MB»; un backup con avvisi è arancione. In cima una carta ripete lo stato del pannello della barra dei menu. Il pannello centrale dice in grande «Ieri alle 15:00», con la data, i dati salvati e gli avvisi; i filtri Modificati, Eliminati e Nuovi sono tag. L'ispettore, più largo, mostra un'anteprima del file (immagini, testo, anteprima rapida degli altri tipi, fino a 20 MB) e le versioni su una linea. Le azioni stanno in una capsula in fondo, sotto lista e ispettore: Anteprima, Confronta con oggi e un solo «Ripristina» con menu («Ripristina in…», «Mostra nel Finder», «Mostra versioni del file»). Scegliendo una versione nell'ispettore, «Ripristina» ripristina quella. Le regole non cambiano: cosa si ripristina, da quale backup e quando chiede prima lo decide il target nuovo `RestoreRules`, provato con 40 test. La finestra si apre 1100×700.
+- Sfoglia backup rifatta. La barra laterale è una linea del tempo: ogni backup è un punto sulla linea, con l'ora, una barra lunga quanto i dati salvati e «+N MB»; un backup con avvisi è arancione. In cima una carta ripete lo stato del pannello della barra dei menu. Il pannello centrale dice in grande «Ieri alle 15:00», con la data, i dati salvati e gli avvisi; i filtri Modificati, Eliminati e Nuovi sono tag. L'ispettore, più largo, mostra un'anteprima del file (immagini, testo, anteprima rapida degli altri tipi, fino a 20 MB) e le versioni su una linea. Le azioni stanno in una capsula in fondo, sotto lista e ispettore: Anteprima, Confronta con oggi e un solo «Ripristina» con menu («Ripristina in…», «Mostra nel Finder», «Mostra versioni del file»). Scegliendo una versione nell'ispettore, «Ripristina» ripristina quella. Le regole non cambiano: cosa si ripristina, da quale backup e quando chiede prima lo decide il target nuovo `RestoreRules`, provato con 42 test. La finestra si apre 1100×700.
 ```
 
 - [ ] **Step 3: Commit**
