@@ -118,14 +118,16 @@ public enum RestorePlanner {
         guard let backup = s.backup else { return Plan(action: .nothing, from: nil) }
         if s.searching {
             guard let hit = s.hit else { return Plan(action: .nothing, from: nil) }
-            if let v = s.version, v.entry.source == hit.entry.source, v.entry.path == hit.entry.path {
+            // only a version of another backup is a version of its own: the result's is the result
+            if let v = s.version, v.backup.id != hit.backup.id, v.entry.source == hit.entry.source, v.entry.path == hit.entry.path {
                 return Plan(action: .version(Item(v.entry)), from: v.backup, isVersion: true)
             }
             return Plan(action: .items([Item(hit.entry)]), from: hit.backup)
         }
         // a row without content («Nuovo») is on disk today and not in the backup: nothing comes back from it
         let restorable = s.visible.filter { s.selectedIDs.contains($0.restoreID) && $0.hasContent }
-        if restorable.count == 1, restorable[0].kind == .file, let v = s.version,
+        // the browsed backup's own version is not another version: the file is simply restored from it
+        if restorable.count == 1, restorable[0].kind == .file, let v = s.version, v.backup.id != backup.id,
            v.entry.source == restorable[0].source, v.entry.path == restorable[0].path {
             return Plan(action: .version(Item(v.entry)), from: v.backup, isVersion: true)
         }

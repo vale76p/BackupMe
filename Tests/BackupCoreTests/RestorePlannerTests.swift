@@ -84,6 +84,11 @@ import Testing
         #expect(plan.action == .version(.init(file)))
         #expect(plan.from == older)
         #expect(plan.isVersion)
+        // the browsed backup's own version is not another version: the file is simply restored from it
+        let own = RestorePlanner.resolve(browsing(visible: [file], selected: [file], version: .init(backup: backup, entry: file)))
+        #expect(own.action == .items([.init(file)]))
+        #expect(own.from == backup)
+        #expect(!own.isVersion)
     }
 
     @Test func aVersionOfAnotherFileIsIgnored() {
@@ -109,6 +114,9 @@ import Testing
         #expect(versioned.action == .version(.init(file)))
         #expect(versioned.from == backup)
         #expect(versioned.isVersion)
+        // a version held by the result's own backup is the result itself
+        #expect(RestorePlanner.resolve(RestorePlanner.Selection(backup: backup, searching: true, hit: hit,
+                                                              version: .init(backup: older, entry: file))).action == .items([.init(file)]))
     }
 
     @Test func aSearchWithNothingSelectedRestoresNothing() {
@@ -138,6 +146,9 @@ import Testing
     @Test func theBarOfAVersion() {
         let selection = browsing(visible: [file], selected: [file], version: .init(backup: older, entry: file))
         #expect(bar(selection) == .init(icon: .file, name: "README.md", detail: "versione del 30 ott, 20:00", buttons: [.preview, .restore]))
+        // the bar names a version only when it comes from another backup than the one being viewed
+        let own = browsing(visible: [file], selected: [file], version: .init(backup: backup, entry: file))
+        #expect(bar(own) == .init(icon: .file, name: "README.md", detail: "dal backup di ieri alle 15:00", buttons: [.preview, .restore]))
     }
 
     @Test func theBarOfASavedFolderAndOfAllOfThem() {
