@@ -399,6 +399,14 @@ struct SearchHit: Hashable, Identifiable {
         }
     }
 
+    /// A read-only temporary copy for the inspector's card, which must not interrupt: nil, and a debug line in the log, if it can't be read.
+    func previewCopy(_ e: Entry) async -> URL? {
+        do { return try await withRepository { try Restorer(repository: $0).extract(e) } } catch {
+            Log.restore.debug("Anteprima nell'ispettore non disponibile: \(AppModel.describe(error))")
+            return nil
+        }
+    }
+
     /// A read-only temporary copy for Quick Look or comparing; nil (with an error shown) if it can't be read.
     func extracted(_ e: Entry) async -> URL? {
         do { return try await withRepository { try Restorer(repository: $0).extract(e) } } catch {
