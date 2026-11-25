@@ -22,11 +22,12 @@ struct RestoreTimeline: View {
 
     var body: some View {
         let sections = BackupTimeline.sections(items, calendar: calendar, locale: locale)
+        let largest = BackupTimeline.largest(items)
         ScrollViewReader { proxy in
             List {
                 ForEach(sections) { section in
                     Section {
-                        ForEach(section.items) { item in row(item) }
+                        ForEach(section.items) { item in row(item, largest: largest) }
                     } header: { header(section) }
                 }
             }
@@ -76,7 +77,7 @@ struct RestoreTimeline: View {
         .help("Dati nuovi salvati da questi backup")
     }
 
-    private func row(_ item: TimelineItem) -> some View {
+    private func row(_ item: TimelineItem, largest: Int64) -> some View {
         let selected = model.selectedID == item.id
         let warned = (item.warnings ?? 0) > 0
         let tip = BackupTimeline.detail(item, calendar: calendar, locale: locale)
@@ -97,8 +98,8 @@ struct RestoreTimeline: View {
                 Text(BackupTimeline.hourLabel(item.date, calendar: calendar, locale: locale))
                     .font(.callout.weight(selected ? .semibold : .regular)).monospacedDigit()
                     .foregroundStyle(selected ? Color.white : Color.primary)
-                    .frame(width: 44, alignment: .leading)
-                Bar(fraction: BackupTimeline.barWidth(item, in: items), tint: tint,
+                    .frame(minWidth: 44, alignment: .leading).fixedSize()
+                Bar(fraction: BackupTimeline.barWidth(item, largest: largest), tint: tint,
                     track: selected ? Color.white.opacity(0.25) : Color.secondary.opacity(0.15))
                     .padding(.trailing, 8)
                 Text(BackupTimeline.barLabel(item, locale: locale)).font(.caption).monospacedDigit()

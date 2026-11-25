@@ -34,27 +34,25 @@ struct RestoreView: View {
     @State private var reveal = 0
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// The sidebar's width, read from inside it: the bar starts where the sidebar ends.
-    @State private var sidebarWidth: CGFloat = 0
+    @State private var sidebarWidth = SidebarWidth()
 
     // split in small parts: as one chain the body is too big for the type checker
     var body: some View {
-        withDialogs(withReactions(window
-            .searchable(text: $model.search, prompt: "Cerca in tutti i backup")
-            .searchScopes($deletedOnly) {
-                Text("Tutti").tag(false)
-                if model.showsStatus { Text("Solo eliminati").tag(true) }
-            }))
+        // the tags under the title are the search's scope: no scope bar besides them
+        let d = derived
+        return withDialogs(withReactions(window(d).searchable(text: $model.search, prompt: "Cerca in tutti i backup"), d))
             .quickLookPreview($previewURL)
     }
 
-    private func withReactions(_ v: some View) -> some View {
-        v.onChange(of: model.selectedID) { _, _ in selectedIDs = []; picked = nil }
+    private func withReactions(_ v: some View, _ d: Derived) -> some View {
+        // in a search the chosen version goes with the result: a list refreshed under it must not drop it
+        v.onChange(of: model.selectedID) { _, _ in selectedIDs = []; if model.search.isEmpty { picked = nil } }
             .onChange(of: model.search) { _, _ in hit = nil; picked = nil }
             // a filter hiding selected rows deselects them: actions act only on what is visible
-            .onChange(of: rows.map(\.id)) { _, ids in selectedIDs.formIntersection(ids) }
+            .onChange(of: d.rows.map(\.id)) { _, ids in selectedIDs.formIntersection(ids) }
             .onChange(of: deletedOnly) { _, _ in if let h = hit, !shownResults.contains(h) { hit = nil } }
             // a new selection has no chosen version yet
-            .onChange(of: selectedIDs) { _, _ in picked = nil }
+            .onChange(of: selectedIDs) { _, _ in if model.search.isEmpty { picked = nil } }
             .onChange(of: hit) { _, _ in picked = nil }
             .onChange(of: model.computer, initial: true) {
                 hit = nil; selectedIDs = []; back = []; forward = []; picked = nil; reveal += 1
@@ -62,7 +60,7 @@ struct RestoreView: View {
                 if !model.showsStatus { filter = .all; deletedOnly = false }
             }
             // a sidebar that hides stops reporting its width: the bar must not keep room for it
-            .onChange(of: columnVisibility) { _, v in if v == .detailOnly { sidebarWidth = 0 } }
+            .onChange(of: columnVisibility) { _, v in if v == .detailOnly { sidebarWidth.value = 0 } }
             .onChange(of: model.app.settings.destination) { _, _ in model.reload() }
             .task(id: [model.selectedID, model.source, model.currentPath, model.selected?.id, model.pendingSelection,
                        String(model.statusEpoch)]) {
@@ -85,8 +83,9 @@ struct RestoreView: View {
                     Button("Backup più recente") { stepBackup(-1) }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
                     Button("Backup più vecchio") { stepBackup(1) }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
                     // here, not on the bar's menu: a Menu's shortcuts don't fire while it is closed
-                    Button("Ripristina") { restoreTargets() }.keyboardShortcut("r").disabled(restoreDisabled)
-                    Button("Ripristina in…") { restoreTargetsInto() }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(restoreDisabled)
+                    Button("Ripristina") { restoreTargets() }.keyboardShortcut("r").disabled(restoreDisabled(d.plan))
+                    Button("Ripristina in…") { restoreTargetsInto() }.keyboardShortcut("r", modifiers: [.command, .shift])
+                        .disabled(restoreDisabled(d.plan))
                 }
                 .opacity(0)
                 .accessibilityHidden(true)
@@ -121,18 +120,18 @@ struct RestoreView: View {
         } message: { Text(model.error?.message ?? "") }
     }
 
-    private var window: some View {
+    private func window(_ d: Derived) -> some View {
         // backups in the timeline on the left, where they are always visible; details and versions in the inspector
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebar
+            sidebar(d.items)
         } detail: {
-            detail
+            detail(d)
                 // minimums on the columns, not on the window: a window-wide minimum makes the sidebar jump when it
                 // collapses, as the window is re-constrained on every frame of the animation
                 .frame(minWidth: 440, minHeight: 420)
                 .safeAreaPadding(.bottom, showsBar ? RestoreActionBar.height : 0)
                 .inspector(isPresented: $showInspector) {
-                    inspector.inspectorColumnWidth(min: 260, ideal: 310, max: 380)
+                    inspector(d.selection).inspectorColumnWidth(min: 260, ideal: 310, max: 380)
                 }
         }
         .navigationTitle(title)
@@ -142,24 +141,26 @@ struct RestoreView: View {
         // the bar floats over the list and the inspector alike, so it is laid over the whole split view
         .overlay(alignment: .bottom) {
             if showsBar {
-                let urls = todayURLs
-                RestoreActionBar(
-                    bar: bar, entry: barEntry, disabled: restoreDisabled, busy: busy, help: restoreHelp,
-                    revealTitle: revealTitle, revealIcon: revealIcon, canReveal: !urls.isEmpty,
-                    canShowVersions: barFile != nil, preview: barPreview,
-                    compare: { if let e = barFile { model.compare(picked?.entry ?? e) } },
-                    restore: restoreTargets, restoreInto: restoreTargetsInto, reveal: revealSelection,
-                    showVersions: { showInspector = true })
-                    .padding(.leading, sidebarWidth + 12)
-                    .padding(.trailing, 12)
-                    .padding(.bottom, 10)
+                // a row whose status isn't known yet counts as on disk here: the disk is asked on the click, not on every draw
+                let barFile = d.barFile
+                AfterSidebar(width: sidebarWidth) {
+                    RestoreActionBar(
+                        bar: d.bar, entry: barEntry(d.plan), disabled: restoreDisabled(d.plan), busy: busy, help: restoreHelp(d),
+                        revealTitle: revealTitle, revealIcon: revealIcon, canReveal: !todayURLs(d, askDisk: false).isEmpty,
+                        canShowVersions: barFile != nil, preview: barPreview,
+                        compare: { if let e = barFile { model.compare(picked?.entry ?? e) } },
+                        restore: restoreTargets, restoreInto: restoreTargetsInto, reveal: revealSelection,
+                        showVersions: { showInspector = true })
+                }
+                .padding(.trailing, 12)
+                .padding(.bottom, 10)
             }
         }
     }
 
-    private var sidebar: some View {
+    private func sidebar(_ items: [TimelineItem]) -> some View {
         RestoreTimeline(
-            model: model, items: timelineItems, reveal: reveal, showStatus: model.showsStatus,
+            model: model, items: items, reveal: reveal, showStatus: model.showsStatus,
             statusText: model.app.statusText, statusColor: model.app.statusColor, statusSymbol: model.app.statusSymbol,
             locale: .current
         ) { id in
@@ -169,12 +170,12 @@ struct RestoreView: View {
         .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 300)
         .background {
             GeometryReader { g in
-                Color.clear.onChange(of: g.size.width, initial: true) { _, width in sidebarWidth = width }
+                Color.clear.onChange(of: g.size.width, initial: true) { _, width in sidebarWidth.value = width }
             }
         }
     }
 
-    private var detail: some View {
+    private func detail(_ d: Derived) -> some View {
         Group {
             if !model.hasDestination {
                 ContentUnavailableView {
@@ -189,7 +190,7 @@ struct RestoreView: View {
                                        description: Text("Collegala per sfogliare e ripristinare i backup."))
             } else {
                 RestoreBrowser(
-                    model: model, items: timelineItems, rows: rows, results: shownResults, actions: actions,
+                    model: model, items: d.items, rows: d.rows, results: shownResults, actions: actions,
                     filter: $filter, deletedOnly: $deletedOnly,
                     selectedIDs: $selectedIDs, hit: $hit, showInspector: $showInspector, sortOrder: $sortOrder, columns: $columns,
                     locale: .current)
@@ -197,7 +198,7 @@ struct RestoreView: View {
         }
     }
 
-    private var inspector: some View {
+    private func inspector(_ selection: RestorePlanner.Selection) -> some View {
         RestoreInspector(model: model, selection: selection, status: statusOf, showsStatus: model.showsStatus,
                          picked: $picked, locale: .current)
             .safeAreaPadding(.bottom, showsBar ? RestoreActionBar.height : 0)
@@ -232,8 +233,21 @@ struct RestoreView: View {
         BackupTimeline.items(snapshots: model.snapshots, history: model.app.history) { model.warningCount($0) }
     }
 
+    /// What a draw of the window works out once: every part of it reads these, and the rows of a big folder take a sort.
+    private struct Derived {
+        var items: [TimelineItem]
+        var rows: [Entry]
+        var selection: RestorePlanner.Selection
+        var plan: RestorePlanner.Plan
+        /// The file the bar acts on: the chosen version when there is one, else the selected file.
+        var barFile: Entry?
+        var bar: RestorePlanner.Bar
+    }
+
     /// What the window has selected, for the rules: they say what «Ripristina» acts on, as they always did.
-    private var selection: RestorePlanner.Selection {
+    private var derived: Derived {
+        let rows = rows
+        let chosen = chosenFile
         var s = RestorePlanner.Selection()
         s.backup = model.selected.map { .init(id: $0.id, date: $0.date) }
         s.searching = !model.search.isEmpty
@@ -245,19 +259,19 @@ struct RestoreView: View {
         s.path = model.currentPath
         s.visible = model.search.isEmpty ? rows : []
         s.selectedIDs = selectedIDs
-        if let e = chosenFile, let picked, picked.entry.source == e.source, picked.entry.path == e.path {
+        if let e = chosen, let picked, picked.entry.source == e.source, picked.entry.path == e.path {
             s.version = .init(backup: .init(id: picked.snapshotID, date: Snapshot.date(fromID: picked.snapshotID) ?? e.mtime),
                               entry: picked.entry)
         }
         s.sources = model.sources
-        return s
+        // «Nuovi» lists what is on disk today and not in the backup, folders too
+        if filter == .added { s.addedIDs = Set(rows.map(\.restoreID)) }
+        let plan = RestorePlanner.resolve(s)
+        var barFile = chosen
+        if case .version(let item) = plan.action { barFile = item.entry }
+        let bar = RestorePlanner.bar(plan, selection: s, compare: canCompare(barFile), locale: .current)
+        return Derived(items: timelineItems, rows: rows, selection: s, plan: plan, barFile: barFile, bar: bar)
     }
-
-    private var plan: RestorePlanner.Plan { RestorePlanner.resolve(selection) }
-    private var bar: RestorePlanner.Bar { RestorePlanner.bar(plan, selection: selection, compare: canCompare) }
-
-    /// The rows chosen in the list, whatever they are.
-    private var selectedRows: [Entry] { selection.visible.filter { selectedIDs.contains($0.restoreID) } }
 
     /// The only selected file, when there is just one: the one that has saved versions.
     private var chosenFile: Entry? {
@@ -266,23 +280,17 @@ struct RestoreView: View {
         return files.count == 1 ? files.first : nil
     }
 
-    /// The file the bar acts on: the chosen version when there is one, else the selected file.
-    private var barFile: Entry? {
-        if case .version(let item) = plan.action { return item.entry }
-        return chosenFile
-    }
-
     /// Confronta is for a saved file that differs from today's, on this Mac.
-    private var canCompare: Bool {
-        guard model.showsStatus, let e = barFile, e.kind == .file, e.hash != nil else { return false }
+    private func canCompare(_ e: Entry?) -> Bool {
+        guard model.showsStatus, let e, e.kind == .file, e.hash != nil else { return false }
         return Restorer.status(of: e) == .modified
     }
 
     /// The file or folder the bar speaks of, for its icon.
-    private var barEntry: Entry? { plan.items.count == 1 ? plan.items.first?.entry : nil }
+    private func barEntry(_ plan: RestorePlanner.Plan) -> Entry? { plan.items.count == 1 ? plan.items.first?.entry : nil }
 
     /// Nothing comes back from the plan, a restore runs, or the check before «Sostituisci» runs.
-    private var restoreDisabled: Bool { plan.action == .nothing || model.restoring || checking }
+    private func restoreDisabled(_ plan: RestorePlanner.Plan) -> Bool { plan.action == .nothing || model.restoring || checking }
 
     private var busy: String? {
         if model.restoring { return "Ripristino in corso…" }
@@ -295,9 +303,10 @@ struct RestoreView: View {
         model.hasDestination && model.notConnectedText == nil && (model.isLoading || !model.snapshots.isEmpty)
     }
 
-    private var restoreHelp: String {
+    private func restoreHelp(_ d: Derived) -> String {
         // short names, big targets: what each one does exactly is in the tooltip
-        switch plan.action {
+        let bar = d.bar
+        switch d.plan.action {
         case .nothing: return "Seleziona un elemento da ripristinare"
         case .wholeBackup: return "Ripristina tutte le cartelle di questo backup in una cartella a scelta"
         case .wholeFolder: return "Ripristina «\(bar.name)»: chiede come, accanto all'originale, in una cartella… o sostituendo quella attuale"
@@ -313,14 +322,16 @@ struct RestoreView: View {
     private var revealIcon: String { model.search.isEmpty ? "folder" : "clock.arrow.circlepath" }
 
     /// What the action restores and is still on this Mac, to show in the Finder; with nothing to restore, the rows chosen.
-    private var todayURLs: [URL] {
+    /// `askDisk`: a row not yet compared with the disk is looked up there, one at a time; otherwise it counts as there.
+    private func todayURLs(_ d: Derived, askDisk: Bool) -> [URL] {
         guard model.search.isEmpty else { return hit.map { [$0.entry.url] } ?? [] }
         // «Nuovo» rows have nothing to restore: where they are today is the only thing there is to show
-        let items = plan.action == .nothing ? selectedRows.map { RestorePlanner.Item($0) } : plan.items
+        let selectedRows = d.selection.visible.filter { selectedIDs.contains($0.restoreID) }
+        let items = d.plan.action == .nothing ? selectedRows.map { RestorePlanner.Item($0) } : d.plan.items
         return items.compactMap { item in
             // the folder's rows were compared with the disk once, off the main thread; a chosen version wasn't, and there is one
             if let e = item.entry, e.kind != .directory {
-                let missing = model.status(of: e).map { $0.own == .missing } ?? (Restorer.status(of: e) == .missing)
+                let missing = model.status(of: e).map { $0.own == .missing } ?? (askDisk && Restorer.status(of: e) == .missing)
                 if missing { return nil }
             }
             guard let e = item.entry else {
@@ -498,7 +509,8 @@ struct RestoreView: View {
 
     /// ⌘R, and the bar's button: what the plan says, beside the original, by the rules that always held (a whole saved folder asks first).
     private func restoreTargets() {
-        guard !restoreDisabled, let id = plan.from?.id else { return }
+        let plan = derived.plan
+        guard !restoreDisabled(plan), let id = plan.from?.id else { return }
         switch plan.action {
         case .nothing: break
         case .wholeBackup: restoreAllInto()
@@ -512,7 +524,8 @@ struct RestoreView: View {
 
     /// ⇧⌘R, and «Ripristina in…» in the bar's menu: the same items, into a folder of choice.
     private func restoreTargetsInto() {
-        guard !restoreDisabled, let id = plan.from?.id else { return }
+        let plan = derived.plan
+        guard !restoreDisabled(plan), let id = plan.from?.id else { return }
         switch plan.action {
         case .nothing: break
         case .wholeBackup: restoreAllInto()
@@ -525,7 +538,7 @@ struct RestoreView: View {
 
     /// Anteprima in the bar: the chosen version, or the file as this backup has it.
     private func barPreview() {
-        guard let e = barFile else { return }
+        guard let e = derived.barFile else { return }
         preview(picked?.entry ?? e)
     }
 
@@ -535,7 +548,7 @@ struct RestoreView: View {
             model.reveal(h)
             reveal += 1
         } else {
-            let urls = todayURLs
+            let urls = todayURLs(derived, askDisk: true)
             if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
         }
     }
@@ -622,6 +635,16 @@ struct RestoreView: View {
             if token == previewToken { previewURL = url }
         }
     }
+}
+
+/// The sidebar's width, kept out of the window's state: dragging the sidebar redraws the bar, not the whole window.
+@Observable fileprivate final class SidebarWidth { var value: CGFloat = 0 }
+
+/// The bar, starting where the sidebar ends.
+fileprivate struct AfterSidebar<Content: View>: View {
+    let width: SidebarWidth
+    @ViewBuilder let content: Content
+    var body: some View { content.padding(.leading, width.value + 12) }
 }
 
 extension View {

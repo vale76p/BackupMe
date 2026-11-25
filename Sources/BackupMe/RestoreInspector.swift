@@ -55,7 +55,7 @@ struct RestoreInspector: View {
                     PreviewCard(model: model, entry: version.entry, other: version.snapshotID == snapshotID ? nil : version, locale: locale)
                 }
                 HStack(spacing: 10) {
-                    Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 40, height: 40)
+                    Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 40, height: 40).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(entry.name).font(.headline).lineLimit(2).textSelection(.enabled)
                         if let b = StatusBadge.change(s, added: model.isAdded(entry), since: true) { b }
@@ -196,7 +196,7 @@ private struct PreviewCard: View {
     /// Above this the card keeps the icon: selecting a file must never read one of any size.
     static let limit: Int64 = 20_000_000
 
-    enum Content { case image(NSImage), text(String), thumbnail(NSImage) }
+    enum Content { case text(String), thumbnail(NSImage) }
 
     let model: RestoreModel
     let entry: Entry
@@ -220,17 +220,12 @@ private struct PreviewCard: View {
     /// What the card shows; the file's icon until something was read.
     @ViewBuilder private var picture: some View {
         switch content {
-        case .image(let image): shown(image, inset: 10)
-        case .thumbnail(let image): shown(image, inset: 14)
+        case .thumbnail(let image): Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).padding(14)
         case .text(let text):
             Text(text).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                 .lineLimit(30).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .topLeading).padding(12)
         case nil: Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 56, height: 56)
         }
-    }
-
-    private func shown(_ image: NSImage, inset: CGFloat) -> some View {
-        Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).padding(inset)
     }
 
     var body: some View {
@@ -250,13 +245,18 @@ private struct PreviewCard: View {
     /// A card that arrives late must not replace a newer selection: the task is cancelled when the file changes, and nothing is shown once it is.
     private func load() async {
         content = nil
-        guard entry.kind == .file, entry.size <= Self.limit, let url = await model.previewCopy(entry), !Task.isCancelled else { return }
+        guard entry.kind == .file, entry.size <= Self.limit else { return }
+        // the copy, once started, can't be stopped: a row passed by with the arrow keys must not start one
+        try? await Task.sleep(for: .milliseconds(250))
+        if Task.isCancelled { return }
+        let folder = RestoreModel.cardCopies.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        // the card's own folder: no other card, Quick Look or FileMerge reads from it, so it goes once the card is made
+        defer { try? FileManager.default.removeItem(at: folder) }
+        guard let url = await model.previewCopy(entry, in: folder), !Task.isCancelled else { return }
         // the reads stay off the main thread: only what was read comes back
         let read = await Task.detached(priority: .userInitiated) { PreviewLoader.read(url, name: entry.name) }.value
         if Task.isCancelled { return }
         switch read {
-        case .image(let data):
-            if let image = NSImage(data: data) { content = .image(image) }
         case .text(let text):
             content = .text(text)
         case .thumbnail:
@@ -272,12 +272,11 @@ private struct PreviewCard: View {
 
 private enum PreviewLoader {
     /// What was read off the main thread.
-    enum Read: Sendable { case image(Data), text(String), thumbnail }
+    enum Read: Sendable { case text(String), thumbnail }
 
-    /// An image, the first lines of a text, or a thumbnail for Quick Look to make.
+    /// The first lines of a text, or a thumbnail for Quick Look to make: an image too, scaled off the main thread, not decoded whole.
     nonisolated static func read(_ url: URL, name: String) -> Read? {
         let type = UTType(filenameExtension: (name as NSString).pathExtension)
-        if let type, type.conforms(to: .image) { return (try? Data(contentsOf: url)).map(Read.image) }
         if isText(type, at: url) { return firstLines(of: url).map(Read.text) }
         return .thumbnail
     }

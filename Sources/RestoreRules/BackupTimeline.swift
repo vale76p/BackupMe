@@ -135,10 +135,17 @@ public enum BackupTimeline {
 
     /// Width of an item's bar, 0...1, against the largest of `items`; nil when its data is unknown.
     public static func barWidth(_ item: TimelineItem, in items: [TimelineItem]) -> Double? {
+        barWidth(item, largest: largest(items))
+    }
+
+    /// The same against `largest(items)`, worked out once for a whole list.
+    public static func barWidth(_ item: TimelineItem, largest: Int64) -> Double? {
         guard let bytes = item.newBytes else { return nil }
-        let largest = items.compactMap(\.newBytes).max() ?? 0
         return largest > 0 ? Double(bytes) / Double(largest) : 0
     }
+
+    /// The most new data a backup of `items` saved; 0 when none is known.
+    public static func largest(_ items: [TimelineItem]) -> Int64 { items.compactMap(\.newBytes).max() ?? 0 }
 
     /// "15:00"
     public static func hourLabel(_ date: Date, calendar: Calendar = .current,

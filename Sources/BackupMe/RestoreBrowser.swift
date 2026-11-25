@@ -54,7 +54,8 @@ struct RestoreBrowser: View {
     @ViewBuilder private var heading: some View {
         if model.search.isEmpty {
             if let s = model.selected, let item = items.first(where: { $0.id == s.id }) {
-                title("Stai guardando il backup di", WhenText.title(s.date, locale: locale),
+                let when = WhenText.title(s.date, locale: locale)
+                title("Stai guardando il backup " + WhenText.article(when), when,
                       WhenText.subtitle(item, locale: locale))
                 // comparing with this Mac's disk is meaningless for another computer's archive
                 if model.showsStatus { tags }
@@ -262,7 +263,7 @@ struct RestoreBrowser: View {
     // MARK: rows
 
     private func icon(_ e: Entry) -> some View {
-        Image(nsImage: FileIcon.image(for: e)).resizable().frame(width: 20, height: 20)
+        Image(nsImage: FileIcon.image(for: e)).resizable().frame(width: 20, height: 20).accessibilityHidden(true)
     }
 }
 

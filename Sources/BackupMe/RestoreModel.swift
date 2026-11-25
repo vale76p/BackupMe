@@ -400,13 +400,19 @@ struct SearchHit: Hashable, Identifiable {
     }
 
     /// A read-only temporary copy of a backed-up file.
-    private func copy(_ e: Entry) async throws -> URL {
-        try await withRepository { try Restorer(repository: $0).extract(e) }
+    private func copy(_ e: Entry, into base: URL? = nil) async throws -> URL {
+        try await withRepository { repository in
+            let restorer = Restorer(repository: repository)
+            return try base.map { try restorer.extract(e, into: $0) } ?? restorer.extract(e)
+        }
     }
 
-    /// A copy for the inspector's card, which must not interrupt: nil, and a debug line in the log, if it can't be read.
-    func previewCopy(_ e: Entry) async -> URL? {
-        do { return try await copy(e) } catch {
+    /// Where the inspector's cards read their copies: each its own folder, deleted once read; what a crash leaves is deleted at launch.
+    nonisolated static let cardCopies = FileManager.default.temporaryDirectory.appending(path: "BackupMe-schede", directoryHint: .isDirectory)
+
+    /// A copy for the inspector's card, in `folder` (the card deletes it), which must not interrupt: nil, and a debug line in the log, if it can't be read.
+    func previewCopy(_ e: Entry, in folder: URL) async -> URL? {
+        do { return try await copy(e, into: folder) } catch {
             Log.restore.debug("Anteprima nell'ispettore non disponibile: \(AppModel.describe(error))")
             return nil
         }

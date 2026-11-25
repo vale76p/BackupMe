@@ -27,7 +27,8 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 
 ## Titolo e filtri
 
-- [ ] Sopra la lista: «Stai guardando il backup di», «Ieri alle 15:00», «lunedì 23 novembre 2026 · +210 MB salvati · 1 avviso» (senza dati resta la data sola).
+- [ ] Sopra la lista: «Stai guardando il backup di», «Ieri alle 15:00», «lunedì 23 novembre 2026 · +210 MB salvati · 1 avviso» (senza dati resta la data sola). Per un backup di più di una settimana fa: «Stai guardando il backup del», «9 novembre alle 20:00» («dell'» davanti all'8, all'1 e all'11).
+- [ ] Con l'orologio a 12 ore (Impostazioni di Sistema › Generali › Data e ora) le ore della linea del tempo si leggono intere («11:00 PM»), e il titolo e la riga della barra scrivono l'ora allo stesso modo.
 - [ ] I tag Tutto, Modificati, Eliminati, Nuovi filtrano le righe. Finite di confrontare la cartella con oggi, «Modificati», «Eliminati» e «Nuovi» portano il numero degli elementi che lo sono, e «Tutto» quello di tutte le righe (zero: nessun numero).
 - [ ] Con un filtro acceso e niente da mostrare: «Nessuna modifica», «Nessun elemento eliminato» o «Niente di nuovo». Finché il confronto non è finito: «Confronto con oggi…».
 - [ ] Un filtro che nasconde una riga selezionata la deseleziona: la barra non la elenca più.
@@ -52,7 +53,9 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 - [ ] Scorrere con le frecce da un file all'altro: la carta non mostra per un attimo la versione scelta nel file precedente.
 - [ ] Scegliere una versione la evidenzia e cambia la riga della barra in «versione del …»; la carta mostra quella versione.
 - [ ] Sotto «Versioni» c'è il conto («3 salvate») e una riga per ogni contenuto diverso, dalla più recente. «Cerca le versioni in tutti i backup» legge gli altri backup non ancora letti, e l'elenco dice «Restano N backup da leggere…».
-- [ ] Selezionare molti file in fretta non blocca la finestra, e una carta lenta non sostituisce una selezione più recente.
+- [ ] Selezionare molti file in fretta non blocca la finestra, e una carta lenta non sostituisce una selezione più recente. La carta di un file si legge dopo un attimo che è selezionato: tenendo premuta ↓ su una cartella di foto la carta resta sull'icona finché non ci si ferma.
+- [ ] Una foto grande (una scansione, una foto da 48 MP) si vede nella carta senza che la finestra si fermi.
+- [ ] Dopo aver scorso parecchi file, la cartella `BackupMe-schede` nella cartella temporanea (`open "$TMPDIR"`) è vuota o non c'è.
 - [ ] Un file che non si può estrarre lascia l'icona, senza avvisi.
 
 ## Barra delle azioni
@@ -63,7 +66,7 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 - [ ] Una cartella salvata per intera: «Ripristina» chiede (Sostituisci, Ripristina accanto, Ripristina in…), con il conto di quello che finirebbe nel Cestino. Mentre fa il controllo la barra dice «Controllo della cartella attuale…» e i pulsanti stanno spenti.
 - [ ] «Sostituisci» non compare per l'archivio di un altro computer, né per una cartella che questo Mac non salva.
 - [ ] A «Tutte le cartelle», niente selezionato: «Ripristina tutto…» chiede una cartella.
-- [ ] Solo elementi «Nuovi»: «Niente da ripristinare qui», e «Mostra nel Finder» al posto del pulsante: lo si preme e il Finder mostra quei file dove sono oggi.
+- [ ] Solo elementi «Nuovi»: «Niente da ripristinare qui», e «Mostra nel Finder» al posto del pulsante: lo si preme e il Finder mostra quei file dove sono oggi. Vale anche per una cartella «Nuova» (creata dopo il backup): ⌘R non fa niente.
 - [ ] Più elementi: «N elementi», il riepilogo, «Ripristina ▾».
 - [ ] Menu «▾»: «Ripristina in…»; «Mostra nel Finder» (spento se non c'è più niente da mostrare); «Mostra versioni del file» (solo con un file): apre l'ispettore.
 - [ ] ⌘R e ⇧⌘R fanno la stessa cosa del pulsante e della voce di menu.
@@ -78,7 +81,7 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 
 ## Ricerca
 
-- [ ] Il titolo è la ricerca tra virgolette, con il conteggio dei risultati; i tag sono Tutti e Solo eliminati.
+- [ ] Il titolo è la ricerca tra virgolette, con il conteggio dei risultati; i tag sono Tutti e Solo eliminati, e sotto la barra degli strumenti non compare un'altra scelta «Tutti / Solo eliminati».
 - [ ] Doppio clic su un risultato: «Mostra nel backup» chiude la ricerca, apre la cartella e seleziona il file; se il suo backup sta fuori schermo, la linea del tempo scorre fino a mostrarlo.
 - [ ] Un risultato selezionato: la barra dice «dal backup di …» e «Ripristina» ripristina quel file accanto all'originale, anche se nessun backup è ancora aperto.
 - [ ] Niente selezionato: la barra dice «Seleziona un risultato», con «Mostra nel backup» spento.

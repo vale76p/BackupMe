@@ -61,11 +61,15 @@ public enum RestorePlanner {
         public var version: Hit?
         /// The saved folders of the backup.
         public var sources: [String] = []
+        /// The rows on disk today and not in the backup («Nuovo»): a folder among them has no hash to tell it.
+        public var addedIDs: Set<String> = []
 
         public init(backup: Backup? = nil, searching: Bool = false, hit: Hit? = nil, source: String? = nil, path: String = "",
-                    visible: [Entry] = [], selectedIDs: Set<String> = [], version: Hit? = nil, sources: [String] = []) {
+                    visible: [Entry] = [], selectedIDs: Set<String> = [], version: Hit? = nil, sources: [String] = [],
+                    addedIDs: Set<String> = []) {
             self.backup = backup; self.searching = searching; self.hit = hit; self.source = source; self.path = path
             self.visible = visible; self.selectedIDs = selectedIDs; self.version = version; self.sources = sources
+            self.addedIDs = addedIDs
         }
     }
 
@@ -125,7 +129,9 @@ public enum RestorePlanner {
         }
         guard let backup = s.backup else { return Plan(action: .nothing, from: nil) }
         // a row without content («Nuovo») is on disk today and not in the backup: nothing comes back from it
-        let restorable = s.visible.filter { s.selectedIDs.contains($0.restoreID) && $0.hasContent }
+        let restorable = s.visible.filter {
+            s.selectedIDs.contains($0.restoreID) && $0.hasContent && !s.addedIDs.contains($0.restoreID)
+        }
         if restorable.count == 1, let v = otherVersion(s.version, of: restorable[0], than: backup) {
             return Plan(action: .version(Item(v.entry)), from: v.backup)
         }

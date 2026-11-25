@@ -50,7 +50,7 @@ struct RestoreActionBar: View {
         case .none: EmptyView()
         case .file, .folder:
             // the slot stays also without an entry (the folder being viewed): the text must not jump between selections
-            if let entry { Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 28, height: 28) }
+            if let entry { Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 28, height: 28).accessibilityHidden(true) }
             else { Color.clear.frame(width: 28, height: 28) }
         case .stack: Image(systemName: "square.stack.3d.up").font(.system(size: 22)).foregroundStyle(.secondary)
         case .drive: Image(systemName: "externaldrive").font(.system(size: 22)).foregroundStyle(.secondary)

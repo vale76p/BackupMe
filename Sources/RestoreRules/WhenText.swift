@@ -18,9 +18,20 @@ public enum WhenText {
     public static func from(_ date: Date, now: Date = Date(), calendar: Calendar = .current,
                             locale: Locale = Locale(identifier: "it_IT")) -> String {
         let text = title(date, now: now, calendar: calendar, locale: locale)
-        // a day written as a date takes the article, as «versione del 30 ott» does; a day with its name does not
-        let article = text.first?.isNumber == true ? "del" : "di"
-        return "dal backup " + article + " " + text.prefix(1).lowercased() + String(text.dropFirst())
+        return "dal backup " + of(text.prefix(1).lowercased() + String(text.dropFirst()))
+    }
+
+    /// "di ieri", "del 9 novembre", "dell'8 novembre".
+    static func of(_ text: String) -> String {
+        let a = article(text)
+        return a + (a.hasSuffix("'") ? "" : " ") + text
+    }
+
+    /// "di", "del" or "dell'" before `text`: a day written as a date takes the article, a day with its name does not.
+    public static func article(_ text: String) -> String {
+        guard let day = Int(text.prefix(while: \.isNumber)) else { return "di" }
+        // 1, 8 and 11 start with a vowel when read: «dell'1», «dell'8», «dell'11»
+        return [1, 8, 11].contains(day) ? "dell'" : "del"
     }
 
     /// "lunedì 23 novembre 2026 · +210 MB salvati · 1 avviso": the third line of the title.
@@ -37,6 +48,6 @@ public enum WhenText {
                                locale: Locale = Locale(identifier: "it_IT")) -> String {
         let time = BackupTimeline.hourLabel(date, calendar: calendar, locale: locale)
         if let named = date.todayOrYesterday(now: now, calendar: calendar) { return "versione di " + named.lowercased() + ", " + time }
-        return "versione del " + date.rule(calendar.isAnotherYear(date, now: now) ? .dayMonthYear : .dayMonth, calendar: calendar, locale: locale) + ", " + time
+        return "versione " + of(date.rule(calendar.isAnotherYear(date, now: now) ? .dayMonthYear : .dayMonth, calendar: calendar, locale: locale)) + ", " + time
     }
 }

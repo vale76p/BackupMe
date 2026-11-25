@@ -123,6 +123,8 @@ enum BackupStatus: Equatable { case idle, running(Double), failed(String) }
         // not affected: the engine never opens a file that is only in the cloud
         setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS, IOPOL_MATERIALIZE_DATALESS_FILES_ON)
         SystemServices.quitIfAlreadyRunning()
+        // the inspector's card copies are deleted once read: what is left was left by a crash, and nothing has it open
+        try? FileManager.default.removeItem(at: RestoreModel.cardCopies)
         if let data = try? Data(contentsOf: AppPaths.history) {
             let dec = JSONDecoder(); dec.dateDecodingStrategy = .secondsSince1970
             if let saved = try? dec.decode([BackupReport].self, from: data) { history = saved } else {
