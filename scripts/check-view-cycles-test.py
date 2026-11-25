@@ -57,6 +57,12 @@ CASES = [
             static var b: Int { a }
         }
     """}, ["E.a E.b"]),
+    ("a read through `Self.`", {"S.swift": """
+        enum E {
+            static var a: Int { Self.b }
+            static var b: Int { Self.a }
+        }
+    """}, ["E.a E.b"]),
     ("any attributes and modifiers", {"S.swift": """
         struct T {
             @ViewBuilder
@@ -80,12 +86,37 @@ CASES = [
     """}, ["H.a H.b"]),
     ("an extension in another file", {"H.swift": "struct H { var a: Int { b } }\n",
                                       "H+More.swift": "extension H { var b: Int { a } }\n"}, ["H.a H.b"]),
+    ("a `private extension` does not hide the type", {"S.swift": """
+        struct S { var a: Int { b } }
+        private extension S { var b: Int { a } }
+        struct U { var a: Int { b } }
+        fileprivate extension U { var b: Int { a } }
+    """}, ["S.a S.b", "U.a U.b"]),
+    ("an extension of a private type of the same file", {"S.swift": """
+        private struct Row { var a: Int { b } }
+        extension Row { var b: Int { a } }
+    """}, ["Row.a Row.b"]),
+    ("a `package` type extended in another file", {"S.swift": "package struct S { var a: Int { b } }\n",
+                                                   "S+More.swift": "extension S { var b: Int { a } }\n"}, ["S.a S.b"]),
+    ("an extension of a nested type", {"S.swift": """
+        struct Outer {
+            struct Inner { var a: Int { b } }
+        }
+        extension Outer.Inner { var b: Int { a } }
+    """}, ["Outer.Inner.a Outer.Inner.b"]),
     ("two unrelated types with the same names", {"S.swift": """
         struct P { var a: Int { b } }
         struct Q { var b: Int { 1 } }
     """}, []),
     ("two private types with the same name in two files are not one", {"P.swift": "private struct Row { var a: Int { b } }\n",
                                                                        "Q.swift": "private struct Row { var b: Int { a } }\n"}, []),
+    ("nested types with the same name under two types are not one", {"S.swift": """
+        struct P { struct Inner { var x: Int { y }; var y: Int { 1 } } }
+        struct Q { struct Inner { var y: Int { x }; var x: Int { 5 } } }
+    """}, []),
+    ("private nested types with the same name in two files are not one",
+     {"P.swift": "private struct Outer { struct Inner { var x: Int { y }; var y: Int { 1 } } }\n",
+      "Q.swift": "private struct Outer { struct Inner { var y: Int { x }; var x: Int { 5 } } }\n"}, []),
     ("a read inside a string interpolation", {"S.swift": r'''
         struct J {
             var title: String { "\(count)" }
@@ -110,6 +141,33 @@ CASES = [
             var b: Int { a }
         }
     '''}, ["X.a X.b"]),
+    ("a regex literal after `return`, holding a brace", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let s = "x"
+                return /^}$/.wholeMatch(in: s) == nil ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("a division after a force unwrap is not a regex literal", {"S.swift": r'''
+        struct D {
+            var a: Int {
+                let d = [1: 2]
+                let x = d[1]! / 2
+                return x + b
+            }
+            var b: Int { a }
+        }
+    '''}, ["D.a D.b"]),
+    ("cycles that share properties, each one listed", {"S.swift": """
+        struct S {
+            var a: Int { flag ? b : c }
+            var b: Int { a }
+            var c: Int { b }
+            var flag: Bool { true }
+        }
+    """}, ["S.a S.b", "S.a S.b S.c"]),
     ("a nested type is its own", {"S.swift": """
         struct Outer {
             var a: Int { inner }
@@ -119,7 +177,7 @@ CASES = [
                 var y: Int { x }
             }
         }
-    """}, ["Inner.x Inner.y"]),
+    """}, ["Outer.Inner.x Outer.Inner.y"]),
     ("a stored property is not read as one", {"S.swift": "struct S {\n    var a: Int = 0\n    var b: Int { a }\n}\n"}, []),
 ]
 
