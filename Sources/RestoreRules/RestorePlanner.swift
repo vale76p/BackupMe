@@ -15,7 +15,7 @@ public enum SelectionSummary {
         if folders > 0 { parts.append(folders == 1 ? "1 cartella" : "\(folders) cartelle") }
         if files > 0 { parts.append(files == 1 ? "1 file" : "\(files) file") }
         var text = parts.joined(separator: " e ")
-        if !parts.isEmpty, size > 0 { text += " · " + size.formatted(.byteCount(style: .file).locale(locale)) }
+        if !parts.isEmpty, size > 0 { text += " · " + BackupTimeline.bytesText(size, locale: locale) }
         return text
     }
 }
@@ -96,7 +96,7 @@ public enum RestorePlanner {
         /// The backup the restore reads from.
         public var from: Backup?
         /// `from` holds a chosen version, not the backup being browsed or the result's.
-        public var isVersion = false
+        public var isVersion: Bool { if case .version = action { return true }; return false }
         /// A whole saved folder asks before anything is written.
         public var asksFirst: Bool { if case .wholeFolder = action { return true }; return false }
 
@@ -110,26 +110,24 @@ public enum RestorePlanner {
             }
         }
 
-        init(action: Action, from: Backup?, isVersion: Bool = false) { self.action = action; self.from = from; self.isVersion = isVersion }
+        init(action: Action, from: Backup?) { self.action = action; self.from = from }
     }
 
     /// The same rules as ever: what is selected is what gets restored, beside the original, and a whole saved folder asks first.
     public static func resolve(_ s: Selection) -> Plan {
-        guard let backup = s.backup else { return Plan(action: .nothing, from: nil) }
+        // a result stands on its own: it is restored even while no backup is browsed yet (its index still loads)
         if s.searching {
             guard let hit = s.hit else { return Plan(action: .nothing, from: nil) }
-            // only a version of another backup is a version of its own: the result's is the result
-            if let v = s.version, v.backup.id != hit.backup.id, v.entry.source == hit.entry.source, v.entry.path == hit.entry.path {
-                return Plan(action: .version(Item(v.entry)), from: v.backup, isVersion: true)
+            if let v = otherVersion(s.version, of: hit.entry, than: hit.backup) {
+                return Plan(action: .version(Item(v.entry)), from: v.backup)
             }
             return Plan(action: .items([Item(hit.entry)]), from: hit.backup)
         }
+        guard let backup = s.backup else { return Plan(action: .nothing, from: nil) }
         // a row without content («Nuovo») is on disk today and not in the backup: nothing comes back from it
         let restorable = s.visible.filter { s.selectedIDs.contains($0.restoreID) && $0.hasContent }
-        // the browsed backup's own version is not another version: the file is simply restored from it
-        if restorable.count == 1, restorable[0].kind == .file, let v = s.version, v.backup.id != backup.id,
-           v.entry.source == restorable[0].source, v.entry.path == restorable[0].path {
-            return Plan(action: .version(Item(v.entry)), from: v.backup, isVersion: true)
+        if restorable.count == 1, let v = otherVersion(s.version, of: restorable[0], than: backup) {
+            return Plan(action: .version(Item(v.entry)), from: v.backup)
         }
         if !restorable.isEmpty {
             if restorable.count == 1, restorable[0].path.isEmpty { return Plan(action: .wholeFolder(restorable[0].source), from: backup) }
@@ -142,6 +140,12 @@ public enum RestorePlanner {
         }
         if s.path.isEmpty { return Plan(action: .wholeFolder(source), from: backup) }
         return Plan(action: .items([Item(source: source, path: s.path)]), from: backup)
+    }
+
+    /// The chosen version of the one file `entry`, when a backup other than `own` holds it: that backup's own version is not another version.
+    private static func otherVersion(_ v: Hit?, of entry: Entry, than own: Backup) -> Hit? {
+        guard let v, entry.kind == .file, v.backup.id != own.id, v.entry.source == entry.source, v.entry.path == entry.path else { return nil }
+        return v
     }
 
     /// What the bar shows.

@@ -43,6 +43,10 @@ import Testing
     @Test func theSelectedRowsAndOnlyThose() {
         let plan = RestorePlanner.resolve(browsing(visible: [folder, file, added], selected: [file, folder]))
         #expect(plan.action == .items([.init(folder), .init(file)]))
+        // a link has no hash: its target is its content, so it is restored like a file
+        var link = Rules.entry("BackupMe/link", kind: .symlink)
+        link.linkTarget = "../README.md"
+        #expect(RestorePlanner.resolve(browsing(visible: [link], selected: [link])).action == .items([.init(link)]))
     }
 
     @Test func aRowTheFilterHidesIsNotSelected() {
@@ -99,8 +103,11 @@ import Testing
     }
 
     @Test func aFolderHasNoVersion() {
-        let plan = RestorePlanner.resolve(browsing(visible: [folder], selected: [folder], version: .init(backup: older, entry: file)))
+        // the same path held as a file by another backup: a folder row never becomes a version
+        let plan = RestorePlanner.resolve(browsing(visible: [folder], selected: [folder],
+                                                   version: .init(backup: older, entry: Rules.entry("BackupMe", size: 15_000))))
         #expect(plan.action == .items([.init(folder)]))
+        #expect(plan.from == backup)
     }
 
     @Test func aSearchResult() {
@@ -114,6 +121,10 @@ import Testing
         #expect(versioned.action == .version(.init(file)))
         #expect(versioned.from == backup)
         #expect(versioned.isVersion)
+        // before any backup is browsed (its index still loads), a result is restored all the same
+        let early = RestorePlanner.resolve(RestorePlanner.Selection(searching: true, hit: hit))
+        #expect(early.action == .items([.init(file)]))
+        #expect(early.from == older)
         // a version held by the result's own backup is the result itself
         #expect(RestorePlanner.resolve(RestorePlanner.Selection(backup: backup, searching: true, hit: hit,
                                                               version: .init(backup: older, entry: file))).action == .items([.init(file)]))
@@ -146,6 +157,8 @@ import Testing
     @Test func theBarOfAVersion() {
         let selection = browsing(visible: [file], selected: [file], version: .init(backup: older, entry: file))
         #expect(bar(selection) == .init(icon: .file, name: "README.md", detail: "versione del 30 ott, 20:00", buttons: [.preview, .restore]))
+        #expect(bar(selection, compare: true) == .init(icon: .file, name: "README.md", detail: "versione del 30 ott, 20:00",
+                                                        buttons: [.preview, .compare, .restore]))
         // the bar names a version only when it comes from another backup than the one being viewed
         let own = browsing(visible: [file], selected: [file], version: .init(backup: backup, entry: file))
         #expect(bar(own) == .init(icon: .file, name: "README.md", detail: "dal backup di ieri alle 15:00", buttons: [.preview, .restore]))
@@ -156,12 +169,16 @@ import Testing
         #expect(bar(one) == .init(icon: .folder, name: "Progetti", detail: "cartella intera · dal backup di ieri alle 15:00", buttons: [.restore]))
         let all = browsing(source: nil, path: "", visible: [saved, savedOther], selected: [])
         #expect(bar(all) == .init(icon: .drive, name: "Tutte le cartelle", detail: "2 cartelle · dal backup di ieri alle 15:00", buttons: [.restoreAll]))
+        var single = browsing(source: nil, path: "", visible: [saved], selected: [])
+        single.sources = [source]
+        #expect(bar(single) == .init(icon: .drive, name: "Tutte le cartelle", detail: "1 cartella · dal backup di ieri alle 15:00", buttons: [.restoreAll]))
     }
 
     @Test func thePlanListsWhatItRestores() {
         #expect(RestorePlanner.resolve(browsing(visible: [folder, file], selected: [folder, file])).items == [.init(folder), .init(file)])
         #expect(RestorePlanner.resolve(browsing(source: nil, path: "", visible: [saved], selected: [saved])).items == [.init(source: source, path: "")])
         #expect(RestorePlanner.resolve(browsing(source: nil, path: "", visible: [saved], selected: [])).items.isEmpty)
+        #expect(RestorePlanner.resolve(browsing(visible: [file], selected: [file], version: .init(backup: older, entry: file))).items == [.init(file)])
         #expect(RestorePlanner.resolve(RestorePlanner.Selection()).items.isEmpty)
     }
 
