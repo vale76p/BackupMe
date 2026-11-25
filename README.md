@@ -6,7 +6,7 @@ Backup locale per macOS in stile Time Machine, gestito dalla barra dei menu. Pen
 - Archivio deduplicato: ogni file è salvato una volta sola, anche in cento backup
 - Conservazione: tutti nelle 24 h, poi giornalieri / settimanali / mensili configurabili
 - Tetto massimo allo spazio occupato
-- Ripristino di file o cartelle senza mai sovrascrivere
+- Ripristino di file o cartelle senza mai sovrascrivere, da una linea del tempo dei backup con anteprima dei file e confronto con oggi
 
 Design: [`docs/superpowers/specs/2026-11-05-backupme-backup-design.md`](docs/superpowers/specs/2026-11-05-backupme-backup-design.md)
 
