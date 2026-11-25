@@ -9,12 +9,14 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 
 SENTINEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check-view-cycles.py")
 
 # (what the case is about, its files, the cycles expected: for each, the properties that form it)
+CYCLE = ["S.a S.b"]
 CASES = [
-    ("two properties that read each other", {"S.swift": "struct S {\n    var a: Int { b }\n    var b: Int { a }\n}\n"}, ["S.a S.b"]),
+    ("two properties that read each other", {"S.swift": "struct S {\n    var a: Int { b }\n    var b: Int { a }\n}\n"}, CYCLE),
     ("a property that reads itself", {"S.swift": "struct S {\n    var a: Int { self.a }\n}\n"}, ["S.a"]),
     ("a stored property with an observer is not one", {"S.swift": "struct S {\n    var a: String? { didSet { load(a) } }\n}\n"}, []),
     ("the same name in two types: only the one that cycles", {"S.swift": """
@@ -43,7 +45,7 @@ CASES = [
             }
             var b: Int { a }
         }
-    '''}, ["S.a S.b"]),
+    '''}, CYCLE),
     ("a name inside a comment or a string is not a read", {"S.swift": r'''
         struct S {
             var a: Int { b }
@@ -70,6 +72,15 @@ CASES = [
             private var b: some View { a }
         }
     """}, ["T.a T.b"]),
+    ("an attribute written on several lines", {"S.swift": r'''
+        struct A {
+            @Attribute(
+                key: "value {"
+            )
+            var a: Int { b }
+            var b: Int { a }
+        }
+    '''}, ["A.a A.b"]),
     ("a brace on the next line", {"S.swift": """
         struct G
         {
@@ -104,6 +115,13 @@ CASES = [
         }
         extension Outer.Inner { var b: Int { a } }
     """}, ["Outer.Inner.a Outer.Inner.b"]),
+    ("a type nested in an extension, extended again", {"S.swift": """
+        struct Outer { }
+        extension Outer {
+            struct Inner { var a: Int { b } }
+        }
+        extension Outer.Inner { var b: Int { a } }
+    """}, ["Outer.Inner.a Outer.Inner.b"]),
     ("two unrelated types with the same names", {"S.swift": """
         struct P { var a: Int { b } }
         struct Q { var b: Int { 1 } }
@@ -114,15 +132,33 @@ CASES = [
         struct P { struct Inner { var x: Int { y }; var y: Int { 1 } } }
         struct Q { struct Inner { var y: Int { x }; var x: Int { 5 } } }
     """}, []),
+    ("types with the same name nested in two extensions are not one", {"S.swift": """
+        struct P { }
+        struct Q { }
+        extension P { struct Inner { var x: Int { y }; var y: Int { 1 } } }
+        extension Q { struct Inner { var y: Int { x }; var x: Int { 5 } } }
+    """}, []),
     ("private nested types with the same name in two files are not one",
      {"P.swift": "private struct Outer { struct Inner { var x: Int { y }; var y: Int { 1 } } }\n",
       "Q.swift": "private struct Outer { struct Inner { var y: Int { x }; var x: Int { 5 } } }\n"}, []),
+    ("types with the same name in two private extensions in two files are not one",
+     {"P.swift": "struct P { }\nprivate extension P { struct Helper { var x: Int { y }; var y: Int { 1 } } }\n",
+      "Q.swift": "struct Q { }\nprivate extension Q { struct Helper { var y: Int { x }; var x: Int { 5 } } }\n"}, []),
     ("a read inside a string interpolation", {"S.swift": r'''
         struct J {
             var title: String { "\(count)" }
             var count: Int { title.count }
         }
     '''}, ["J.title J.count"]),
+    ("a string inside an interpolation, holding a brace", {"S.swift": r'''
+        struct N {
+            var a: Int {
+                let s = "\(wrap("{"))"
+                return s.count + b
+            }
+            var b: Int { a }
+        }
+    '''}, ["N.a N.b"]),
     ("a raw string", {"S.swift": r'''
         struct R {
             var a: Int {
@@ -146,6 +182,36 @@ CASES = [
             var a: Int {
                 let s = "x"
                 return /^}$/.wholeMatch(in: s) == nil ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("a regex literal after `where`, holding a brace", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                var n = 0
+                for s in ["x", "y"] where /^}$/.wholeMatch(in: s) != nil { n += 1 }
+                return n > 0 ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("an extended regex literal", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let ok = #/^}$/#.wholeMatch(in: "x") == nil
+                return ok ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("a regex literal on several lines", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let r = /^
+                    }|{
+                    $/
+                return (r.wholeMatch(in: "x") == nil) ? 0 : b
             }
             var b: Int { a }
         }
@@ -181,45 +247,59 @@ CASES = [
     ("a stored property is not read as one", {"S.swift": "struct S {\n    var a: Int = 0\n    var b: Int { a }\n}\n"}, []),
 ]
 
+# (what the case is about, the files, the exit code expected, the seconds it may take): the exit code alone is checked
+DENSE = [
+    ("a type dense with reads and no cycle is fast", False, 0),
+    ("a type dense with reads and one cycle is answered in bounded time", True, 1),
+]
+
+
+def dense(count, back):
+    """A type whose every property reads all the later ones; with `back`, the last one reads the first."""
+    rows = ["    var p%d: Int { %s }" % (i, " ".join("p%d" % j for j in range(i + 1, count)) or "0") for i in range(count)]
+    if back: rows[-1] = "    var p%d: Int { p0 }" % (count - 1)
+    return {"D.swift": "struct D {\n" + "\n".join(rows) + "\n}\n"}
+
 
 def check(files):
-    """(exit code, for each cycle: its line and the properties that form it)"""
+    """(exit code, seconds, for each cycle: its line and the properties that form it)"""
     with tempfile.TemporaryDirectory() as folder:
         paths = []
         for name, src in files.items():
             paths.append(os.path.join(folder, name))
             with open(paths[-1], "w", encoding="utf-8") as f:
                 f.write(textwrap.dedent(src).lstrip("\n"))
+        started = time.time()
         out = subprocess.run([sys.executable, SENTINEL] + paths, capture_output=True, text=True)
         cycles = []
         for line in out.stdout.splitlines():
             where, names = line.rsplit(": ", 1)
-            cycles.append((int(where.rsplit(":", 1)[1]), sorted(set(names.split(" → ")))))
-        return out.returncode, cycles
+            cycles.append((int(where.rsplit(":", 1)[1]) if where.rsplit(":", 1)[-1].isdigit() else None,
+                           sorted(set(names.split(" → ")))))
+        return out.returncode, time.time() - started, cycles
 
 
 def main():
-    failed = 0
+    failed, passed = 0, 0
+
+    def ok(label, good, found):
+        nonlocal failed, passed
+        if good: passed += 1; print(f"ok   {label}")
+        else: failed += 1; print(f"NO   {label}: {found}")
+
     for label, files, expected in CASES:
-        code, cycles = check(files)
-        if code != (1 if expected else 0) or [names for _, names in cycles] != [sorted(name.split()) for name in expected]:
-            failed += 1
-            print(f"NO   {label}: expected {expected}, found {cycles} (exit {code})")
-        else:
-            print(f"ok   {label}")
-    line = check(CASES[0][1])[1][0][0]
-    if line != 2:
-        failed += 1
-        print(f"NO   the line of the first property: expected 2, found {line}")
-    else:
-        print("ok   the line of the first property")
+        code, _, cycles = check(files)
+        ok(label, code == (1 if expected else 0) and [names for _, names in cycles] == [sorted(name.split()) for name in expected],
+           f"expected {expected}, found {cycles} (exit {code})")
+    for label, back, expected in DENSE:
+        code, seconds, cycles = check(dense(40, back))
+        ok(label, code == expected and seconds < 10 and (not back or cycles[-1][0] is None),
+           f"expected exit {expected} in under 10 s, found exit {code} in {seconds:.1f} s with {len(cycles)} lines")
+    line = check(CASES[0][1])[2][0][0]
+    ok("the line of the first property", line == 2, f"expected 2, found {line}")
     code = subprocess.run([sys.executable, SENTINEL], capture_output=True).returncode
-    if code != 2:
-        failed += 1
-        print(f"NO   no file to check: expected exit 2, found exit {code}")
-    else:
-        print("ok   no file to check: exit 2")
-    print(f"{len(CASES) + 2 - failed} of {len(CASES) + 2} cases passed")
+    ok("no file to check: exit 2", code == 2, f"expected exit 2, found exit {code}")
+    print(f"{passed} of {passed + failed} cases passed")
     return 1 if failed else 0
 
 

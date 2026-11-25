@@ -4,7 +4,8 @@ and a view that does it crashes at its first render. The compiler cannot see the
 so this is the only guard before the app runs.
 
 Usage: check-view-cycles.py file.swift ...   (every file of the module: an extension may live in another one)
-Prints each cycle found and exits 1; prints nothing and exits 0 when there is none; exits 2 on a usage error.
+Prints each cycle found (the first 100: a last line says when there are more) and exits 1; prints nothing and exits 0
+when there is none; exits 2 on a usage error.
 check-view-cycles-test.py, next to it, proves all of this: run it after changing this file.
 
 What counts as a property: every `var name: Type { … }`, whatever its attributes and modifiers, wherever its brace
@@ -22,7 +23,7 @@ import sys
 IDENT = r'[A-Za-z_][A-Za-z0-9_]*'
 QUALIFIED = IDENT + r'(?:\.' + IDENT + r')*'
 START = r'(?:^|[\n;{}])[ \t]*'
-ATTRIBUTES = r'(?:(?:@[\w.]+(?:\([^\n]*\))?)\s*)*'
+ATTRIBUTES = r'(?:(?:@[\w.]+(?:\((?:[^()]|\([^()]*\))*\))?)\s*)*'
 TYPE = re.compile(START + ATTRIBUTES + r'((?:[A-Za-z_]+\s+)*)(struct|class|actor|enum|protocol|extension)\s+'
                   r'(?!(?:var|func|let)\b)(' + QUALIFIED + r')')
 PROPERTY = re.compile(START + ATTRIBUTES + r'(?:' + IDENT + r'(?:\([^)\n]*\))?\s+)*?var\s+(' + IDENT + r')\s*:\s*'
@@ -31,76 +32,85 @@ OBSERVER = re.compile(r'\s*(?:willSet|didSet)\b')
 HIDDEN = re.compile(r'\b(?:private|fileprivate)\b')
 WORD = re.compile(IDENT)
 MEMBER = re.compile(r'\.\s*$')
-SELF = re.compile(r'\b(?:self|Self)\s*\.\s*$')
-REGEX_BEFORE = re.compile(r'(?:[=,(\[{:&|?;]|\b(?:return|case|else|try|await|throw|if|guard|in))\s*$')
-LIMIT = 1000
+SELF = re.compile(r'\b(?:self|Self)\s*\??\s*\.\s*$')
+REGEX_BEFORE = re.compile(r'(?:[=,(\[{:&|?;]|\b(?:return|case|else|try|await|throw|if|guard|in|while|where))\s*$')
+BUDGET = 200_000
+MAX_LISTED = 100
 
 
 def blanked(src):
     """The source with comments, strings and regex literals turned into spaces: braces and names inside them are not
-    code. The code inside a string interpolation stays, it runs like any other."""
+    code. The code inside a string interpolation stays, it runs like any other; a string inside it is skipped too."""
     out = list(src)
-    i, n = 0, len(src)
+    i, n, stack = 0, len(src), []
 
     def space(start, stop):
         for k in range(start, min(stop, n)):
             if out[k] != '\n': out[k] = ' '
 
     while i < n:
-        j = i
-        while src[j:j + 1] == '#': j += 1
-        hashes = j - i
-        if src.startswith('//', j):
-            end = src.find('\n', j)
-            space(i, n if end < 0 else end)
-            i = n if end < 0 else end
-        elif src.startswith('/*', j):
-            depth, k = 1, j + 2
-            while k < n and depth:
-                if src.startswith('/*', k): depth, k = depth + 1, k + 2
-                elif src.startswith('*/', k): depth, k = depth - 1, k + 2
-                else: k += 1
-            space(i, k)
-            i = k
-        elif src.startswith('"""', j) or src[j:j + 1] == '"':
-            quotes = src[i:j + 3] if src.startswith('"""', j) else src[i:j + 1]
-            closer = quotes[hashes:] + '#' * hashes
-            interpolation = '\\' + '#' * hashes + '('
-            space(i, i + len(quotes))
-            i += len(quotes)
-            while i < n:
-                if src.startswith(interpolation, i):
-                    # the interpolation's opening is not code; what is inside is, up to its closing parenthesis
-                    space(i, i + len(interpolation))
-                    i, depth = i + len(interpolation), 1
-                    while i < n and depth:
-                        depth += (src[i] == '(') - (src[i] == ')')
-                        if not depth: space(i, i + 1)
-                        i += 1
-                elif src[i] == '\\':
-                    k = i + 1
-                    while hashes and src[k:k + 1] == '#': k += 1
-                    space(i, k + 1)
-                    i = k + 1
-                elif src.startswith(closer, i):
-                    space(i, i + len(closer))
-                    i += len(closer)
-                    break
-                else:
-                    space(i, i + 1)
-                    i += 1
-        elif src[j:j + 1] == '/' and REGEX_BEFORE.search(src[:i]):
-            # a regex literal can hold quotes and braces: it ends at the slash its escapes do not protect
-            k = j + 1
-            while k < n and not src.startswith('/' + '#' * hashes, k):
-                if src[k] == '\\':
-                    k += 1
-                    while hashes and src[k:k + 1] == '#': k += 1
-                k += 1
-            space(i, min(k + 1 + hashes, n))
-            i = min(k + 1 + hashes, n)
-        else:
+        if stack and stack[-1][0] == 'string':
+            _, closer, opening, hashes = stack[-1]
+            if src.startswith(opening, i):
+                # the interpolation's opening is not code; what is inside is, up to its closing parenthesis
+                space(i, i + len(opening))
+                i += len(opening)
+                stack.append(['interpolation', 1])
+            elif src[i] == '\\':
+                k = i + 1
+                for _ in range(hashes):
+                    if k < n and src[k] == '#': k += 1
+                space(i, k + 1)
+                i = k + 1
+            elif src.startswith(closer, i):
+                space(i, i + len(closer))
+                i += len(closer)
+                stack.pop()
+            else:
+                space(i, i + 1)
+                i += 1
+        elif stack and src[i] == '(' and stack[-1][0] == 'interpolation':
+            stack[-1][1] += 1
             i += 1
+        elif stack and src[i] == ')' and stack[-1][0] == 'interpolation':
+            stack[-1][1] -= 1
+            if not stack[-1][1]: space(i, i + 1); stack.pop()
+            i += 1
+        else:
+            # code, at top level or inside an interpolation
+            j = i
+            while src[j:j + 1] == '#': j += 1
+            hashes = j - i
+            if src.startswith('//', j):
+                end = src.find('\n', j)
+                space(i, n if end < 0 else end)
+                i = n if end < 0 else end
+            elif src.startswith('/*', j):
+                depth, k = 1, j + 2
+                while k < n and depth:
+                    if src.startswith('/*', k): depth, k = depth + 1, k + 2
+                    elif src.startswith('*/', k): depth, k = depth - 1, k + 2
+                    else: k += 1
+                space(i, k)
+                i = k
+            elif src.startswith('"""', j) or src[j:j + 1] == '"':
+                quotes = src[i:j + 3] if src.startswith('"""', j) else src[i:j + 1]
+                space(i, i + len(quotes))
+                i += len(quotes)
+                stack.append(['string', quotes[hashes:] + '#' * hashes, '\\' + '#' * hashes + '(', hashes])
+            elif src[j:j + 1] == '/' and REGEX_BEFORE.search(src[:i]):
+                # a regex literal can hold quotes and braces: it ends at the slash its escapes do not protect
+                k = j + 1
+                while k < n and not src.startswith('/' + '#' * hashes, k):
+                    if src[k] == '\\':
+                        k += 1
+                        for _ in range(hashes):
+                            if k < n and src[k] == '#': k += 1
+                    k += 1
+                space(i, min(k + 1 + hashes, n))
+                i = min(k + 1 + hashes, n)
+            else:
+                i += 1
     return ''.join(out)
 
 
@@ -114,21 +124,31 @@ def closing(clean, opening):
 
 
 def declarations(clean):
-    """Each type declaration of a file, in order: (start, qualified name, hidden, end, extended). `hidden` says that
-    only the file can see the type; `extended` is the type an extension extends, None for a type."""
-    found, stack = [], []
+    """Each type declaration of a file, in order: (start, name, hidden, end, extended). `name` is qualified
+    (`Outer.Inner`), `hidden` says that only the file can see the type, `extended` is the type an extension
+    extends, None for a type."""
+    raw = []
     for m in TYPE.finditer(clean):
-        while stack and stack[-1][3] <= m.start(): stack.pop()
         brace = clean.find('{', m.end())
-        end = closing(clean, brace) if brace >= 0 else -1
-        if m.group(2) == 'extension':
-            # the extension's own modifiers say who sees its members, not who knows the type
-            found.append((m.start(), m.group(3), False, end, m.group(3)))
-            continue
-        name = stack[-1][1] + '.' + m.group(3) if stack else m.group(3)
-        hidden = HIDDEN.search(m.group(1)) is not None or (bool(stack) and stack[-1][2])
-        found.append((m.start(), name, hidden, end, None))
-        stack.append((m.start(), name, hidden, end))
+        raw.append((m.start(), m.group(2), m.group(3), HIDDEN.search(m.group(1)) is not None,
+                    closing(clean, brace) if brace >= 0 else -1))
+    hidden, found = {}, []
+    for _ in range(2):
+        # twice: a type nested in an extension and an extension of it learn of each other in the second pass
+        stack, found = [], []
+        for start, kind, simple, private, end in raw:
+            while stack and stack[-1][2] <= start: stack.pop()
+            if kind == 'extension':
+                # the extension's own modifiers say who sees its members; they hide a type nested in it, not its type
+                own = private or hidden.get(simple, False)
+                found.append((start, simple, own, end, simple))
+                stack.append((simple, own, end))
+            else:
+                name = stack[-1][0] + '.' + simple if stack else simple
+                own = private or (bool(stack) and stack[-1][1])
+                found.append((start, name, own, end, None))
+                hidden[name] = own
+                stack.append((name, own, end))
     return found
 
 
@@ -159,13 +179,42 @@ def properties(path, src):
     return found
 
 
-def owner(scope):
-    """The type's name, whether it is one every file can see or one that stays in its own file."""
-    return scope[1] if isinstance(scope, tuple) else scope
+def components(count, edges):
+    """The sets of properties that reach each other: a cycle can only run inside one of them."""
+    seen, order = set(), []
+    for i in range(count):
+        if i in seen: continue
+        seen.add(i)
+        stack = [(i, iter(sorted(edges[i])))]
+        while stack:
+            node, following = stack[-1]
+            j = next(following, None)
+            if j is None:
+                order.append(node)
+                stack.pop()
+            elif j not in seen:
+                seen.add(j)
+                stack.append((j, iter(sorted(edges[j]))))
+    back = {}
+    for i in range(count):
+        for j in edges[i]: back.setdefault(j, []).append(i)
+    seen, found = set(), []
+    for i in reversed(order):
+        if i in seen: continue
+        seen.add(i)
+        group, stack = [], [i]
+        while stack:
+            node = stack.pop()
+            group.append(node)
+            for j in back.get(node, []):
+                if j not in seen: seen.add(j); stack.append(j)
+        if len(group) > 1 or group[0] in edges[group[0]]: found.append(group)
+    return found
 
 
 def cycles_in(files):
-    """Each cycle once: the file and the line of its first property, and the names that form it, back to the first."""
+    """Each cycle once, at most MAX_LISTED: the file and the line of its first property, and the names that form it,
+    back to the first. A last entry without names says that the list stopped early."""
     nodes, by_name = [], {}
     for path, src in files:
         for scope, name, line, body in properties(path, src):
@@ -179,16 +228,18 @@ def cycles_in(files):
             if MEMBER.search(body, 0, word.start()) and not SELF.search(body, 0, word.start()): continue
             reads.add(word.group())
         edges.append({j for read in reads for j in by_name.get((scope, read), [])})
-    found = []
+    found, left = [], [BUDGET]
 
-    def walk(start, node, path):
+    def walk(members, start, node, path):
         # a cycle is listed from its first property, so each comes out once
         for j in sorted(edges[node]):
-            if len(found) >= LIMIT: return
+            if left[0] < 0 or len(found) >= MAX_LISTED: return
+            left[0] -= 1
             if j == start: found.append(path)
-            elif j > start and j not in path: walk(start, j, path + [j])
+            elif j in members and j > start and j not in path: walk(members, start, j, path + [j])
 
-    for start in range(len(nodes)): walk(start, start, [start])
+    for group in components(len(nodes), edges):
+        for start in sorted(group): walk(set(group), start, start, [start])
     cycles = []
     for loop in found:
         path, _, _, line, _ = nodes[loop[0]]
@@ -197,7 +248,14 @@ def cycles_in(files):
             type = owner(nodes[j][1])
             names.append(type + '.' + nodes[j][2] if type else nodes[j][2])
         cycles.append((path, line, names + [names[0]]))
+    cycles.sort(key=lambda c: (c[0], c[1], c[2]))
+    if found and (left[0] < 0 or len(found) >= MAX_LISTED): cycles.append((nodes[0][0], None, []))
     return cycles
+
+
+def owner(scope):
+    """The type's name, whether it is one every file can see or one that stays in its own file."""
+    return scope[1] if isinstance(scope, tuple) else scope
 
 
 def main(paths):
@@ -214,7 +272,7 @@ def main(paths):
             return 2
     found = cycles_in(files)
     for path, line, names in found:
-        print(f"{path}:{line}: " + " → ".join(names))
+        print(f"{path}:{line}: " + " → ".join(names) if names else f"{path}: more cycles exist: the list stops here")
     return 1 if found else 0
 
 
