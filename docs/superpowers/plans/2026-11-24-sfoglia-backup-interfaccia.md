@@ -664,7 +664,7 @@ git commit -m "feat(app): i testi di quando in Sfoglia: Oggi alle, dal backup di
 - Create: `Sources/RestoreRules/RestorePlanner.swift`
 - Test: `Tests/BackupCoreTests/RestorePlannerTests.swift`
 
-**Interfaces — Consumes:** `WhenText.from`, `WhenText.version` (Task 2).
+**Interfaces — Consumes:** `WhenText.from`, `WhenText.version`, `BackupTimeline.bytesText` (Task 1 e 2).
 
 **Interfaces — Produces:**
 
