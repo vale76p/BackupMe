@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Glass is for the menu bar panel only: windows and sheets use system chrome and standard controls.
+// Glass is for the menu bar panel and the Sfoglia bar; the rest of the windows, and the sheets, use system chrome.
 // Liquid Glass needs macOS 26; the app still runs on 14, where these fall back to materials and stock buttons.
 extension View {
     @ViewBuilder func glassPanel(in shape: some Shape = RoundedRectangle(cornerRadius: 14)) -> some View {

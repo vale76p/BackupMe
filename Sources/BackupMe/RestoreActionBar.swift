@@ -12,7 +12,7 @@ struct RestoreActionBar: View {
     let entry: Entry?
     /// Off while nothing can be restored, a restore runs, or the check before «Sostituisci» runs.
     let disabled: Bool
-    /// «Ripristino in corso…» or «Controllo della cartella attuale…»: the bar says it, and does nothing else.
+    /// «Ripristino in corso…» or «Controllo della cartella attuale…»: the bar says it, and restores nothing while it lasts.
     let busy: String?
     let help: String
     /// In a search the Finder's place is taken by the backup that holds the result.
@@ -35,6 +35,7 @@ struct RestoreActionBar: View {
                     Text(busy ?? bar.name).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
                     Text(bar.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         .opacity(busy == nil ? 1 : 0) // kept: the bar must not change height
+                        .accessibilityHidden(busy != nil)
                 }
                 Spacer(minLength: 12)
                 ForEach(bar.buttons, id: \.self) { button in control(button) }
@@ -48,11 +49,16 @@ struct RestoreActionBar: View {
         switch bar.icon {
         case .none: EmptyView()
         case .file, .folder:
+            // the slot stays also without an entry (the folder being viewed): the text must not jump between selections
             if let entry { Image(nsImage: FileIcon.image(for: entry)).resizable().frame(width: 28, height: 28) }
+            else { Color.clear.frame(width: 28, height: 28) }
         case .stack: Image(systemName: "square.stack.3d.up").font(.system(size: 22)).foregroundStyle(.secondary)
         case .drive: Image(systemName: "externaldrive").font(.system(size: 22)).foregroundStyle(.secondary)
         }
     }
+
+    /// The restore controls are off when the window says so, and on their own while the bar is busy: a busy bar restores nothing.
+    private var restoreOff: Bool { disabled || busy != nil }
 
     /// The menu's shortcuts are not set here: a closed Menu doesn't fire them, so the window keeps them.
     @ViewBuilder private func control(_ button: RestorePlanner.Bar.Button) -> some View {
@@ -71,7 +77,7 @@ struct RestoreActionBar: View {
                 .glassButton()
         case .restore:
             Menu {
-                Button("Ripristina in…", action: restoreInto).disabled(disabled)
+                Button("Ripristina in…", action: restoreInto)
                 Divider()
                 Button(revealTitle, action: reveal).disabled(!canReveal)
                 Button("Mostra versioni del file", action: showVersions).disabled(!canShowVersions)
@@ -80,12 +86,12 @@ struct RestoreActionBar: View {
             } primaryAction: {
                 restore()
             }
-            .disabled(disabled)
+            .disabled(restoreOff)
             .help(help)
             .glassButton(prominent: true)
         case .restoreAll:
             Button("Ripristina tutto…", systemImage: "arrow.uturn.backward", action: restore)
-                .disabled(disabled)
+                .disabled(restoreOff)
                 .help(help)
                 .glassButton(prominent: true)
         }
