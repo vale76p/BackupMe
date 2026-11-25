@@ -61,6 +61,7 @@
 | `Tests/BackupCoreTests/BackupTimelineTests.swift`, `WhenTextTests.swift`, `RestorePlannerTests.swift`, `RowFilterTests.swift` (nuovi) | I quarantadue test delle regole |
 | `docs/prova-sfoglia-backup.md` (nuovo), `CHANGELOG.md` | La lista di prova a schermo e la voce del changelog |
 | `scripts/check-view-cycles.py` (nuovo), `README.md` | La sentinella dei cicli tra proprietà calcolate nelle viste, e come lanciarla |
+| `scripts/check-view-cycles-test.py` (nuovo) | I casi che provano la sentinella: i cicli che deve trovare e il codice che deve lasciare in pace |
 
 ---
 
@@ -3249,87 +3250,400 @@ git commit -m "feat(app): Sfoglia backup con la finestra nuova"
 
 **Files:**
 - Create: `scripts/check-view-cycles.py`
+- Create: `scripts/check-view-cycles-test.py`
 - Modify: `README.md`
 - Create: `docs/prova-sfoglia-backup.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] **Step 1: Creare la sentinella** `scripts/check-view-cycles.py`. Cerca i cicli tra le proprietà calcolate di un file Swift: due proprietà che si leggono l'una con l'altra mandano la finestra in crash al primo disegno, e né il compilatore né i test lo vedono. Creare il file con:
+- [ ] **Step 1: Creare la sentinella** `scripts/check-view-cycles.py`. Cerca i cicli tra le proprietà calcolate di un tipo: due che si leggono l'una con l'altra mandano la finestra in crash al primo disegno, e né il compilatore né i test lo vedono. Vede ogni proprietà calcolata, in qualunque forma sia dichiarata, e la tiene nel suo tipo (anche tra un file e l'altro); non vede un ciclo che passa da una funzione, e lo dice nel suo commento iniziale. Creare il file con:
 
 ```python
 #!/usr/bin/env python3
-"""Finds cycles among the computed properties of a Swift file's types.
+"""Finds cycles among the computed properties of a type: two that read each other recurse until the stack is over,
+and a view that does it crashes at its first render. The compiler cannot see them and the views have no tests here,
+so this is the only guard before the app runs.
 
-The compiler cannot see them: two computed properties that read each other recurse until the stack is over, and a
-view that does it crashes at its first render. Views have no tests here, so this is the only guard before the app runs.
+Usage: check-view-cycles.py file.swift ...   (every file of the module: an extension may live in another one)
+Prints each cycle found and exits 1; prints nothing and exits 0 when there is none; exits 2 on a usage error.
+check-view-cycles-test.py, next to it, proves all of this: run it after changing this file.
 
-Usage: check-view-cycles.py file.swift ...
-Prints every cycle found and exits 1; prints nothing and exits 0 when there is none. It goes by names, the whole
-body included: a property's name used for a local variable or inside a closure can give a false cycle, never a
-missed one.
+What counts as a property: every `var name: Type { … }`, whatever its attributes and modifiers, wherever its brace
+is; an extension is part of its type, in this file or in another one (a private type stays in its own file). What
+counts as a read: the name in a body as a free identifier or after `self.`, outside comments, strings and regex
+literals (the code inside a string interpolation counts: it runs).
+
+What it does not see: a cycle that passes through a function. What it can get wrong: a local variable or a closure
+parameter with a property's name reads as that property, which can report a cycle that is not there.
 """
 import re
 import sys
 
+IDENT = r'[A-Za-z_][A-Za-z0-9_]*'
+START = r'(?:^|[\n;{}])[ \t]*'
+ATTRIBUTES = r'(?:(?:@[\w.]+(?:\([^\n]*\))?)\s*)*'
+TYPE = re.compile(START + ATTRIBUTES + r'((?:(?:final|public|open|internal|private|fileprivate|indirect)\s+)*)'
+                  r'(?:struct|class|actor|enum|extension)\s+(?!(?:var|func|let)\b)(' + IDENT + r')')
+PROPERTY = re.compile(START + ATTRIBUTES + r'(?:' + IDENT + r'(?:\([^)\n]*\))?\s+)*?var\s+(' + IDENT + r')\s*:\s*'
+                      r'[^{=\n]*?(?:\n[ \t]*)?\{')
+OBSERVER = re.compile(r'\s*(?:willSet|didSet)\b')
+WORD = re.compile(IDENT)
+MEMBER = re.compile(r'\.\s*$')
+SELF = re.compile(r'\bself\s*\.\s*$')
+REGEX_BEFORE = re.compile(r'[=,(\[{!&|?;]\s*$')
 
-def properties(src):
-    """Name and body of every computed property (`var name: Type { … }`), its attributes (`@ViewBuilder`, …) included."""
-    found = {}
-    for m in re.finditer(r'^[ \t]*(?:@[\w.]+(?:\([^\n]*\))?\s*)*(?:private\s+|fileprivate\s+)?var\s+(\w+)\s*:\s*[^{=\n]+?\{', src, flags=re.M):
-        name, start = m.group(1), m.end()
-        depth, i = 1, start
-        while i < len(src) and depth:
-            depth += (src[i] == '{') - (src[i] == '}')
-            i += 1
-        found[name] = src[start:i - 1]
+
+def blanked(src):
+    """The source with comments, strings and regex literals turned into spaces: braces and names inside them are not
+    code. The code inside a string interpolation stays, it runs like any other."""
+    out = list(src)
+    i, n = 0, len(src)
+
+    def space(start, stop):
+        for k in range(start, min(stop, n)):
+            if out[k] != '\n': out[k] = ' '
+
+    while i < n:
+        if src.startswith('//', i):
+            end = src.find('\n', i)
+            space(i, n if end < 0 else end)
+            i = n if end < 0 else end
+        elif src.startswith('/*', i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if src.startswith('/*', j): depth, j = depth + 1, j + 2
+                elif src.startswith('*/', j): depth, j = depth - 1, j + 2
+                else: j += 1
+            space(i, j)
+            i = j
+        elif src[i] == '/' and REGEX_BEFORE.search(src[:i]):
+            # a regex literal can hold quotes and braces; one that does not close on its line is not read as one
+            end = src.find('\n', i)
+            stop = src.find('/', i + 1, n if end < 0 else end)
+            space(i, stop + 1)
+            i = stop + 1 if stop >= 0 else i + 1
+        else:
+            j = i
+            while src[j:j + 1] == '#': j += 1
+            if src.startswith('"""', j): quotes = src[i:j + 3]
+            elif src[j:j + 1] == '"': quotes = src[i:j + 1]
+            else:
+                i += 1
+                continue
+            hashes = len(quotes) - len(quotes.lstrip('#'))
+            closer = quotes[hashes:] + '#' * hashes
+            interpolation = '\\' + '#' * hashes + '('
+            space(i, i + len(quotes))
+            i += len(quotes)
+            while i < n:
+                if src.startswith(interpolation, i):
+                    # the interpolation's opening is not code; what is inside is, up to its closing parenthesis
+                    space(i, i + len(interpolation))
+                    i, depth = i + len(interpolation), 1
+                    while i < n and depth:
+                        depth += (src[i] == '(') - (src[i] == ')')
+                        if not depth: space(i, i + 1)
+                        i += 1
+                elif src[i] == '\\':
+                    j = i + 1
+                    while hashes and src[j:j + 1] == '#': j += 1
+                    space(i, j + 1)
+                    i = j + 1
+                elif src.startswith(closer, i):
+                    space(i, i + len(closer))
+                    i += len(closer)
+                    break
+                else:
+                    space(i, i + 1)
+                    i += 1
+    return ''.join(out)
+
+
+def closing(clean, opening):
+    """Where the brace opened at `opening` closes; the end of the text if it never does."""
+    depth, i = 1, opening + 1
+    while i < len(clean) and depth:
+        depth += (clean[i] == '{') - (clean[i] == '}')
+        i += 1
+    return i - 1
+
+
+def owner(scope):
+    """The type's name, whether it is one every file can see or one that stays in its own file."""
+    return scope[1] if isinstance(scope, tuple) else scope
+
+
+def properties(path, src):
+    """The computed properties of a file: the type they are declared in, their name, their line, their body."""
+    clean = blanked(src)
+    types = []
+    for m in TYPE.finditer(clean):
+        brace = clean.find('{', m.end())
+        if brace >= 0:
+            # a type that only its own file can see cannot be extended from another one
+            types.append((m.start(), (path, m.group(2)) if 'private' in m.group(1) else m.group(2), closing(clean, brace)))
+    found = []
+    for m in PROPERTY.finditer(clean):
+        opening = m.end() - 1
+        end = closing(clean, opening)
+        body = clean[opening + 1:end]
+        # a stored property has braces too, for its observers, and reading it in its own didSet is no recursion
+        if OBSERVER.match(body): continue
+        owners = [scope for start, scope, stop in types if start <= m.start() and end <= stop]
+        found.append((owners[-1] if owners else (path, ''), m.group(1), src.count('\n', 0, m.start(1)) + 1, body))
     return found
 
 
-def cycles(props):
-    """Each cycle as the path of property names that comes back to its start."""
-    edges = {n: {w for w in re.findall(r'\b(\w+)\b', body) if w in props and w != n} for n, body in props.items()}
-    found, stack, done = [], [], set()
+def cycles_in(files):
+    """Each cycle once: the file and the line of its first property, and the names that form it, back to the first."""
+    nodes, by_name = [], {}
+    for path, src in files:
+        for scope, name, line, body in properties(path, src):
+            by_name.setdefault((scope, name), []).append(len(nodes))
+            nodes.append((path, scope, name, line, body))
+    edges = []
+    for _, scope, _, _, body in nodes:
+        reads = set()
+        for word in WORD.finditer(body):
+            # a member access is somebody else's, unless it goes through `self`
+            if MEMBER.search(body, 0, word.start()) and not SELF.search(body, 0, word.start()): continue
+            reads.add(word.group())
+        edges.append({j for read in reads for j in by_name.get((scope, read), [])})
+    found, seen, stack, done = [], set(), [], set()
 
-    def visit(n):
-        if n in stack:
-            found.append(stack[stack.index(n):] + [n])
+    def visit(i):
+        if i in stack:
+            loop = stack[stack.index(i):]
+            if frozenset(loop) not in seen:
+                seen.add(frozenset(loop))
+                found.append(loop)
             return
-        if n in done:
-            return
-        stack.append(n)
-        for m in sorted(edges[n]):
-            visit(m)
+        if i in done: return
+        stack.append(i)
+        for j in sorted(edges[i]): visit(j)
         stack.pop()
-        done.add(n)
+        done.add(i)
 
-    for n in sorted(edges):
-        visit(n)
-    return found
+    for i in range(len(nodes)): visit(i)
+    cycles = []
+    for loop in found:
+        path, _, _, line, _ = nodes[loop[0]]
+        names = [owner(nodes[j][1]) + '.' + nodes[j][2] for j in loop]
+        cycles.append((path, line, names + [names[0]]))
+    return cycles
 
 
 def main(paths):
-    bad = False
+    if not paths:
+        print("usage: check-view-cycles.py file.swift ...", file=sys.stderr)
+        return 2
+    files = []
     for path in paths:
-        with open(path, encoding="utf-8") as f:
-            found = cycles(properties(f.read()))
-        for c in found:
-            print(f"{path}: {' → '.join(c)}")
-        bad = bad or bool(found)
-    return 1 if bad else 0
+        try:
+            with open(path, encoding="utf-8") as f:
+                files.append((path, f.read()))
+        except OSError as error:
+            print(error, file=sys.stderr)
+            return 2
+    found = cycles_in(files)
+    for path, line, names in found:
+        print(f"{path}:{line}: " + " → ".join(names))
+    return 1 if found else 0
 
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
 ```
 
-- [ ] **Step 2: Provarla.** Sul codice di oggi non deve trovare niente; su un file con un ciclo inventato deve trovarlo e uscire con 1.
+- [ ] **Step 2: Creare il suo test** `scripts/check-view-cycles-test.py`. La prima versione della sentinella prometteva di non perdersi nessun ciclo e invece taceva davanti a casi veri (due proprietà con lo stesso nome in un file, una dichiarazione con `static`, una graffa a capo): ogni forma che deve vedere ha un caso qui, accanto al codice che deve lasciare in pace.
+
+```python
+#!/usr/bin/env python3
+"""Proves check-view-cycles.py: the cycles it has to find and the code it has to leave alone. Run it after changing
+the sentinel:
+
+python3 scripts/check-view-cycles-test.py
+"""
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
+
+SENTINEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check-view-cycles.py")
+
+# (what the case is about, its files, the cycles expected: for each, the properties that form it)
+CASES = [
+    ("two properties that read each other", {"S.swift": "struct S {\n    var a: Int { b }\n    var b: Int { a }\n}\n"}, ["S.a S.b"]),
+    ("a property that reads itself", {"S.swift": "struct S {\n    var a: Int { self.a }\n}\n"}, ["S.a"]),
+    ("a stored property with an observer is not one", {"S.swift": "struct S {\n    var a: String? { didSet { load(a) } }\n}\n"}, []),
+    ("the same name in two types: only the one that cycles", {"S.swift": """
+        struct A { var x: Int { y }; var y: Int { x } }
+        struct B { var x: Int { 1 }; var y: Int { x } }
+    """}, ["A.x A.y"]),
+    ("a view with three properties and a later view with one of their names", {"S.swift": """
+        struct W {
+            var plan: Int { selection }
+            var selection: Int { barFile }
+            var barFile: Int? { plan }
+        }
+        struct OtherView { var selection: Int { 5 } }
+    """}, ["W.plan W.selection W.barFile"]),
+    ("a member access is not a read", {"S.swift": r'''
+        struct V {
+            var body: some View { Text("x").font(.body.monospaced()) }
+            var text: String { body }
+        }
+    '''}, []),
+    ("a brace inside a string", {"S.swift": r'''
+        struct S {
+            var a: Int {
+                let s = "}"
+                return b
+            }
+            var b: Int { a }
+        }
+    '''}, ["S.a S.b"]),
+    ("a name inside a comment or a string is not a read", {"S.swift": r'''
+        struct S {
+            var a: Int { b }
+            var b: Int { 1 } // a
+            var c: String { "a" }
+        }
+    '''}, []),
+    ("static properties", {"S.swift": """
+        enum E {
+            static var a: Int { b }
+            static var b: Int { a }
+        }
+    """}, ["E.a E.b"]),
+    ("any attributes and modifiers", {"S.swift": """
+        struct T {
+            @ViewBuilder
+            @MainActor public private(set) nonisolated var a: some View { b }
+            private var b: some View { a }
+        }
+    """}, ["T.a T.b"]),
+    ("a brace on the next line", {"S.swift": """
+        struct G
+        {
+            var a: Int { b }
+            var b: Int
+            {
+                a
+            }
+        }
+    """}, ["G.a G.b"]),
+    ("an extension is part of its type", {"S.swift": """
+        struct H { var a: Int { b } }
+        extension H { var b: Int { a } }
+    """}, ["H.a H.b"]),
+    ("an extension in another file", {"H.swift": "struct H { var a: Int { b } }\n",
+                                      "H+More.swift": "extension H { var b: Int { a } }\n"}, ["H.a H.b"]),
+    ("two unrelated types with the same names", {"S.swift": """
+        struct P { var a: Int { b } }
+        struct Q { var b: Int { 1 } }
+    """}, []),
+    ("two private types with the same name in two files are not one", {"P.swift": "private struct Row { var a: Int { b } }\n",
+                                                                       "Q.swift": "private struct Row { var b: Int { a } }\n"}, []),
+    ("a read inside a string interpolation", {"S.swift": r'''
+        struct J {
+            var title: String { "\(count)" }
+            var count: Int { title.count }
+        }
+    '''}, ["J.title J.count"]),
+    ("a raw string", {"S.swift": r'''
+        struct R {
+            var a: Int {
+                let s = #"a "b" { }"#
+                return b
+            }
+            var b: Int { a }
+        }
+    '''}, ["R.a R.b"]),
+    ("a regex literal", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let r = /"|{/
+                return b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
+    ("a nested type is its own", {"S.swift": """
+        struct Outer {
+            var a: Int { inner }
+            var inner: Inner { Inner() }
+            struct Inner {
+                var x: Int { y }
+                var y: Int { x }
+            }
+        }
+    """}, ["Inner.x Inner.y"]),
+    ("a stored property is not read as one", {"S.swift": "struct S {\n    var a: Int = 0\n    var b: Int { a }\n}\n"}, []),
+]
+
+
+def check(files):
+    """(exit code, for each cycle: its line and the properties that form it)"""
+    with tempfile.TemporaryDirectory() as folder:
+        paths = []
+        for name, src in files.items():
+            paths.append(os.path.join(folder, name))
+            with open(paths[-1], "w", encoding="utf-8") as f:
+                f.write(textwrap.dedent(src).lstrip("\n"))
+        out = subprocess.run([sys.executable, SENTINEL] + paths, capture_output=True, text=True)
+        cycles = []
+        for line in out.stdout.splitlines():
+            where, names = line.rsplit(": ", 1)
+            cycles.append((int(where.rsplit(":", 1)[1]), sorted(set(names.split(" → ")))))
+        return out.returncode, cycles
+
+
+def main():
+    failed = 0
+    for label, files, expected in CASES:
+        code, cycles = check(files)
+        if code != (1 if expected else 0) or [names for _, names in cycles] != [sorted(name.split()) for name in expected]:
+            failed += 1
+            print(f"NO   {label}: expected {expected}, found {cycles} (exit {code})")
+        else:
+            print(f"ok   {label}")
+    line = check(CASES[0][1])[1][0][0]
+    if line != 2:
+        failed += 1
+        print(f"NO   the line of the first property: expected 2, found {line}")
+    else:
+        print("ok   the line of the first property")
+    code = subprocess.run([sys.executable, SENTINEL], capture_output=True).returncode
+    if code != 2:
+        failed += 1
+        print(f"NO   no file to check: expected exit 2, found exit {code}")
+    else:
+        print("ok   no file to check: exit 2")
+    print(f"{len(CASES) + 2 - failed} of {len(CASES) + 2} cases passed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+- [ ] **Step 3: Renderle eseguibili.**
+
+Run: `chmod +x scripts/check-view-cycles.py scripts/check-view-cycles-test.py`
+
+- [ ] **Step 4: Provarla.**
+
+Run: `python3 scripts/check-view-cycles-test.py; echo "exit $?"`
+Expected: una riga `ok` per ogni caso, poi `22 of 22 cases passed` e `exit 0`.
 
 Run: `python3 scripts/check-view-cycles.py Sources/BackupMe/*.swift; echo "exit $?"`
 Expected: solo `exit 0` (nessuna riga prima).
 
 Run: `printf 'struct S {\n    var a: Int { b }\n    var b: Int { c }\n    var c: Int { a }\n}\n' > /tmp/ciclo.swift && python3 scripts/check-view-cycles.py /tmp/ciclo.swift; echo "exit $?"; rm /tmp/ciclo.swift`
-Expected: `/tmp/ciclo.swift: a → b → c → a`, poi `exit 1`.
+Expected: `/tmp/ciclo.swift:2: S.a → S.b → S.c → S.a`, poi `exit 1`.
 
-- [ ] **Step 3: Il README,** sezione «Sviluppo», in fondo al file.
+- [ ] **Step 5: Il README,** sezione «Sviluppo», in fondo al file.
 
 Old:
 
@@ -3357,7 +3671,7 @@ Il motore (`Sources/BackupCore`) non ha interfaccia ed è coperto da test; l'app
 ````
 
 
-- [ ] **Step 4: Creare la lista di prova** `docs/prova-sfoglia-backup.md`:
+- [ ] **Step 6: Creare la lista di prova** `docs/prova-sfoglia-backup.md`. Ogni riga dice cosa si deve vedere, senza rimandare a com'era la finestra vecchia: chi la usa non ha più quella sotto gli occhi.
 
 ```markdown
 # Prova di Sfoglia backup (finestra nuova)
@@ -3376,10 +3690,13 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 - [ ] Si sceglie una versione nell'ispettore, poi si nasconde l'ispettore: la barra dice ancora «versione del …» e «Ripristina» ripristina quella versione.
 - [ ] In cima la carta ripete la riga di stato del pannello della barra dei menu (stesso testo, colore e simbolo); un clic porta all'ultimo backup.
 - [ ] Ogni backup è una riga: un punto sulla linea verticale, l'ora, la barra e «+N MB». Un backup con avvisi ha punto e barra arancioni e il triangolo.
+- [ ] Un backup che non ha salvato niente ha la barra vuota e nessun numero.
 - [ ] Le sezioni sono «Oggi · …», «Ieri · …», i giorni della settimana, poi i mesi; dal più recente. Scorrendo, le intestazioni restano ferme in alto.
-- [ ] I backup più vecchi delle ultime 50 esecuzioni, e quelli dell'archivio di un altro computer, hanno solo punto e ora.
+- [ ] A destra dell'intestazione c'è il totale dei dati del periodo («+1,2 GB») dove ci sono dati.
+- [ ] I backup più vecchi delle ultime 50 esecuzioni, e quelli dell'archivio di un altro computer, non hanno barra né «+N MB»; il triangolo dell'avviso compare solo per un backup il cui indice è in memoria.
 - [ ] Il suggerimento e VoiceOver leggono data completa, MB e avvisi.
 - [ ] ⌥⌘↑ e ⌥⌘↓ cambiano backup e l'elenco scorre fino a mostrarlo; un clic su una riga non fa scorrere niente.
+- [ ] All'apertura della finestra, e al cambio di computer, l'elenco scorre fino al backup scelto.
 - [ ] Un clic sul bordo sinistro e su quello destro di una riga sceglie proprio quella riga.
 - [ ] Scegliere molti backup in fretta non blocca l'app.
 - [ ] Durante una ricerca, un clic su una riga chiude la ricerca e mostra quel backup.
@@ -3387,7 +3704,8 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 ## Titolo e filtri
 
 - [ ] Sopra la lista: «Stai guardando il backup di», «Ieri alle 15:00», «lunedì 23 novembre 2026 · +210 MB salvati · 1 avviso» (senza dati resta la data sola).
-- [ ] I tag Tutto, Modificati, Eliminati, Nuovi filtrano allo stesso modo di prima. «Modificati», «Eliminati» e «Nuovi» mostrano gli stessi conteggi di prima; «Tutto» il totale delle righe della cartella (prima non aveva un numero).
+- [ ] I tag Tutto, Modificati, Eliminati, Nuovi filtrano le righe. Finite di confrontare la cartella con oggi, «Modificati», «Eliminati» e «Nuovi» portano il numero degli elementi che lo sono, e «Tutto» quello di tutte le righe (zero: nessun numero).
+- [ ] Con un filtro acceso e niente da mostrare: «Nessuna modifica», «Nessun elemento eliminato» o «Niente di nuovo». Finché il confronto non è finito: «Confronto con oggi…».
 - [ ] Un filtro che nasconde una riga selezionata la deseleziona: la barra non la elenca più.
 - [ ] Con l'archivio di un altro computer: niente carta, niente tag, niente colonna «Rispetto a oggi».
 
@@ -3395,18 +3713,21 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 
 - [ ] Ordinamento delle colonne, colonne che si nascondono, selezione multipla.
 - [ ] Doppio clic: una cartella si apre, un file va in anteprima. Spazio apre e chiude Quick Look.
+- [ ] Tasto destro su una o più righe: «Apri» (una cartella), «Anteprima» (un file), «Ripristina» e «Ripristina in…»; per un file anche «Mostra versioni del file» e, se è modificato, «Confronta con la versione attuale».
+- [ ] Tasto destro su un elemento «Nuovo»: solo «Mostra nel Finder».
 - [ ] ⌘↑ (cartella superiore), ⌘[ e ⌘] (indietro e avanti).
 - [ ] Trascinare un file nel Finder ne ripristina una copia, col nome «… (ripristinato …)».
 - [ ] Le etichette sono Nuovo, Modificato, Eliminato, Contiene modifiche, Contiene eliminati.
 
 ## Ispettore
 
-- [ ] Niente selezionato: «Nessuna selezione». Più elementi: «N elementi selezionati» con il riepilogo (cartelle, file, dimensione).
+- [ ] Niente selezionato: «Nessuna selezione», con «Seleziona un file per vederne dettagli e versioni.». Più elementi: «N elementi selezionati» con il riepilogo (cartelle, file, dimensione) e «Seleziona un solo file per vederne dettagli e versioni.».
+- [ ] Un elemento: icona grande, nome, etichetta dello stato; Dimensione (solo per un file: «15 KB allora · 18 KB oggi»), Modificato, Posizione.
 - [ ] Un'immagine, un file di testo e un PDF mostrano il contenuto nella carta; un file sopra i 20 MB mostra l'icona.
 - [ ] Un file di testo con fine riga alla Windows (un CSV esportato da Excel, un `.bat`) mostra le sue prime righe nella carta, non una riga sola.
 - [ ] Scorrere con le frecce da un file all'altro: la carta non mostra per un attimo la versione scelta nel file precedente.
 - [ ] Scegliere una versione la evidenzia e cambia la riga della barra in «versione del …»; la carta mostra quella versione.
-- [ ] «Cerca le versioni in tutti i backup» legge gli altri backup come prima.
+- [ ] Sotto «Versioni» c'è il conto («3 salvate») e una riga per ogni contenuto diverso, dalla più recente. «Cerca le versioni in tutti i backup» legge gli altri backup non ancora letti, e l'elenco dice «Restano N backup da leggere…».
 - [ ] Selezionare molti file in fretta non blocca la finestra, e una carta lenta non sostituisce una selezione più recente.
 - [ ] Un file che non si può estrarre lascia l'icona, senza avvisi.
 
@@ -3414,12 +3735,13 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 
 - [ ] Dentro una cartella, niente selezionato: il nome della cartella; «Ripristina» la ripristina accanto all'originale.
 - [ ] Un file modificato da allora: Anteprima · Confronta con oggi · Ripristina ▾. Un file non modificato: Anteprima · Ripristina ▾.
-- [ ] Una cartella salvata per intera: «Ripristina» chiede come prima (Sostituisci, Ripristina accanto, Ripristina in…), con il conto di quello che finirebbe nel Cestino.
+- [ ] Dentro una cartella, con un file, una sottocartella o più elementi selezionati: «Ripristina» (anche con ⌘R) rimette quelli, e solo quelli, accanto all'originale, senza sovrascrivere niente.
+- [ ] Una cartella salvata per intera: «Ripristina» chiede (Sostituisci, Ripristina accanto, Ripristina in…), con il conto di quello che finirebbe nel Cestino. Mentre fa il controllo la barra dice «Controllo della cartella attuale…» e i pulsanti stanno spenti.
 - [ ] «Sostituisci» non compare per l'archivio di un altro computer, né per una cartella che questo Mac non salva.
 - [ ] A «Tutte le cartelle», niente selezionato: «Ripristina tutto…» chiede una cartella.
 - [ ] Solo elementi «Nuovi»: «Niente da ripristinare qui», e «Mostra nel Finder» al posto del pulsante: lo si preme e il Finder mostra quei file dove sono oggi.
-- [ ] Più elementi: «N elementi», la dimensione, «Ripristina ▾».
-- [ ] Menu «▾»: «Ripristina in…»; «Mostra nel Finder» (spento se non c'è più niente da mostrare); «Mostra versioni del file» (solo con un file).
+- [ ] Più elementi: «N elementi», il riepilogo, «Ripristina ▾».
+- [ ] Menu «▾»: «Ripristina in…»; «Mostra nel Finder» (spento se non c'è più niente da mostrare); «Mostra versioni del file» (solo con un file): apre l'ispettore.
 - [ ] ⌘R e ⇧⌘R fanno la stessa cosa del pulsante e della voce di menu.
 - [ ] Durante un ripristino la barra dice «Ripristino in corso…» e i pulsanti stanno spenti. Un ripristino alla volta, anche chiudendo e riaprendo la finestra.
 - [ ] La capsula sta in fondo sotto lista e ispettore; con l'ispettore chiuso, o la barra laterale nascosta, si allarga.
@@ -3434,11 +3756,14 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 
 - [ ] Il titolo è la ricerca tra virgolette, con il conteggio dei risultati; i tag sono Tutti e Solo eliminati.
 - [ ] Doppio clic su un risultato: «Mostra nel backup» chiude la ricerca, apre la cartella e seleziona il file; se il suo backup sta fuori schermo, la linea del tempo scorre fino a mostrarlo.
-- [ ] Senza risultati, e con «Solo eliminati» senza risultati: i testi di prima.
+- [ ] Un risultato selezionato: la barra dice «dal backup di …» e «Ripristina» ripristina quel file accanto all'originale, anche se nessun backup è ancora aperto.
+- [ ] Niente selezionato: la barra dice «Seleziona un risultato», con «Mostra nel backup» spento.
+- [ ] Senza risultati il pannello dice che non ha trovato niente per il testo cercato. Con «Solo eliminati» senza risultati: «Nessun file eliminato».
 
 ## Stati vuoti
 
-- [ ] Nessuna destinazione (con «Apri Impostazioni…»), destinazione non collegata, nessun backup, scegli un backup: i testi di prima, e la barra non si vede.
+- [ ] Senza una destinazione: «Nessuna destinazione», con «Apri Impostazioni…». Disco non collegato: «Destinazione non collegata: …», con «Collegala per sfogliare e ripristinare i backup.».
+- [ ] «Nessun backup», con «I backup di questo Mac compariranno qui dopo il primo salvataggio.», e «Scegli un backup», con «Scegline uno nella barra laterale.». In tutti questi stati la barra non si vede.
 - [ ] Un disco esterno scollegato e ricollegato mentre la finestra è aperta: la finestra se ne accorge.
 
 ## Cosa non è passato
@@ -3446,7 +3771,7 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 (una riga per ogni problema: cosa si è fatto, cosa si è visto)
 ```
 
-- [ ] **Step 5: La voce di changelog.** In `CHANGELOG.md`, subito prima di `## [1.0.1] - 2026-11-24`, inserire questa sezione (seguita da una riga vuota):
+- [ ] **Step 7: La voce di changelog.** In `CHANGELOG.md`, subito prima di `## [1.0.1] - 2026-11-24`, inserire questa sezione (seguita da una riga vuota):
 
 ```markdown
 ## [Non pubblicato]
@@ -3455,11 +3780,12 @@ I test automatici coprono le regole (le sezioni della linea del tempo, i testi d
 - Sfoglia backup rifatta. La barra laterale è una linea del tempo: ogni backup è un punto sulla linea, con l'ora, una barra lunga quanto i dati salvati e «+N MB»; un backup con avvisi è arancione. In cima una carta ripete lo stato del pannello della barra dei menu. Il pannello centrale dice in grande «Ieri alle 15:00», con la data, i dati salvati e gli avvisi; i filtri Modificati, Eliminati e Nuovi sono tag. L'ispettore, più largo, mostra un'anteprima del file (immagini, testo, anteprima rapida degli altri tipi, fino a 20 MB) e le versioni su una linea. Le azioni stanno in una capsula in fondo, sotto lista e ispettore: Anteprima, Confronta con oggi e un solo «Ripristina» con menu («Ripristina in…», «Mostra nel Finder», «Mostra versioni del file»). Scegliendo una versione nell'ispettore, «Ripristina» ripristina quella. Le regole non cambiano: cosa si ripristina, da quale backup e quando chiede prima lo decide il target nuovo `RestoreRules`, provato con 42 test. La finestra si apre 1100×700.
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add scripts/check-view-cycles.py README.md docs/prova-sfoglia-backup.md CHANGELOG.md
+git add scripts/check-view-cycles.py scripts/check-view-cycles-test.py README.md docs/prova-sfoglia-backup.md CHANGELOG.md
 git commit -m "docs: lista di prova della finestra nuova di Sfoglia, CHANGELOG e sentinella dei cicli nelle viste"
+```
 ```
 
 ---

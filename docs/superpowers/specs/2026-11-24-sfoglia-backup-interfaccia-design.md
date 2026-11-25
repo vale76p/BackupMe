@@ -1,6 +1,6 @@
 # BackupMe — Sfoglia backup, la finestra nuova: design
 
-Data: 2026-11-24 · Stato: proposta, in attesa di approvazione.
+Data: 2026-11-24 · Stato: approvata da Valentino il 2026-11-24; le righe segnate «aggiunto durante l'esecuzione» sono cambiate dopo, con la finestra già costruita.
 
 Le scelte segnate **(Valentino)** le ha prese l'utente. Quelle segnate **(mia)** sono di chi ha scritto questo testo e vanno controllate. Tutto il resto è lasciato a chi costruisce.
 
@@ -73,7 +73,7 @@ I mockup sono in `docs/superpowers/mockups/2026-11-24-sfoglia-backup-direzioni.h
 - **Carta dello stato, in cima, solo per l'archivio di questo Mac** (mia). Ripete la riga di stato del pannello della barra dei menu: stesso testo (`AppModel.statusText`), stesso colore e stesso simbolo. Un clic porta all'ultimo backup e chiude la ricerca. Colore e simbolo oggi sono privati del pannello: diventano condivisibili. Nel mockup la carta diceva «Tutto a posto»; viene il testo del pannello, così le due parti dicono sempre la stessa cosa.
 - **Elenco in una `List`**, mai in una vista a scorrimento disegnata a mano. Una sezione per giorno dell'ultima settimana («Oggi · 24 nov», «Ieri · 23 nov», «Domenica 22 nov»), poi una per mese («Novembre»): le sezioni di oggi, dal più recente. Le intestazioni restano fissate in alto mentre l'elenco scorre (mia).
 - **Una riga per backup** (mia): un punto su una linea verticale che passa per tutti i punti, l'ora («15:00», ore e minuti), una barra lungua in proporzione ai byte nuovi e «+210 MB». Un backup con avvisi ha punto e barra arancioni e il simbolo di avviso. A destra dell'intestazione il totale dei dati del periodo, come oggi.
-- **Da dove vengono i dati.** Byte nuovi e avvisi dalle ultime 50 esecuzioni di questo Mac, con la regola di oggi: conta l'esecuzione che ha scritto l'indice, non una che l'ha riusato. Avvisi anche dall'indice di un backup in memoria, ma solo per un backup di cui la cronologia non sa niente: per gli avvisi comanda la cronologia, così «Cancella avvisi» li toglie anche dalla linea del tempo, come oggi dai chip (Valentino, deciso durante l'esecuzione). Dove non ci sono dati (backup più vecchi di 50 esecuzioni, archivio di un altro computer) la riga ha solo punto e ora. La barra è proporzionale al massimo dell'elenco (mia).
+- **Da dove vengono i dati.** Byte nuovi e avvisi dalle ultime 50 esecuzioni di questo Mac, con la regola di oggi: conta l'esecuzione che ha scritto l'indice, non una che l'ha riusato. Avvisi anche dall'indice di un backup in memoria, ma solo per un backup di cui la cronologia non sa niente: per gli avvisi comanda la cronologia, così «Cancella avvisi» li toglie anche dalla linea del tempo, come oggi dai chip (Valentino, deciso durante l'esecuzione). Dove non ci sono dati (backup più vecchi di 50 esecuzioni, archivio di un altro computer) la riga ha solo punto e ora, e l'avviso dell'indice se il backup è in memoria. La barra è proporzionale al massimo dell'elenco (mia).
 - **Non ci sono righe «senza dati»**: se non cambia niente non si scrive un indice nuovo. Se una riga ha 0 byte nuovi mostra la barra vuota e nessun numero.
 - **Selezione** (mia): la riga del backup scelto è evidenziata; quando la scelta cambia da fuori (⌥⌘↑ e ⌥⌘↓, «Mostra nel backup», cambio di computer, apertura della finestra) l'elenco scorre per mostrarla.
 - **Suggerimento e VoiceOver**: data completa, byte nuovi, avvisi, come oggi.
@@ -136,13 +136,13 @@ I mockup sono in `docs/superpowers/mockups/2026-11-24-sfoglia-backup-direzioni.h
 |---|---|---|
 | Una cartella qualunque | Niente | La cartella guardata, accanto all'originale |
 | | File o sottocartelle | Quelli, accanto all'originale |
-| | Solo elementi «Nuovi» | Niente: pulsante spento |
+| | Solo elementi «Nuovi» | Niente da ripristinare: al posto del pulsante c'è «Mostra nel Finder», che mostra dove sono oggi (mia, aggiunto durante l'esecuzione) |
 | «Tutte le cartelle» | Una cartella salvata | Chiede come oggi, dopo il controllo: Sostituisci (dove è permesso), Ripristina accanto, Ripristina in… |
 | | Niente | «Ripristina tutto…»: sceglie una cartella |
 | Un file | Una versione scelta | Quella versione, accanto all'originale |
 
 - **Menu «▾»** (mia): «Ripristina in…» (⇧⌘R); «Mostra nel Finder» (gli elementi da ripristinare che esistono ancora; spento se non ce ne sono); «Mostra versioni del file» (un file solo: apre l'ispettore). In ricerca «Mostra nel backup» prende il posto di «Mostra nel Finder».
-- **Spento, con lo stesso aiuto di oggi**, quando non c'è niente da ripristinare, durante un ripristino o il controllo della cartella. «Ripristino in corso…» e «Controllo della cartella attuale…» prendono il posto della riga a sinistra.
+- **Spento, con lo stesso aiuto di oggi**, durante un ripristino o il controllo della cartella. Quando non c'è niente da ripristinare il pulsante lascia il posto a «Mostra nel Finder». «Ripristino in corso…» e «Controllo della cartella attuale…» prendono il posto della riga a sinistra.
 - Il menu tasto destro della lista resta com'è.
 - **Vetro**: su macOS 26 e successivi la capsula è di vetro (`glassPanel`) e i suoi pulsanti stanno in un `GlassGroup`; su macOS 14 e 15 è una capsula opaca. **Ripiego** (mia): se dà glitch, la formula che li diede in 0.3.0, la capsula diventa la barra in fondo di oggi, fatta meglio.
 
