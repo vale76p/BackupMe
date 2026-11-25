@@ -3363,7 +3363,8 @@ def blanked(src):
                 # a regex literal can hold quotes and braces: it ends at the slash its escapes do not protect
                 k = j + 1
                 while k < n and not src.startswith('/' + '#' * hashes, k):
-                    if src[k] == '\\' and (not hashes or src.startswith('\\' + '#' * hashes, k)): k += 1 + hashes
+                    # in a regex literal a backslash escapes the next character, with or without hashes
+                    if src[k] == '\\': k += 1
                     k += 1
                 space(i, min(k + 1 + hashes, n))
                 i = min(k + 1 + hashes, n)
@@ -3747,6 +3748,15 @@ CASES = [
             var b: Int { a }
         }
     '''}, ["X.a X.b"]),
+    ("an extended regex literal whose escaped slash comes before its hashes", {"S.swift": r'''
+        struct X {
+            var a: Int {
+                let r = #/x\/#[{]/#
+                return r == nil ? 0 : b
+            }
+            var b: Int { a }
+        }
+    '''}, ["X.a X.b"]),
     ("a regex literal", {"S.swift": r'''
         struct X {
             var a: Int {
@@ -3903,7 +3913,7 @@ Run: `chmod +x scripts/check-view-cycles.py scripts/check-view-cycles-test.py`
 - [ ] **Step 4: Provarla.**
 
 Run: `python3 scripts/check-view-cycles-test.py; echo "exit $?"`
-Expected: una riga `ok` per ogni caso, poi `49 of 49 cases passed` e `exit 0`.
+Expected: una riga `ok` per ogni caso, poi `50 of 50 cases passed` e `exit 0`.
 
 Run: `python3 scripts/check-view-cycles.py Sources/BackupMe/*.swift; echo "exit $?"`
 Expected: solo `exit 0` (nessuna riga prima).
